@@ -3,39 +3,45 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 #include "repiu/hle/glide_hle.h"
 
 namespace repiu::engine
 {
 
-// Task 728. Whether the LFB staging surface still holds the frame buffer image
-// of a particular buffer.
+// Tasks 728 and 729. Host-owned copies of what each Glide color buffer holds,
+// so a write `grLfbLock` does not have to read the frame buffer back from the
+// GPU to seed its staging surface.
 //
-// Every write `grLfbLock` seeds the staging surface with a full
-// `ReadbackFramebuffer` plus a 565 encode, which Task 724 measured as the whole
-// of that gate's cost. The seed exists because a write lock may touch only some
-// pixels, so the rest have to survive the unlock blit. But `grLfbUnlock`
-// presents the *entire* staging surface, so right after a successful unlock the
-// frame buffer holds what the staging surface holds -- and the next lock does
-// not need to ask the GPU for it back.
+// Task 728 kept one shadow and let it be the staging surface itself. Measured,
+// it never once survived: all 304 invalidations in a 30-second run were
+// `grBufferSwap`, because the guest's pattern is
+// `lock -> write -> unlock -> swap -> lock`.
 //
-// This is the same idea Task 476 applied to the region gates on the same
-// surface; it is extended here to the lock/unlock path, where the state has to
-// survive the state-setter gates a guest issues between two locks.
+// Task 729 measured what fills that window and found it empty: 303 of 304
+// intervals contained exactly one swap and nothing else -- no clear, no draw,
+// no region write. So the obstacle was never that the frame buffer changes; it
+// is that a swap moves which buffer the next lock names.
+//
+// That is what this models. A Glide buffer swap is a page flip, so after it the
+// back buffer holds what the front buffer held. Keeping one copy per buffer and
+// exchanging them at the swap reproduces that exactly, and a lock can then be
+// served from the copy instead of the GPU.
+//
+// Two consequences of holding copies rather than the staging surface itself:
+// the shadow survives the lock handing that surface to the guest, and it
+// survives a swap.
 enum class GlideLfbStagingShadowInvalidation : std::uint32_t
 {
     // A gate that may change frame buffer pixels, or one this layer does not
     // recognize. Split by kind, because "the shadow did not survive" is only
-    // useful next to what did not let it: a swap is a property of the frame
-    // loop and cannot be argued with, while an incidental gate might be.
+    // useful next to what did not let it.
     kSwapGate = 0,
     kDrawGate,
     kClearGate,
     kRegionGate,
     kOtherGate,
-    // The lock handed the surface to the guest, which now owns its contents.
-    kLockHandoff,
     // The unlock blit failed, so what the frame buffer holds is unknown.
     kPresentFailed,
     // The unlock presented flipped, so the frame buffer is no longer row-wise
@@ -43,30 +49,46 @@ enum class GlideLfbStagingShadowInvalidation : std::uint32_t
     kFlippedPresent,
     // Geometry or pixel format moved out from under the shadow.
     kSurfaceMismatch,
-    // Teardown.
-    kShutdown,
+    // The host could not hold a copy.
+    kStorageFailure,
     kCount
 };
 
 inline constexpr std::size_t kGlideLfbStagingShadowReasonCount =
     static_cast<std::size_t>(GlideLfbStagingShadowInvalidation::kCount);
 
-struct GlideLfbStagingShadowState
+// GrBuffer_t front is 0 and back is 1, which this indexes directly. Anything
+// else is not a color buffer this layer shadows.
+inline constexpr std::size_t kGlideLfbStagingShadowBufferCount = 2U;
+
+bool GlideLfbStagingShadowBufferIndexed(std::uint32_t buffer);
+
+// One buffer's copy of its 565 contents.
+struct GlideLfbBufferShadow
 {
     bool valid = false;
-    // What the shadow stands for while `valid`. A lock naming anything else
-    // re-seeds rather than handing out another buffer's pixels.
-    std::uint32_t buffer = 0;
     std::uint32_t color_format = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::vector<std::uint8_t> pixels;
+};
+
+struct GlideLfbStagingShadowState
+{
+    GlideLfbBufferShadow buffers[kGlideLfbStagingShadowBufferCount];
+    // Where draws and clears land. Glide starts on the back buffer and
+    // `grRenderBuffer` moves it; a 30-second run called that gate once, at
+    // startup, so in practice only the back shadow is ever broken by drawing.
+    std::uint32_t render_buffer = 1U;
+
     std::uint32_t lock_count = 0;
     // Locks whose shadow matched. Counted whether or not the seed was actually
     // skipped, so census mode measures the opportunity without taking it.
     std::uint32_t reusable_lock_count = 0;
     std::uint32_t reused_lock_count = 0;
     std::uint32_t seed_count = 0;
-    std::uint32_t validate_count = 0;
+    std::uint32_t store_count = 0;
+    std::uint32_t swap_rotation_count = 0;
     // Counted on the valid-to-invalid transition only. Counting every call
     // would count each gate of a run whose shadow is already invalid.
     std::uint32_t invalidate_counts[kGlideLfbStagingShadowReasonCount] = {};
@@ -80,7 +102,8 @@ struct GlideLfbStagingShadowSnapshot
     std::uint32_t reusable_lock_count = 0;
     std::uint32_t reused_lock_count = 0;
     std::uint32_t seed_count = 0;
-    std::uint32_t validate_count = 0;
+    std::uint32_t store_count = 0;
+    std::uint32_t swap_rotation_count = 0;
     std::uint32_t invalidate_counts[kGlideLfbStagingShadowReasonCount] = {};
 };
 
@@ -90,19 +113,27 @@ bool ResolveGlideLfbStagingShadowSetting(std::string_view setting);
 // seeds without counting them cannot be read afterwards.
 bool GlideLfbStagingShadowCensusEnabled();
 
-// Actually skip the seed when the shadow matches.
+// Actually serve a lock from the shadow when it matches.
 bool GlideLfbStagingReuseEnabled();
 
 // True only for gates confirmed to leave frame buffer pixels and LFB encoding
 // alone. Everything else, including `kUnknown` and any gate added later,
 // invalidates -- a gate nobody classified must not be assumed harmless.
+//
+// `kGrBufferSwap` is preserving here: it does not destroy either buffer's
+// contents, it exchanges them, which `RotateGlideLfbStagingShadows` does.
 bool GlideOrdinalPreservesLfbStagingShadow(repiu::hle::GlideGateId gate_id);
 
-// Which invalidation a non-preserving gate is. Callers pass any gate id; a
-// preserving one still classifies as `kOtherGate`, because the caller decides
-// whether to invalidate at all.
+// Which invalidation a non-preserving gate is.
 GlideLfbStagingShadowInvalidation ClassifyGlideLfbStagingShadowGate(
     repiu::hle::GlideGateId gate_id);
+
+// Whether a gate writes only the current render target, as opposed to leaving
+// the whole shadow set untrustworthy.
+bool GlideOrdinalTargetsRenderBufferOnly(repiu::hle::GlideGateId gate_id);
+
+void SetGlideLfbStagingShadowRenderBuffer(GlideLfbStagingShadowState* state,
+                                          std::uint32_t buffer);
 
 bool CanReuseGlideLfbStagingShadow(const GlideLfbStagingShadowState& state,
                                    std::uint32_t buffer,
@@ -110,15 +141,43 @@ bool CanReuseGlideLfbStagingShadow(const GlideLfbStagingShadowState& state,
                                    std::uint32_t width,
                                    std::uint32_t height);
 
-void ValidateGlideLfbStagingShadow(GlideLfbStagingShadowState* state,
-                                   std::uint32_t buffer,
-                                   std::uint32_t color_format,
-                                   std::uint32_t width,
-                                   std::uint32_t height);
+// Copies the shadow of `buffer` into a staging surface. Returns false without
+// touching `pixels` when the shadow cannot serve this surface.
+bool LoadGlideLfbStagingShadow(const GlideLfbStagingShadowState& state,
+                               std::uint32_t buffer,
+                               std::uint8_t* pixels,
+                               std::size_t byte_count,
+                               std::uint32_t color_format,
+                               std::uint32_t width,
+                               std::uint32_t height);
 
-void InvalidateGlideLfbStagingShadow(
+// Takes a copy of a staging surface as the new contents of `buffer`. A copy it
+// cannot hold invalidates rather than half-storing.
+void StoreGlideLfbStagingShadow(GlideLfbStagingShadowState* state,
+                                std::uint32_t buffer,
+                                const std::uint8_t* pixels,
+                                std::size_t byte_count,
+                                std::uint32_t color_format,
+                                std::uint32_t width,
+                                std::uint32_t height);
+
+// The page flip: after a buffer swap the back buffer holds what the front one
+// held. Exchanges the two shadows rather than discarding them.
+void RotateGlideLfbStagingShadows(GlideLfbStagingShadowState* state);
+
+void InvalidateGlideLfbStagingShadowBuffer(
+    GlideLfbStagingShadowState* state,
+    std::uint32_t buffer,
+    GlideLfbStagingShadowInvalidation reason);
+
+void InvalidateGlideLfbStagingShadows(
     GlideLfbStagingShadowState* state,
     GlideLfbStagingShadowInvalidation reason);
+
+// Applies one dispatched gate to the shadow set: rotate on a swap, invalidate
+// the render target for a targeted gate, invalidate everything otherwise.
+void ApplyGlideLfbStagingShadowGate(GlideLfbStagingShadowState* state,
+                                    repiu::hle::GlideGateId gate_id);
 
 // Records one write lock's outcome. `reused` implies `reusable`; a lock that
 // was not reused seeded instead.

@@ -3577,57 +3577,66 @@ The shutdown snapshot reports the top eight, breaking equal counts by ascending 
 
 ## LFB staging shadow / LFB staging shadow
 
-Task 728은 `grLfbLock`의 staging surface에 두 번째 shadow 상태를 붙입니다. `grLfbUnlock`은
-write lock의 staging surface 전체를 framebuffer에 present하므로, 성공한 unlock 직후에는
-surface가 곧 framebuffer입니다. `GlideLfbStagingShadowState`는 그 사실을 buffer, color
-format, width, height와 함께 기록하고, framebuffer pixel을 바꿀 수 있는 gate에서 소멸시킵니다.
-무효화 술어 `GlideOrdinalPreservesLfbStagingShadow`는 **기본값이 무효화**인 allowlist이므로,
-분류되지 않은 gate와 나중에 추가되는 gate는 자동으로 기존 seed 경로로 돌아갑니다.
+Tasks 728·729는 write `grLfbLock`이 매번 수행하던 full framebuffer readback과 565 encode를,
+host가 그 buffer의 내용을 이미 들고 있을 때 건너뛰게 합니다. `GlideLfbStagingShadowState`는
+**color buffer마다 하나씩**(front=0, back=1) host 소유 565 복사본을 둡니다.
 
-Task 476의 region shadow가 같은 surface를 region gate 연속 호출에 대해 다루는 것과 달리, 이
-shadow는 두 lock 사이의 state setter를 견디도록 설계되었습니다.
-`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true`는 동작을 바꾸지 않고 재사용 가능했던 lock을
-계수하고, `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`는 실제로 readback과 565 encode를 건너뜁니다.
-후자는 전자를 함의하며 둘 다 기본 OFF입니다.
+* 성공한 write unlock(`flip_v=false`)은 staging surface를 `buffers[lock_buffer]`에 복사합니다.
+* **`grBufferSwap`은 두 복사본을 교환합니다.** Glide의 buffer swap은 page flip이므로 swap 뒤
+  back buffer는 직전 front buffer의 내용을 담습니다. 이것이 핵심입니다.
+* draw·clear는 현재 render target(`grRenderBuffer`로 추적, 기본 back)의 복사본만 무효화합니다.
+* region gate와 미분류 gate는 두 복사본을 모두 무효화합니다. 무효화 술어는 **기본값이
+  무효화**인 allowlist입니다.
+* lock은 복사본이 valid하고 format·해상도가 맞으면 readback 대신 memcpy합니다. 복사본은
+  staging surface 자체가 아니므로 lock이 surface를 guest에 넘겨도 살아남습니다.
+
+Task 728의 단일 shadow(staging surface 자체)는 측정에서 재사용 0건이었습니다. 무효화 304건이
+전부 swap이었기 때문입니다. Task 729는 unlock과 다음 lock 사이 구간을 재어 303/303이 **정확히
+swap 1회뿐**임을 확인했고, 그래서 swap을 손실이 아니라 교환으로 모델링했습니다.
+
+`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true`는 계수만, `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`는
+실제 적용입니다. **둘 다 기본 OFF이며, apply 모드 실행 3회 중 1회에서 원인 미확정 teardown
+segfault가 있었으므로 기본값을 켜서는 안 됩니다.** 별도로
+`REPIU_GLIDE_LFB_LOCK_INTERVAL_CENSUS=1|on|true`는 unlock과 다음 lock 사이 구간을 swap만 있음 /
+clear / draw / region으로 분류합니다.
 
 `ReadbackFramebuffer`는 window drawable을 읽어 논리 해상도로 nearest-neighbor 축소하고
-`PresentLfbSurface`는 다시 확대하므로, drawable이 논리 해상도의 정수배가 아니면 present →
-readback 왕복은 원래 pixel을 복원하지 못합니다. 따라서 shadow 재사용은 정확도를 희생하는
-최적화가 아니라 그 왕복 resample을 제거합니다.
+`PresentLfbSurface`는 다시 확대하므로, drawable이 정수배가 아니면 present → readback 왕복은
+원래 pixel을 복원하지 못합니다. 또 OpenGL은 swap 뒤 back buffer 내용을 정의하지 않습니다.
+복사본 재사용은 이 두 불확실성을 원본 하드웨어의 page flip 의미로 대체합니다.
 
-**측정된 한계:** 30초 `pumpit2a` census 관찰에서 write lock 304건 중 재사용 가능은 **0건**이고,
-무효화 304건이 전부 `grBufferSwap`이었습니다. 게스트 경로가
-`lock → unlock → grBufferSwap → lock`이라 shadow는 매번 성립했다가 프레임 경계에서 깨집니다.
-그러므로 이 경로는 현재 게임 패턴에서 이득이 없으며, 두 기본값을 켜서는 안 됩니다. 이득을 내려면
-shadow를 buffer마다 쌍으로 두고 swap에서 교환해 lock N이 lock N-2를 재사용하도록 해야 하며,
-이는 아직 구현되지 않았습니다.
+Tasks 728 and 729 let a write `grLfbLock` skip the full framebuffer readback and 565 encode it
+used to run every time, when the host already holds that buffer's contents.
+`GlideLfbStagingShadowState` keeps **one host-owned 565 copy per color buffer** (front 0, back 1).
 
-Task 728 attaches a second shadow state to the `grLfbLock` staging surface. Because
-`grLfbUnlock` presents the entire staging surface of a write lock to the framebuffer, right
-after a successful unlock the surface *is* the framebuffer. `GlideLfbStagingShadowState`
-records that fact together with buffer, color format, width and height, and destroys it at any
-gate that may change framebuffer pixels. The predicate
-`GlideOrdinalPreservesLfbStagingShadow` is an allowlist whose **default is to invalidate**, so
-an unclassified gate, or one added later, falls back to the existing seed path automatically.
+* A successful write unlock (`flip_v=false`) copies the staging surface into
+  `buffers[lock_buffer]`.
+* **`grBufferSwap` exchanges the two copies.** A Glide buffer swap is a page flip, so the
+  post-swap back buffer holds what the front buffer held. This is the crux.
+* Draws and clears invalidate only the copy of the current render target, tracked from
+  `grRenderBuffer` and defaulting to back.
+* Region gates and unclassified gates invalidate both copies. The predicate is an allowlist whose
+  **default is to invalidate**.
+* A lock memcpys from a valid copy of matching format and resolution instead of reading back.
+  The copy is not the staging surface itself, so it survives the lock handing that surface to
+  the guest.
 
-Unlike Task 476's region shadow, which covers the same surface across a burst of region gates,
-this shadow is built to survive the state setters a guest issues between two locks.
-`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true` counts reusable locks without changing
-behavior, and `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true` actually skips the readback and the 565
-encode. The latter implies the former, and both are off by default.
+Task 728's single shadow, which was the staging surface itself, measured zero reuse because all
+304 invalidations were swaps. Task 729 measured the window between an unlock and the next lock,
+found 303 of 303 held **exactly one swap and nothing else**, and so models the swap as an
+exchange rather than a loss.
 
-`ReadbackFramebuffer` reads the window drawable and nearest-neighbor downsamples it to the
-logical resolution, while `PresentLfbSurface` upscales it again, so when the drawable is not an
-integer multiple of the logical resolution the present-then-readback round trip does not restore
-the original pixel. Reusing the shadow therefore removes that resampling round trip rather than
-trading accuracy for speed.
+`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true` counts only; `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`
+applies. **Both are off by default, and neither should be turned on: one of three apply-mode runs
+hit a teardown segfault whose cause is not yet established.** Separately,
+`REPIU_GLIDE_LFB_LOCK_INTERVAL_CENSUS=1|on|true` classifies the window between an unlock and the
+next lock as swaps-only, cleared, drawn, or region.
 
-**Measured limit:** in a 30-second `pumpit2a` census observation, **zero** of 304 write locks
-were reusable, and all 304 invalidations were `grBufferSwap`. The guest path is
-`lock -> unlock -> grBufferSwap -> lock`, so the shadow is established every time and then lost
-at the frame boundary. This path therefore yields nothing under the current game pattern and
-neither default should be turned on. Making it pay would require one shadow per buffer,
-exchanged at the swap so that lock N reuses lock N-2; that is not implemented.
+`ReadbackFramebuffer` reads the window drawable and nearest-neighbor downsamples it to the logical
+resolution while `PresentLfbSurface` upscales it again, so on a drawable that is not an integer
+multiple the present-then-readback round trip does not restore the original pixel; and OpenGL
+leaves back buffer contents undefined after a swap. Reusing the copies replaces both
+uncertainties with the page-flip semantics of the original hardware.
 
 ---
 

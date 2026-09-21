@@ -2222,10 +2222,11 @@ void PrintExecutionAttempt(
             const auto& shadow = attempt.glide_lfb_staging_shadow;
             logger.info(
                 "Win32 Glide LFB staging shadow census/reuse/locks/reusable/"
-                "reused/seeds/validated: {}/{}/{}/{}/{}/{}/{}",
+                "reused/seeds/stores/rotations: {}/{}/{}/{}/{}/{}/{}/{}",
                 shadow.census_enabled, shadow.reuse_enabled, shadow.lock_count,
                 shadow.reusable_lock_count, shadow.reused_lock_count,
-                shadow.seed_count, shadow.validate_count);
+                shadow.seed_count, shadow.store_count,
+                shadow.swap_rotation_count);
             for (std::size_t index = 0U;
                  index < repiu::engine::kGlideLfbStagingShadowReasonCount;
                  ++index)
@@ -2237,6 +2238,30 @@ void PrintExecutionAttempt(
                     "Win32 Glide LFB staging shadow invalidation {}: {}",
                     repiu::engine::GlideLfbStagingShadowInvalidationName(reason),
                     shadow.invalidate_counts[index]);
+            }
+        }
+        {
+            const auto& interval = attempt.glide_lfb_lock_interval;
+            logger.info(
+                "Win32 Glide LFB lock interval census enabled/swaps total/min/max: "
+                "{}/{}/{}/{}",
+                interval.enabled, interval.swap_total, interval.swap_minimum,
+                interval.swap_maximum);
+            logger.info(
+                "Win32 Glide LFB lock interval swap buckets zero/one/multi, "
+                "clear/draw totals: {}/{}/{}, {}/{}",
+                interval.zero_swap_interval_count,
+                interval.single_swap_interval_count,
+                interval.multi_swap_interval_count, interval.clear_total,
+                interval.draw_total);
+            for (std::size_t index = 0U;
+                 index < repiu::engine::kGlideLfbLockIntervalKindCount; ++index)
+            {
+                logger.info(
+                    "Win32 Glide LFB lock interval {}: {}",
+                    repiu::engine::GlideLfbLockIntervalName(
+                        static_cast<repiu::engine::GlideLfbLockInterval>(index)),
+                    interval.interval_counts[index]);
             }
         }
         {

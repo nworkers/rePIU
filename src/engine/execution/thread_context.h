@@ -20,6 +20,7 @@
 #include "repiu/engine/glide_lfb_timing.h"
 #include "repiu/engine/glide_lfb_write_footprint.h"
 #include "repiu/engine/glide_lfb_native_store_census.h"
+#include "repiu/engine/glide_lfb_lock_interval_census.h"
 #include "repiu/engine/glide_lfb_staging_shadow.h"
 #include "repiu/engine/glide_setter_state_census.h"
 #include "repiu/engine/glide_draw_batch.h"
@@ -855,6 +856,8 @@ struct ThreadContext
     // lock/unlock path. It survives the state setters between two locks, so a
     // write lock whose pixels the host still holds can skip its readback.
     GlideLfbStagingShadowState glide_lfb_staging_shadow;
+    // Task 729: the gates between a write unlock and the next write lock.
+    GlideLfbLockIntervalCensus glide_lfb_lock_interval_census;
     std::uint32_t glide_lfb_region_read_count = 0;
     std::uint32_t glide_lfb_region_write_count = 0;
     std::uint32_t linexe_scan_return_eax = 0;

@@ -2,8 +2,10 @@
 
 #include "repiu/engine/glide_lfb_staging_shadow.h"
 
+#include <array>
 #include <iostream>
 #include <string_view>
+#include <vector>
 
 namespace repiu::tools
 {
@@ -14,11 +16,14 @@ using engine::GlideLfbStagingShadowInvalidation;
 using engine::GlideLfbStagingShadowState;
 using Gate = repiu::hle::GlideGateId;
 
-constexpr std::uint32_t kBackBuffer = 1U;
 constexpr std::uint32_t kFrontBuffer = 0U;
+constexpr std::uint32_t kBackBuffer = 1U;
 constexpr std::uint32_t kFormat565 = 0U;
-constexpr std::uint32_t kWidth = 640U;
-constexpr std::uint32_t kHeight = 480U;
+// Small enough to compare byte for byte, large enough to be a real surface.
+constexpr std::uint32_t kWidth = 8U;
+constexpr std::uint32_t kHeight = 4U;
+constexpr std::size_t kSurfaceBytes =
+    static_cast<std::size_t>(kWidth) * kHeight * 2U;
 
 std::uint32_t ReasonCount(const GlideLfbStagingShadowState& state,
                           const GlideLfbStagingShadowInvalidation reason)
@@ -26,23 +31,40 @@ std::uint32_t ReasonCount(const GlideLfbStagingShadowState& state,
     return state.invalidate_counts[static_cast<std::size_t>(reason)];
 }
 
-// One write lock as the boundary drives it: decide reuse, record it, hand the
-// surface to the guest, then unlock. Returns whether the seed was skipped.
-bool RunLock(GlideLfbStagingShadowState* const state, const bool reuse_enabled)
+std::vector<std::uint8_t> Surface(const std::uint8_t fill)
 {
-    const bool reusable = engine::CanReuseGlideLfbStagingShadow(
-        *state, kBackBuffer, kFormat565, kWidth, kHeight);
-    const bool reused = reusable && reuse_enabled;
-    engine::NoteGlideLfbStagingShadowLock(state, reusable, reused);
-    engine::InvalidateGlideLfbStagingShadow(
-        state, GlideLfbStagingShadowInvalidation::kLockHandoff);
-    return reused;
+    return std::vector<std::uint8_t>(kSurfaceBytes, fill);
 }
 
-void RunUnlock(GlideLfbStagingShadowState* const state)
+void Store(GlideLfbStagingShadowState* const state,
+           const std::uint32_t buffer,
+           const std::uint8_t fill)
 {
-    engine::ValidateGlideLfbStagingShadow(state, kBackBuffer, kFormat565,
-                                          kWidth, kHeight);
+    const std::vector<std::uint8_t> pixels = Surface(fill);
+    engine::StoreGlideLfbStagingShadow(state, buffer, pixels.data(),
+                                       pixels.size(), kFormat565, kWidth,
+                                       kHeight);
+}
+
+// Reads a buffer's shadow back through the public load path, returning the
+// fill byte or -1 when it could not be served.
+int Load(const GlideLfbStagingShadowState& state, const std::uint32_t buffer)
+{
+    std::vector<std::uint8_t> out(kSurfaceBytes, 0xAAU);
+    if (!engine::LoadGlideLfbStagingShadow(state, buffer, out.data(),
+                                           out.size(), kFormat565, kWidth,
+                                           kHeight))
+    {
+        return -1;
+    }
+    for (const std::uint8_t byte : out)
+    {
+        if (byte != out[0])
+        {
+            return -2;
+        }
+    }
+    return out[0];
 }
 
 }  // namespace
@@ -60,13 +82,13 @@ bool RunGlideLfbStagingShadowProbe()
     // Every gate that can change frame buffer pixels, change what the 565
     // encoding means, or move the render target must invalidate. An unknown
     // gate must invalidate too, which is the property that keeps a gate added
-    // later from silently inheriting reuse.
+    // later from silently inheriting reuse. `kGrBufferSwap` is deliberately
+    // absent: Task 729 made it a rotation rather than a loss.
     const bool invalidating_gates =
         !engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kUnknown) &&
         !engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrGlideInit) &&
         !engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrGlideShutdown) &&
         !engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrBufferClear) &&
-        !engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrBufferSwap) &&
         !engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrDrawLine) &&
         !engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrDrawPoint) &&
         !engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrDrawTriangle) &&
@@ -103,10 +125,8 @@ bool RunGlideLfbStagingShadowProbe()
         !engine::GlideOrdinalPreservesLfbStagingShadow(
             Gate::kGrSstConfigPipeline);
 
-    // The gates a guest issues between two locks, which reuse exists to
-    // survive. The lock and unlock gates are here too: their own paths carry
-    // the state, so the dispatch-time predicate must leave it alone.
     const bool preserving_gates =
+        engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrBufferSwap) &&
         engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrLfbLock) &&
         engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrLfbUnlock) &&
         engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrTexSource) &&
@@ -116,70 +136,13 @@ bool RunGlideLfbStagingShadowProbe()
         engine::GlideOrdinalPreservesLfbStagingShadow(
             Gate::kGrAlphaBlendFunction) &&
         engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrClipWindow) &&
-        engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrConstantColorValue) &&
+        engine::GlideOrdinalPreservesLfbStagingShadow(
+            Gate::kGrConstantColorValue) &&
         engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrGlideGetState) &&
         engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrSstIdle) &&
-        engine::GlideOrdinalPreservesLfbStagingShadow(Gate::kGrBufferNumPending);
+        engine::GlideOrdinalPreservesLfbStagingShadow(
+            Gate::kGrBufferNumPending);
 
-    // A first lock has nothing to reuse and seeds. Its unlock validates, so the
-    // second lock reuses, and the third does too.
-    GlideLfbStagingShadowState reuse_state;
-    const bool first_seeded = !RunLock(&reuse_state, true);
-    RunUnlock(&reuse_state);
-    const bool second_reused = RunLock(&reuse_state, true);
-    RunUnlock(&reuse_state);
-    const bool third_reused = RunLock(&reuse_state, true);
-    RunUnlock(&reuse_state);
-    const auto reuse_snapshot =
-        engine::SnapshotGlideLfbStagingShadow(reuse_state);
-    const bool reuse_sequence =
-        first_seeded && second_reused && third_reused &&
-        reuse_snapshot.lock_count == 3U &&
-        reuse_snapshot.reusable_lock_count == 2U &&
-        reuse_snapshot.reused_lock_count == 2U &&
-        reuse_snapshot.seed_count == 1U &&
-        reuse_snapshot.validate_count == 3U &&
-        // Two, not three: the first lock had no live shadow to give away, and
-        // invalidation counts the valid-to-invalid transition rather than the
-        // call.
-        ReasonCount(reuse_state,
-                    GlideLfbStagingShadowInvalidation::kLockHandoff) == 2U;
-
-    // The same sequence with reuse disabled counts the opportunity and takes
-    // none of it: three seeds, two of which were avoidable.
-    GlideLfbStagingShadowState census_state;
-    const bool census_first = !RunLock(&census_state, false);
-    RunUnlock(&census_state);
-    const bool census_second = !RunLock(&census_state, false);
-    RunUnlock(&census_state);
-    const auto census_snapshot =
-        engine::SnapshotGlideLfbStagingShadow(census_state);
-    const bool census_only =
-        census_first && census_second &&
-        census_snapshot.lock_count == 2U &&
-        census_snapshot.reusable_lock_count == 1U &&
-        census_snapshot.reused_lock_count == 0U &&
-        census_snapshot.seed_count == 2U;
-
-    // A gate between the unlock and the next lock costs the reuse, and the
-    // reason is recorded once rather than once per gate.
-    GlideLfbStagingShadowState gate_state;
-    RunLock(&gate_state, true);
-    RunUnlock(&gate_state);
-    engine::InvalidateGlideLfbStagingShadow(
-        &gate_state,
-        engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrBufferSwap));
-    engine::InvalidateGlideLfbStagingShadow(
-        &gate_state,
-        engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrBufferSwap));
-    const bool after_gate_reused = RunLock(&gate_state, true);
-    const bool gate_invalidation =
-        !after_gate_reused &&
-        ReasonCount(gate_state,
-                    GlideLfbStagingShadowInvalidation::kSwapGate) == 1U;
-
-    // The categories a report needs to tell "the frame loop swapped" from "an
-    // incidental gate got in the way".
     const bool gate_classes =
         engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrBufferSwap) ==
             GlideLfbStagingShadowInvalidation::kSwapGate &&
@@ -187,67 +150,144 @@ bool RunGlideLfbStagingShadowProbe()
             GlideLfbStagingShadowInvalidation::kClearGate &&
         engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrDrawTriangle) ==
             GlideLfbStagingShadowInvalidation::kDrawGate &&
-        engine::ClassifyGlideLfbStagingShadowGate(
-            Gate::kGrAADrawPolygonVertexList) ==
-            GlideLfbStagingShadowInvalidation::kDrawGate &&
         engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrLfbWriteRegion) ==
             GlideLfbStagingShadowInvalidation::kRegionGate &&
-        engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrRenderBuffer) ==
-            GlideLfbStagingShadowInvalidation::kOtherGate &&
         engine::ClassifyGlideLfbStagingShadowGate(Gate::kUnknown) ==
-            GlideLfbStagingShadowInvalidation::kOtherGate;
+            GlideLfbStagingShadowInvalidation::kOtherGate &&
+        engine::GlideOrdinalTargetsRenderBufferOnly(Gate::kGrDrawTriangle) &&
+        engine::GlideOrdinalTargetsRenderBufferOnly(Gate::kGrBufferClear) &&
+        !engine::GlideOrdinalTargetsRenderBufferOnly(Gate::kGrLfbWriteRegion) &&
+        !engine::GlideOrdinalTargetsRenderBufferOnly(Gate::kUnknown);
 
-    // A shadow of one buffer, pixel format or resolution is not a shadow of
-    // another.
-    GlideLfbStagingShadowState mismatch_state;
-    engine::ValidateGlideLfbStagingShadow(&mismatch_state, kBackBuffer,
-                                          kFormat565, kWidth, kHeight);
-    const bool mismatch =
-        engine::CanReuseGlideLfbStagingShadow(mismatch_state, kBackBuffer,
+    // Store, then read back the same bytes.
+    GlideLfbStagingShadowState store_state;
+    Store(&store_state, kBackBuffer, 0x11U);
+    const bool store_round_trip =
+        Load(store_state, kBackBuffer) == 0x11 &&
+        Load(store_state, kFrontBuffer) == -1 && store_state.store_count == 1U;
+
+    // The page flip: what the back buffer held is what the front buffer holds
+    // afterwards, and the other way round.
+    GlideLfbStagingShadowState rotate_state;
+    Store(&rotate_state, kBackBuffer, 0x22U);
+    Store(&rotate_state, kFrontBuffer, 0x33U);
+    engine::RotateGlideLfbStagingShadows(&rotate_state);
+    const bool rotation =
+        Load(rotate_state, kFrontBuffer) == 0x22 &&
+        Load(rotate_state, kBackBuffer) == 0x33 &&
+        rotate_state.swap_rotation_count == 1U &&
+        // A rotation is not a loss, so nothing is counted as invalidated.
+        ReasonCount(rotate_state,
+                    GlideLfbStagingShadowInvalidation::kSwapGate) == 0U;
+
+    // The guest's measured sequence: unlock stores the back buffer, one swap
+    // rotates it to the front, and the next lock reads the back buffer, which
+    // now holds what the front buffer held before -- the frame before last.
+    GlideLfbStagingShadowState sequence;
+    Store(&sequence, kBackBuffer, 0xA0U);
+    engine::ApplyGlideLfbStagingShadowGate(&sequence, Gate::kGrBufferSwap);
+    Store(&sequence, kBackBuffer, 0xA1U);
+    engine::ApplyGlideLfbStagingShadowGate(&sequence, Gate::kGrBufferSwap);
+    const bool page_flip_sequence =
+        Load(sequence, kBackBuffer) == 0xA0 &&
+        Load(sequence, kFrontBuffer) == 0xA1;
+
+    // A draw or clear breaks only the render target. With the target on the
+    // back buffer, the front shadow survives and a swap brings it back.
+    GlideLfbStagingShadowState targeted;
+    Store(&targeted, kBackBuffer, 0x44U);
+    Store(&targeted, kFrontBuffer, 0x55U);
+    engine::SetGlideLfbStagingShadowRenderBuffer(&targeted, kBackBuffer);
+    engine::ApplyGlideLfbStagingShadowGate(&targeted, Gate::kGrBufferClear);
+    engine::ApplyGlideLfbStagingShadowGate(&targeted, Gate::kGrDrawTriangle);
+    const bool targeted_invalidation =
+        Load(targeted, kBackBuffer) == -1 &&
+        Load(targeted, kFrontBuffer) == 0x55 &&
+        ReasonCount(targeted,
+                    GlideLfbStagingShadowInvalidation::kClearGate) == 1U &&
+        ReasonCount(targeted,
+                    GlideLfbStagingShadowInvalidation::kDrawGate) == 0U;
+
+    // Moving the render target moves what a draw breaks.
+    GlideLfbStagingShadowState retarget;
+    Store(&retarget, kBackBuffer, 0x66U);
+    Store(&retarget, kFrontBuffer, 0x77U);
+    engine::SetGlideLfbStagingShadowRenderBuffer(&retarget, kFrontBuffer);
+    engine::ApplyGlideLfbStagingShadowGate(&retarget, Gate::kGrDrawTriangle);
+    const bool render_target_tracked =
+        Load(retarget, kBackBuffer) == 0x66 &&
+        Load(retarget, kFrontBuffer) == -1;
+
+    // A gate this layer cannot attribute to one buffer takes both.
+    GlideLfbStagingShadowState untargeted;
+    Store(&untargeted, kBackBuffer, 0x88U);
+    Store(&untargeted, kFrontBuffer, 0x99U);
+    engine::ApplyGlideLfbStagingShadowGate(&untargeted, Gate::kUnknown);
+    const bool untargeted_invalidation =
+        Load(untargeted, kBackBuffer) == -1 &&
+        Load(untargeted, kFrontBuffer) == -1 &&
+        ReasonCount(untargeted,
+                    GlideLfbStagingShadowInvalidation::kOtherGate) == 2U;
+
+    // A shadow of one pixel format or resolution is not a shadow of another,
+    // and a state setter leaves it alone.
+    GlideLfbStagingShadowState mismatch;
+    Store(&mismatch, kBackBuffer, 0xCCU);
+    engine::ApplyGlideLfbStagingShadowGate(&mismatch, Gate::kGrTexSource);
+    std::vector<std::uint8_t> out(kSurfaceBytes, 0U);
+    const bool mismatch_rejected =
+        engine::CanReuseGlideLfbStagingShadow(mismatch, kBackBuffer,
                                               kFormat565, kWidth, kHeight) &&
-        !engine::CanReuseGlideLfbStagingShadow(mismatch_state, kFrontBuffer,
-                                               kFormat565, kWidth, kHeight) &&
-        !engine::CanReuseGlideLfbStagingShadow(mismatch_state, kBackBuffer,
+        !engine::CanReuseGlideLfbStagingShadow(mismatch, kBackBuffer,
                                                kFormat565 + 1U, kWidth,
                                                kHeight) &&
-        !engine::CanReuseGlideLfbStagingShadow(mismatch_state, kBackBuffer,
+        !engine::CanReuseGlideLfbStagingShadow(mismatch, kBackBuffer,
                                                kFormat565, kWidth + 1U,
                                                kHeight) &&
-        !engine::CanReuseGlideLfbStagingShadow(mismatch_state, kBackBuffer,
+        !engine::CanReuseGlideLfbStagingShadow(mismatch, kBackBuffer,
                                                kFormat565, kWidth,
-                                               kHeight + 1U);
+                                               kHeight + 1U) &&
+        !engine::CanReuseGlideLfbStagingShadow(
+            mismatch, engine::kGlideLfbStagingShadowBufferCount, kFormat565,
+            kWidth, kHeight) &&
+        // A destination smaller than the shadow is refused rather than
+        // partially filled.
+        !engine::LoadGlideLfbStagingShadow(mismatch, kBackBuffer, out.data(),
+                                           kSurfaceBytes - 1U, kFormat565,
+                                           kWidth, kHeight);
 
-    // A failed or flipped present leaves the frame buffer unequal to the
-    // surface, and a degenerate extent cannot be validated at all.
-    GlideLfbStagingShadowState present_state;
-    engine::ValidateGlideLfbStagingShadow(&present_state, kBackBuffer,
-                                          kFormat565, kWidth, kHeight);
-    engine::InvalidateGlideLfbStagingShadow(
-        &present_state, GlideLfbStagingShadowInvalidation::kPresentFailed);
-    const bool after_failed_present = present_state.valid;
-    engine::ValidateGlideLfbStagingShadow(&present_state, kBackBuffer,
-                                          kFormat565, kWidth, kHeight);
-    engine::InvalidateGlideLfbStagingShadow(
-        &present_state, GlideLfbStagingShadowInvalidation::kFlippedPresent);
-    engine::ValidateGlideLfbStagingShadow(&present_state, kBackBuffer,
-                                          kFormat565, kWidth, kHeight);
-    engine::ValidateGlideLfbStagingShadow(&present_state, kBackBuffer,
-                                          kFormat565, 0U, kHeight);
-    const bool present_outcomes =
-        !after_failed_present && !present_state.valid &&
-        ReasonCount(present_state,
-                    GlideLfbStagingShadowInvalidation::kPresentFailed) == 1U &&
-        ReasonCount(present_state,
-                    GlideLfbStagingShadowInvalidation::kFlippedPresent) == 1U &&
-        ReasonCount(present_state,
-                    GlideLfbStagingShadowInvalidation::kSurfaceMismatch) == 1U;
+    // A degenerate surface cannot be stored, and an out-of-range buffer takes
+    // the whole set down rather than being silently dropped.
+    GlideLfbStagingShadowState refused;
+    Store(&refused, kBackBuffer, 0xDDU);
+    const std::vector<std::uint8_t> pixels = Surface(0xEEU);
+    engine::StoreGlideLfbStagingShadow(&refused, kBackBuffer, pixels.data(),
+                                       pixels.size(), kFormat565, 0U, kHeight);
+    const bool degenerate_refused =
+        Load(refused, kBackBuffer) == -1 &&
+        ReasonCount(refused, GlideLfbStagingShadowInvalidation::
+                                 kSurfaceMismatch) == 1U &&
+        refused.store_count == 1U;
 
-    // Null states are tolerated and every reason has a name, so a report can
-    // print the table without a gap.
-    engine::InvalidateGlideLfbStagingShadow(
-        nullptr, GlideLfbStagingShadowInvalidation::kShutdown);
-    engine::ValidateGlideLfbStagingShadow(nullptr, kBackBuffer, kFormat565,
-                                          kWidth, kHeight);
+    // Lock accounting: reusable without reuse still counts a seed.
+    GlideLfbStagingShadowState counted;
+    engine::NoteGlideLfbStagingShadowLock(&counted, false, false);
+    engine::NoteGlideLfbStagingShadowLock(&counted, true, false);
+    engine::NoteGlideLfbStagingShadowLock(&counted, true, true);
+    const auto snapshot = engine::SnapshotGlideLfbStagingShadow(counted);
+    const bool lock_accounting =
+        snapshot.lock_count == 3U && snapshot.reusable_lock_count == 2U &&
+        snapshot.reused_lock_count == 1U && snapshot.seed_count == 2U;
+
+    // Null states are tolerated and every reason has a name.
+    engine::StoreGlideLfbStagingShadow(nullptr, kBackBuffer, pixels.data(),
+                                       pixels.size(), kFormat565, kWidth,
+                                       kHeight);
+    engine::RotateGlideLfbStagingShadows(nullptr);
+    engine::ApplyGlideLfbStagingShadowGate(nullptr, Gate::kGrBufferSwap);
+    engine::InvalidateGlideLfbStagingShadows(
+        nullptr, GlideLfbStagingShadowInvalidation::kOtherGate);
+    engine::SetGlideLfbStagingShadowRenderBuffer(nullptr, kBackBuffer);
     engine::NoteGlideLfbStagingShadowLock(nullptr, true, true);
     bool names = true;
     for (std::size_t index = 0U;
@@ -255,31 +295,41 @@ bool RunGlideLfbStagingShadowProbe()
     {
         const char* const name = engine::GlideLfbStagingShadowInvalidationName(
             static_cast<GlideLfbStagingShadowInvalidation>(index));
-        names = names && name != nullptr && name[0] != '\0' &&
+        names = names && name != nullptr &&
             std::string_view(name) != "unknown";
     }
 
     const bool all = policy && invalidating_gates && preserving_gates &&
-        reuse_sequence && census_only && gate_invalidation && gate_classes &&
-        mismatch && present_outcomes && names;
+        gate_classes && store_round_trip && rotation && page_flip_sequence &&
+        targeted_invalidation && render_target_tracked &&
+        untargeted_invalidation && mismatch_rejected && degenerate_refused &&
+        lock_accounting && names;
     std::cout << "glide_lfb_staging_shadow_policy="
               << (policy ? "true" : "false")
               << "\nglide_lfb_staging_shadow_invalidating_gates="
               << (invalidating_gates ? "true" : "false")
               << "\nglide_lfb_staging_shadow_preserving_gates="
               << (preserving_gates ? "true" : "false")
-              << "\nglide_lfb_staging_shadow_reuse_sequence="
-              << (reuse_sequence ? "true" : "false")
-              << "\nglide_lfb_staging_shadow_census_only="
-              << (census_only ? "true" : "false")
-              << "\nglide_lfb_staging_shadow_gate_invalidation="
-              << (gate_invalidation ? "true" : "false")
               << "\nglide_lfb_staging_shadow_gate_classes="
               << (gate_classes ? "true" : "false")
-              << "\nglide_lfb_staging_shadow_mismatch="
-              << (mismatch ? "true" : "false")
-              << "\nglide_lfb_staging_shadow_present_outcomes="
-              << (present_outcomes ? "true" : "false")
+              << "\nglide_lfb_staging_shadow_store_round_trip="
+              << (store_round_trip ? "true" : "false")
+              << "\nglide_lfb_staging_shadow_rotation="
+              << (rotation ? "true" : "false")
+              << "\nglide_lfb_staging_shadow_page_flip_sequence="
+              << (page_flip_sequence ? "true" : "false")
+              << "\nglide_lfb_staging_shadow_targeted_invalidation="
+              << (targeted_invalidation ? "true" : "false")
+              << "\nglide_lfb_staging_shadow_render_target_tracked="
+              << (render_target_tracked ? "true" : "false")
+              << "\nglide_lfb_staging_shadow_untargeted_invalidation="
+              << (untargeted_invalidation ? "true" : "false")
+              << "\nglide_lfb_staging_shadow_mismatch_rejected="
+              << (mismatch_rejected ? "true" : "false")
+              << "\nglide_lfb_staging_shadow_degenerate_refused="
+              << (degenerate_refused ? "true" : "false")
+              << "\nglide_lfb_staging_shadow_lock_accounting="
+              << (lock_accounting ? "true" : "false")
               << "\nglide_lfb_staging_shadow_names="
               << (names ? "true" : "false")
               << "\nglide_lfb_staging_shadow_all="

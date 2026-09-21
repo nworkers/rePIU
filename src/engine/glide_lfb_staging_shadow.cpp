@@ -1,6 +1,9 @@
 #include "repiu/engine/glide_lfb_staging_shadow.h"
 
 #include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <utility>
 
 namespace repiu::engine
 {
@@ -8,6 +11,7 @@ namespace
 {
 
 using Reason = GlideLfbStagingShadowInvalidation;
+using Gate = repiu::hle::GlideGateId;
 
 std::size_t ReasonIndex(const Reason reason)
 {
@@ -15,7 +19,32 @@ std::size_t ReasonIndex(const Reason reason)
     return index < kGlideLfbStagingShadowReasonCount ? index : 0U;
 }
 
+// The bytes a 565 surface of these dimensions occupies, or zero when the
+// dimensions cannot describe one this layer stores.
+std::size_t ShadowByteCount(const std::uint32_t width,
+                            const std::uint32_t height)
+{
+    constexpr std::uint64_t kMaximumShadowBytes = 32ULL * 1024ULL * 1024ULL;
+    if (width == 0U || height == 0U)
+    {
+        return 0U;
+    }
+    const std::uint64_t required =
+        static_cast<std::uint64_t>(width) * height * 2ULL;
+    if (required > kMaximumShadowBytes ||
+        required > std::numeric_limits<std::size_t>::max())
+    {
+        return 0U;
+    }
+    return static_cast<std::size_t>(required);
+}
+
 }  // namespace
+
+bool GlideLfbStagingShadowBufferIndexed(const std::uint32_t buffer)
+{
+    return buffer < kGlideLfbStagingShadowBufferCount;
+}
 
 bool ResolveGlideLfbStagingShadowSetting(const std::string_view setting)
 {
@@ -42,15 +71,15 @@ bool GlideLfbStagingShadowCensusEnabled()
     return enabled || GlideLfbStagingReuseEnabled();
 }
 
-bool GlideOrdinalPreservesLfbStagingShadow(const repiu::hle::GlideGateId gate_id)
+bool GlideOrdinalPreservesLfbStagingShadow(const Gate gate_id)
 {
-    using Gate = repiu::hle::GlideGateId;
     switch (gate_id)
     {
-        // The lock and unlock paths carry the state themselves: the lock hands
-        // the surface to the guest and the unlock decides whether the blit left
-        // the frame buffer equal to it. Treating them as invalidating here
-        // would clear the state before either could read it.
+        // A swap does not destroy either buffer; it exchanges them, which
+        // `RotateGlideLfbStagingShadows` reproduces. This is the one entry
+        // that changed after Task 729 measured the guest's actual pattern.
+        case Gate::kGrBufferSwap:
+        // The lock and unlock paths carry the shadow themselves.
         case Gate::kGrLfbLock:
         case Gate::kGrLfbUnlock:
         // Queries.
@@ -124,18 +153,16 @@ bool GlideOrdinalPreservesLfbStagingShadow(const repiu::hle::GlideGateId gate_id
         case Gate::kGrLfbConstantDepth:
             return true;
         default:
-            // Draws, clears, swaps, both region gates, render-target and
-            // origin changes, LFB format and swizzle changes, window and
-            // Glide lifecycle, `kUnknown`, and anything added after this was
-            // written.
+            // Draws, clears, both region gates, render-target and origin
+            // changes, LFB format and swizzle changes, window and Glide
+            // lifecycle, `kUnknown`, and anything added after this was written.
             return false;
     }
 }
 
 GlideLfbStagingShadowInvalidation ClassifyGlideLfbStagingShadowGate(
-    const repiu::hle::GlideGateId gate_id)
+    const Gate gate_id)
 {
-    using Gate = repiu::hle::GlideGateId;
     switch (gate_id)
     {
         case Gate::kGrBufferSwap:
@@ -163,49 +190,175 @@ GlideLfbStagingShadowInvalidation ClassifyGlideLfbStagingShadowGate(
     }
 }
 
+bool GlideOrdinalTargetsRenderBufferOnly(const Gate gate_id)
+{
+    switch (ClassifyGlideLfbStagingShadowGate(gate_id))
+    {
+        case Reason::kDrawGate:
+        case Reason::kClearGate:
+            return true;
+        default:
+            // A region gate names its own buffer and this layer does not track
+            // which, and an unclassified gate is unknown by definition. Both
+            // invalidate the whole set.
+            return false;
+    }
+}
+
+void SetGlideLfbStagingShadowRenderBuffer(
+    GlideLfbStagingShadowState* const state, const std::uint32_t buffer)
+{
+    if (state == nullptr || !GlideLfbStagingShadowBufferIndexed(buffer))
+    {
+        return;
+    }
+    state->render_buffer = buffer;
+}
+
 bool CanReuseGlideLfbStagingShadow(const GlideLfbStagingShadowState& state,
                                    const std::uint32_t buffer,
                                    const std::uint32_t color_format,
                                    const std::uint32_t width,
                                    const std::uint32_t height)
 {
-    return state.valid && width != 0U && height != 0U &&
-        state.buffer == buffer && state.color_format == color_format &&
-        state.width == width && state.height == height;
+    if (!GlideLfbStagingShadowBufferIndexed(buffer))
+    {
+        return false;
+    }
+    const GlideLfbBufferShadow& shadow = state.buffers[buffer];
+    const std::size_t required = ShadowByteCount(width, height);
+    return shadow.valid && required != 0U &&
+        shadow.pixels.size() == required &&
+        shadow.color_format == color_format && shadow.width == width &&
+        shadow.height == height;
 }
 
-void ValidateGlideLfbStagingShadow(GlideLfbStagingShadowState* const state,
-                                   const std::uint32_t buffer,
-                                   const std::uint32_t color_format,
-                                   const std::uint32_t width,
-                                   const std::uint32_t height)
+bool LoadGlideLfbStagingShadow(const GlideLfbStagingShadowState& state,
+                               const std::uint32_t buffer,
+                               std::uint8_t* const pixels,
+                               const std::size_t byte_count,
+                               const std::uint32_t color_format,
+                               const std::uint32_t width,
+                               const std::uint32_t height)
+{
+    if (pixels == nullptr ||
+        !CanReuseGlideLfbStagingShadow(state, buffer, color_format, width,
+                                       height))
+    {
+        return false;
+    }
+    const GlideLfbBufferShadow& shadow = state.buffers[buffer];
+    if (shadow.pixels.size() > byte_count)
+    {
+        return false;
+    }
+    std::memcpy(pixels, shadow.pixels.data(), shadow.pixels.size());
+    return true;
+}
+
+void StoreGlideLfbStagingShadow(GlideLfbStagingShadowState* const state,
+                                const std::uint32_t buffer,
+                                const std::uint8_t* const pixels,
+                                const std::size_t byte_count,
+                                const std::uint32_t color_format,
+                                const std::uint32_t width,
+                                const std::uint32_t height)
 {
     if (state == nullptr)
     {
         return;
     }
-    if (width == 0U || height == 0U)
+    if (!GlideLfbStagingShadowBufferIndexed(buffer))
     {
-        InvalidateGlideLfbStagingShadow(state, Reason::kSurfaceMismatch);
+        InvalidateGlideLfbStagingShadows(state, Reason::kSurfaceMismatch);
         return;
     }
-    state->valid = true;
-    state->buffer = buffer;
-    state->color_format = color_format;
-    state->width = width;
-    state->height = height;
-    ++state->validate_count;
+    const std::size_t required = ShadowByteCount(width, height);
+    if (pixels == nullptr || required == 0U || required > byte_count)
+    {
+        InvalidateGlideLfbStagingShadowBuffer(state, buffer,
+                                              Reason::kSurfaceMismatch);
+        return;
+    }
+    GlideLfbBufferShadow& shadow = state->buffers[buffer];
+    // A failed allocation leaves no half-written shadow behind: the entry is
+    // invalidated and the next lock seeds from the GPU as before.
+    try
+    {
+        shadow.pixels.resize(required);
+    }
+    catch (const std::bad_alloc&)
+    {
+        InvalidateGlideLfbStagingShadowBuffer(state, buffer,
+                                              Reason::kStorageFailure);
+        return;
+    }
+    std::memcpy(shadow.pixels.data(), pixels, required);
+    shadow.color_format = color_format;
+    shadow.width = width;
+    shadow.height = height;
+    shadow.valid = true;
+    ++state->store_count;
 }
 
-void InvalidateGlideLfbStagingShadow(GlideLfbStagingShadowState* const state,
-                                     const Reason reason)
+void RotateGlideLfbStagingShadows(GlideLfbStagingShadowState* const state)
 {
-    if (state == nullptr || !state->valid)
+    if (state == nullptr)
     {
         return;
     }
-    state->valid = false;
+    std::swap(state->buffers[0], state->buffers[1]);
+    ++state->swap_rotation_count;
+}
+
+void InvalidateGlideLfbStagingShadowBuffer(
+    GlideLfbStagingShadowState* const state,
+    const std::uint32_t buffer,
+    const Reason reason)
+{
+    if (state == nullptr || !GlideLfbStagingShadowBufferIndexed(buffer) ||
+        !state->buffers[buffer].valid)
+    {
+        return;
+    }
+    state->buffers[buffer].valid = false;
     ++state->invalidate_counts[ReasonIndex(reason)];
+}
+
+void InvalidateGlideLfbStagingShadows(GlideLfbStagingShadowState* const state,
+                                      const Reason reason)
+{
+    for (std::uint32_t buffer = 0U;
+         buffer < kGlideLfbStagingShadowBufferCount; ++buffer)
+    {
+        InvalidateGlideLfbStagingShadowBuffer(state, buffer, reason);
+    }
+}
+
+void ApplyGlideLfbStagingShadowGate(GlideLfbStagingShadowState* const state,
+                                    const Gate gate_id)
+{
+    if (state == nullptr)
+    {
+        return;
+    }
+    if (gate_id == Gate::kGrBufferSwap)
+    {
+        RotateGlideLfbStagingShadows(state);
+        return;
+    }
+    if (GlideOrdinalPreservesLfbStagingShadow(gate_id))
+    {
+        return;
+    }
+    const Reason reason = ClassifyGlideLfbStagingShadowGate(gate_id);
+    if (GlideOrdinalTargetsRenderBufferOnly(gate_id))
+    {
+        InvalidateGlideLfbStagingShadowBuffer(state, state->render_buffer,
+                                              reason);
+        return;
+    }
+    InvalidateGlideLfbStagingShadows(state, reason);
 }
 
 void NoteGlideLfbStagingShadowLock(GlideLfbStagingShadowState* const state,
@@ -241,7 +394,8 @@ GlideLfbStagingShadowSnapshot SnapshotGlideLfbStagingShadow(
     snapshot.reusable_lock_count = state.reusable_lock_count;
     snapshot.reused_lock_count = state.reused_lock_count;
     snapshot.seed_count = state.seed_count;
-    snapshot.validate_count = state.validate_count;
+    snapshot.store_count = state.store_count;
+    snapshot.swap_rotation_count = state.swap_rotation_count;
     for (std::size_t index = 0U; index < kGlideLfbStagingShadowReasonCount;
          ++index)
     {
@@ -264,16 +418,14 @@ const char* GlideLfbStagingShadowInvalidationName(const Reason reason)
             return "region-gate";
         case Reason::kOtherGate:
             return "other-gate";
-        case Reason::kLockHandoff:
-            return "lock-handoff";
         case Reason::kPresentFailed:
             return "present-failed";
         case Reason::kFlippedPresent:
             return "flipped-present";
         case Reason::kSurfaceMismatch:
             return "surface-mismatch";
-        case Reason::kShutdown:
-            return "shutdown";
+        case Reason::kStorageFailure:
+            return "storage-failure";
         case Reason::kCount:
             break;
     }

@@ -32,6 +32,7 @@
 #include "glide_lfb_timing_probe.h"
 #include "glide_lfb_write_footprint_probe.h"
 #include "glide_lfb_native_store_census_probe.h"
+#include "glide_lfb_lock_interval_probe.h"
 #include "glide_lfb_staging_shadow_probe.h"
 #include "glide_setter_state_census_probe.h"
 #include "glide_async_present_probe.h"
@@ -654,6 +655,10 @@ int main(int argc, char** argv)
     if (argc == 2 && std::strcmp(argv[1], "--glide-lfb-staging-shadow") == 0)
     {
         return repiu::tools::RunGlideLfbStagingShadowProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--glide-lfb-lock-interval") == 0)
+    {
+        return repiu::tools::RunGlideLfbLockIntervalProbe() ? 0 : 1;
     }
     if (argc == 2 && std::strcmp(argv[1], "--piu10") == 0)
     {

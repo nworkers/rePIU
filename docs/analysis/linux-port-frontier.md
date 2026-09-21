@@ -17830,3 +17830,156 @@ failure recorded by Tasks 725 through 727 did not reproduce in this build. Nothi
 changed that group, so this records a non-reproduction rather than evidence of a fix. The Linux
 x64 Debug build succeeded on WSL Ubuntu-24.04 and the Linux core probe passed 30/30. The VM
 (`192.168.198.132`) is no longer used; WSL is.
+
+---
+
+## 2026-09-22 Task 729 — lock 구간은 swap 하나뿐이다, 그리고 buffer별 shadow 쌍
+
+### 확인됨 — ordinal 분포
+
+30초 `pumpit2a`(WSL Ubuntu-24.04, `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`)의 호출 수입니다.
+
+| gate | 호출 수 |
+|---|---:|
+| `grBufferSwap` | 2,290 |
+| `grBufferClear` | 1,989 |
+| `grDrawTriangle` | 30,804 |
+| `grLfbLock` / `grLfbUnlock` | 304 / 304 |
+| `grRenderBuffer` | **1** |
+
+`grRenderBuffer`는 초기화 때 1회뿐이므로 **render target은 실행 내내 back buffer로 고정**입니다.
+
+### 확인됨 — unlock과 다음 lock 사이에는 swap 하나만 있다
+
+`REPIU_GLIDE_LFB_LOCK_INTERVAL_CENSUS=1`로 write unlock부터 다음 write lock까지의 구간을
+분류했습니다.
+
+| 구간 | 수 |
+|---|---:|
+| **clean (swap만)** | **303** |
+| cleared / drawn / region | 0 / 0 / 0 |
+| first-lock (직전 unlock 없음) | 1 |
+| 구간당 swap 수 | **최소 1, 최대 1** (303개 전부 정확히 1) |
+
+즉 304개 lock은 **하나의 연속된 LFB 전용 구간**을 이루며, 패턴은 정확히
+`lock → write → unlock → grBufferSwap → lock`입니다. clear 1,989회와 draw 30,804회는 이 구간
+밖에서만 일어납니다. Task 728이 본 "swap 304건"은 프레임 버퍼가 바뀐 것이 아니라 **다음 lock이
+가리키는 buffer가 바뀐 것**이었습니다.
+
+### 구현됨 — buffer별 shadow 쌍
+
+`GlideLfbStagingShadowState`를 buffer마다 host 소유 565 복사본을 두는 구조로 바꿨습니다.
+`grBufferSwap`은 두 복사본을 교환합니다(page flip). draw·clear는 render target의 복사본만,
+region과 미분류 gate는 둘 다 무효화합니다.
+
+| 측정 (30초) | Task 728 단일 shadow | Task 729 쌍 |
+|---|---:|---:|
+| 재사용 가능 lock | 0 / 304 | **302 / 304** |
+| apply 모드 seed(readback+encode) | 304 | **2** |
+| apply 모드 LFB readback cycles | 약 65억 (Task 724) | **46,943,841** |
+| 무효화 | swap 304 | clear 2 |
+
+apply 모드에서 seed가 304회에서 2회로 줄어 **99.3% 감소**했습니다.
+
+### 확인됨 — 화면 동일성(부분)
+
+* apply 모드와 기준 실행의 첫 8개 `grLfbUnlock` staging 내용이 **바이트 수까지 동일**합니다
+  (219918, 219918, 219918, 219966, 221646, 222516, 223380, 224106 / 614400).
+* 1초 간격 장면 표본 23개에서 장면 순서, 검은 구간 위치, 정지 화면(`non_black=30264
+  avg=190,155,93` 3회, `292133` 대 `292133`)이 일치합니다.
+* 애니메이션 구간의 표본은 차이가 있습니다. 벽시계 표본 시점과 애니메이션 위상의 흔들림으로
+  **추정**되지만, OFF 대 OFF 기준선을 재지 않았으므로 **확정하지 않습니다.**
+
+### 미확정 — apply 모드 teardown segfault 1건
+
+apply 모드 3회 중 1회(`REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000` 병용)가 `elapsed_ms=30010`,
+즉 예산 만료 직후에 `[repiu-fault] signal=0xb rip=0x7efebb7bb210 rsp=0x7efebb7bb1f8`로
+끝났습니다. 관찰된 사실은 다음과 같습니다.
+
+* `[repiu-shutdown]` 마커가 **하나도 없습니다.** 종료 시퀀스가 시작되기 전, 예산 만료 인터럽트
+  구간에서 죽었습니다. 정상 실행 3회는 모두 `probe-dump → final-report → immediate-exit`를
+  남겼습니다.
+* `rip`가 `rsp`보다 0x18 큽니다. guest thread가 **자기 스택 안의 주소로 점프**했습니다.
+* 같은 설정의 OFF 실행 1회, 장면 표본 없는 apply 실행 1회, census 실행 1회는 정상 종료했습니다.
+
+이 코드는 gate dispatch, lock seed, unlock present에서만 동작하고 teardown 경로에는 없습니다.
+Task 722가 "고빈도 진단 출력이 timing을 교란해 잠재 문제를 드러낸다"고 기록한 teardown fault와
+같은 계열로 **보이지만**, 표본 1건으로는 인과를 판단할 수 없습니다. 원인이 확정될 때까지
+**두 기본값을 켜서는 안 됩니다.**
+
+### 다음
+
+1. teardown segfault의 귀속: 같은 설정으로 OFF·ON을 여러 번 반복해 발생률을 비교합니다.
+2. OFF 대 OFF 장면 표본 기준선으로 애니메이션 구간의 run-to-run 변동을 교정합니다.
+3. 둘이 해소되면 apply 모드 기본값을 검토합니다.
+
+## English
+
+### Confirmed — ordinal distribution
+
+Call counts in a 30-second `pumpit2a` run on WSL Ubuntu-24.04
+(`REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`): `grBufferSwap` 2,290, `grBufferClear` 1,989,
+`grDrawTriangle` 30,804, `grLfbLock`/`grLfbUnlock` 304/304, and `grRenderBuffer` **1**. Because
+`grRenderBuffer` runs once at startup, **the render target is the back buffer for the whole run.**
+
+### Confirmed — only one swap separates an unlock from the next lock
+
+`REPIU_GLIDE_LFB_LOCK_INTERVAL_CENSUS=1` classified each span from a write unlock to the next
+write lock: **303 clean (swaps only)**, 0 cleared, 0 drawn, 0 region, and 1 first-lock. Swaps per
+interval were **minimum 1, maximum 1** -- every one of the 303 held exactly one.
+
+The 304 locks therefore form **one contiguous LFB-only stretch** whose pattern is exactly
+`lock -> write -> unlock -> grBufferSwap -> lock`; the 1,989 clears and 30,804 draws happen only
+outside it. The "304 swaps" Task 728 saw were not the framebuffer changing but **the buffer the
+next lock names changing**.
+
+### Implemented — a per-buffer shadow pair
+
+`GlideLfbStagingShadowState` now keeps one host-owned 565 copy per buffer. `grBufferSwap`
+exchanges them (the page flip). Draws and clears invalidate only the render target's copy; region
+gates and unclassified gates invalidate both.
+
+| Measurement (30 s) | Task 728 single shadow | Task 729 pair |
+|---|---:|---:|
+| Reusable locks | 0 / 304 | **302 / 304** |
+| Apply-mode seeds (readback + encode) | 304 | **2** |
+| Apply-mode LFB readback cycles | about 6.5 billion (Task 724) | **46,943,841** |
+| Invalidations | swap 304 | clear 2 |
+
+Apply mode cut seeds from 304 to 2, a **99.3% reduction**.
+
+### Confirmed — screen equality (partial)
+
+* The first eight `grLfbUnlock` staging contents are **identical down to the byte count** between
+  apply mode and the baseline run (219918, 219918, 219918, 219966, 221646, 222516, 223380,
+  224106 of 614400).
+* Across 23 one-second scene samples, scene order, black-gap positions and still screens
+  (`non_black=30264 avg=190,155,93` three times; `292133` against `292133`) match.
+* Samples in animated stretches differ. That is **inferred** to be jitter between wall-clock
+  sample times and animation phase, but no OFF-against-OFF baseline was measured, so it is **not
+  established.**
+
+### Unresolved — one apply-mode teardown segfault
+
+One of three apply-mode runs (with `REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000`) ended at
+`elapsed_ms=30010`, just after budget expiry, with `[repiu-fault] signal=0xb
+rip=0x7efebb7bb210 rsp=0x7efebb7bb1f8`. Observed facts:
+
+* There are **no `[repiu-shutdown]` markers at all**: it died in the budget-expiry interrupt
+  window, before the shutdown sequence began. All three healthy runs left
+  `probe-dump -> final-report -> immediate-exit`.
+* `rip` is 0x18 above `rsp`: the guest thread **jumped to an address inside its own stack**.
+* An OFF run with the same settings, an apply run without scene sampling, and a census run all
+  ended cleanly.
+
+This code acts only at gate dispatch, lock seed and unlock present, none of which is on the
+teardown path. It **looks** like the same family as the teardown fault Task 722 recorded, where
+high-rate diagnostic output perturbed timing and exposed a latent problem -- but one sample cannot
+establish cause. **Neither default should be turned on until it is attributed.**
+
+### Next
+
+1. Attribute the teardown segfault by repeating OFF and ON under identical settings and comparing
+   rates.
+2. Calibrate run-to-run variation in animated stretches with an OFF-against-OFF scene baseline.
+3. Once both are settled, consider the apply-mode default.

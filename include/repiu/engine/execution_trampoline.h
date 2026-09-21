@@ -15,6 +15,7 @@
 #include "repiu/engine/glide_lfb_timing.h"
 #include "repiu/engine/glide_lfb_write_footprint.h"
 #include "repiu/engine/glide_lfb_native_store_census.h"
+#include "repiu/engine/glide_lfb_lock_interval_census.h"
 #include "repiu/engine/glide_lfb_staging_shadow.h"
 #include "repiu/engine/glide_gate_timing.h"
 #include "repiu/engine/aot_return_stage_profile.h"
@@ -726,6 +727,8 @@ struct MinimalExecutionAttempt
     // Task 728: whether the staging surface already held the frame buffer at
     // each write lock, and why the shadow was lost when it did not.
     GlideLfbStagingShadowSnapshot glide_lfb_staging_shadow;
+    // Task 729: how the window before each write lock was filled.
+    GlideLfbLockIntervalCensusSnapshot glide_lfb_lock_interval;
     // Task 364: repeated-versus-changing state-setter arguments, and the
     // OpenGL interval of the two leading setters split by phase.
     GlideSetterCensusSnapshot glide_setter_census;

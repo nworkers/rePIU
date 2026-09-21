@@ -5,6 +5,7 @@
 #include "guest_memory_access.h"
 #include "instruction_emulation.h"
 
+#include "repiu/engine/glide_lfb_lock_interval_census.h"
 #include "repiu/engine/glide_lfb_staging_shadow.h"
 #include "repiu/hle/glide_texture_decode.h"
 #include "repiu/hle/glide_implementation_issue.h"
@@ -1713,7 +1714,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
         // gates that made the shadow live already invalidated the lock shadow
         // below, so this cannot be reached with both live; it is stated anyway
         // so the two shadows of one surface do not depend on that ordering.
-        InvalidateGlideLfbStagingShadow(
+        InvalidateGlideLfbStagingShadows(
             &context->glide_lfb_staging_shadow,
             GlideLfbStagingShadowInvalidation::kRegionGate);
     }
@@ -1723,12 +1724,22 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
     // every gate. It runs after the region flush because that flush presents
     // pixels, which is exactly the kind of change the shadow must not outlive
     // -- and the region gates that produced it are themselves invalidating.
-    if (GlideLfbStagingShadowCensusEnabled() &&
-        !GlideOrdinalPreservesLfbStagingShadow(glide_export->gate_id))
+    if (GlideLfbStagingShadowCensusEnabled())
     {
-        InvalidateGlideLfbStagingShadow(
-            &context->glide_lfb_staging_shadow,
-            ClassifyGlideLfbStagingShadowGate(glide_export->gate_id));
+        // Task 729: a swap rotates the pair rather than discarding it, which
+        // is the page flip the guest's `lock -> unlock -> swap -> lock` pattern
+        // depends on. Everything else either invalidates the render target or,
+        // when this layer cannot say which buffer it touched, the whole set.
+        ApplyGlideLfbStagingShadowGate(&context->glide_lfb_staging_shadow,
+                                       glide_export->gate_id);
+    }
+    // Task 729: what fills the window between a write unlock and the next write
+    // lock. Independent of the shadow above, which stops counting once it is
+    // invalid and so cannot see past the swap that broke it.
+    if (GlideLfbLockIntervalCensusEnabled())
+    {
+        NoteGlideLfbLockIntervalGate(&context->glide_lfb_lock_interval_census,
+                                     glide_export->gate_id);
     }
     if (draw_batch != nullptr && !IsGlideDrawBatchGate(glide_export->gate_id))
     {
@@ -2305,6 +2316,12 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
         }
 
         case go::kGrRenderBuffer: // _GRRENDERBUFFER@4
+            // Task 729: where draws and clears land decides which shadow they
+            // break. Recorded before the backend call so a declined gate does
+            // not leave the shadow set trusting a stale target.
+            SetGlideLfbStagingShadowRenderBuffer(
+                &context->glide_lfb_staging_shadow,
+                context->glide_gate_stack[1]);
             if (!context->glide_backend.SetRenderBuffer(
                     context->glide_gate_stack[1]))
             {
@@ -3749,24 +3766,33 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                     type == repiu::hle::kGlideLfbWriteOnly
                         ? context->glide_state.lfb_write_color_format
                         : context->glide_state.color_format;
+                if (GlideLfbLockIntervalCensusEnabled())
+                {
+                    ClassifyGlideLfbLockInterval(
+                        &context->glide_lfb_lock_interval_census);
+                }
                 const bool shadow_census =
                     GlideLfbStagingShadowCensusEnabled();
                 const bool shadow_reusable = shadow_census &&
                     CanReuseGlideLfbStagingShadow(
                         context->glide_lfb_staging_shadow, buffer,
                         seed_color_format, width, height);
-                const bool reuse_shadow =
-                    shadow_reusable && GlideLfbStagingReuseEnabled();
+                // The copy happens here, before the guest is handed the
+                // surface. Nothing invalidates the shadow at handoff: it is a
+                // host-owned copy rather than the staging surface itself, so
+                // the guest writing through `lfbPtr` cannot reach it.
+                const bool reuse_shadow = shadow_reusable &&
+                    GlideLfbStagingReuseEnabled() &&
+                    LoadGlideLfbStagingShadow(
+                        context->glide_lfb_staging_shadow, buffer,
+                        context->glide_lfb_surface.pixels(),
+                        context->glide_lfb_surface.byte_count(),
+                        seed_color_format, width, height);
                 if (shadow_census)
                 {
                     NoteGlideLfbStagingShadowLock(
                         &context->glide_lfb_staging_shadow, shadow_reusable,
                         reuse_shadow);
-                    // The guest owns the surface from here until unlock,
-                    // whether it was seeded or reused.
-                    InvalidateGlideLfbStagingShadow(
-                        &context->glide_lfb_staging_shadow,
-                        GlideLfbStagingShadowInvalidation::kLockHandoff);
                 }
                 std::vector<std::uint8_t> rgba8;
                 const bool read_ok = reuse_shadow
@@ -3999,27 +4025,36 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                     {
                         if (!presented)
                         {
-                            InvalidateGlideLfbStagingShadow(
+                            InvalidateGlideLfbStagingShadowBuffer(
                                 &context->glide_lfb_staging_shadow,
+                                context->glide_lfb_surface.lock_buffer(),
                                 GlideLfbStagingShadowInvalidation::
                                     kPresentFailed);
                         }
                         else if (flip_v)
                         {
-                            InvalidateGlideLfbStagingShadow(
+                            InvalidateGlideLfbStagingShadowBuffer(
                                 &context->glide_lfb_staging_shadow,
+                                context->glide_lfb_surface.lock_buffer(),
                                 GlideLfbStagingShadowInvalidation::
                                     kFlippedPresent);
                         }
                         else
                         {
-                            ValidateGlideLfbStagingShadow(
+                            StoreGlideLfbStagingShadow(
                                 &context->glide_lfb_staging_shadow,
                                 context->glide_lfb_surface.lock_buffer(),
+                                context->glide_lfb_surface.pixels(),
+                                context->glide_lfb_surface.byte_count(),
                                 context->glide_state.lfb_write_color_format,
                                 context->glide_lfb_surface.width(),
                                 context->glide_lfb_surface.height());
                         }
+                    }
+                    if (presented && GlideLfbLockIntervalCensusEnabled())
+                    {
+                        OpenGlideLfbLockInterval(
+                            &context->glide_lfb_lock_interval_census);
                     }
                     if (presented)
                     {
