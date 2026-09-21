@@ -110,7 +110,9 @@ Directories added now:
 * `src/engine/`: executable memory policy and the execution backends (platform-neutral)
 * `src/target/`: static target profile registration implementation
 * `src/tools/exe_analyzer/`: non-executing console analysis tool
-* `src/host/win32/`: Win32 loader application entry point. This is the practical loader path that selects a target, loads the DOS/4GW executable, builds a relocated image, places it in Win32 process memory, and performs the current minimal execution attempt.
+* `src/host/loader/`: the loader application entry point, shared by the Win32 x86 and Linux hosts (moved from `src/host/win32/` in Task 731). This is the practical loader path that selects a target, loads the DOS/4GW executable, builds a relocated image, places it in process memory, and performs the current minimal execution attempt.
+* `src/host/win32/`: Win32-only entry points (the supervisor).
+* `src/host/linux/`: the Linux launcher entry point.
 
 Planned major modules:
 
@@ -321,7 +323,9 @@ decode/upload time.
 
 현재 실제 Win32 로더 executable target은 `repiu`이다.
 
-진입점은 `src/host/win32/main.cpp`에 두며, `src/tools/` 아래의 분석 도구와 구분한다.
+진입점은 `src/host/loader/main.cpp`에 두며, `src/tools/` 아래의 분석 도구와 구분한다. Task 731 이전에는
+`src/host/win32/main.cpp`였으나, Windows 헤더를 쓰지 않는 플랫폼 공용 코드이므로 역할 이름의 위치로 옮겼다.
+로그의 `"Win32 ..."` 접두어는 스크립트·가이드·회귀 기록이 파싱하므로 그대로 두었다.
 
 이 진입점은 현재 target profile 선택, 원본 executable 읽기, DOS/4GW load result 생성, relocated runtime image plan 생성, relocated image buffer 생성, Win32 process memory 배치, minimal execution trampoline 호출을 순서대로 담당한다.
 
@@ -331,7 +335,10 @@ decode/upload time.
 
 The current practical Win32 loader executable target is `repiu`.
 
-Its entry point lives in `src/host/win32/main.cpp`, separate from analysis tools under `src/tools/`.
+Its entry point lives in `src/host/loader/main.cpp`, separate from analysis tools under `src/tools/`. Before
+Task 731 it was `src/host/win32/main.cpp`; being platform-neutral code that includes no Windows header, it moved
+to a location named by role. Its `"Win32 ..."` log prefixes were kept because scripts, guides and regression
+records parse them.
 
 This entry point currently owns target profile selection, original executable reading, DOS/4GW load result creation, relocated runtime image planning, relocated image buffer creation, Win32 process-memory placement, and minimal execution trampoline invocation.
 
@@ -1527,7 +1534,7 @@ Windows에서 `_putenv_s`여야 합니다. 이 계층은 읽기를 두 군데(`s
 `GetEnvironmentStringsA`)에서 하므로, 둘 다 갱신하는 함수만 답이 됩니다.
 
 Task 503d-17부터 **Linux에서 `repiu` 로더가 링크됩니다.** 진입점은 Windows와 같은
-`src/host/win32/main.cpp`이고, 자식 프로세스 재실행은 `repiu::platform::RunChildProcessAndWait`로
+`src/host/win32/main.cpp`(Task 731부터 `src/host/loader/main.cpp`)이고, 자식 프로세스 재실행은 `repiu::platform::RunChildProcessAndWait`로
 갈라집니다 — Windows는 `CreateProcessA`, Linux는 `posix_spawn`입니다. Task 500이 이 재실행을
 만든 이유(GPU 드라이버의 주소 공간 선점)가 Linux에도 해당하는지는 **아직 측정하지
 않았습니다.** 무한 대기 표기도 중립 상수로 옮겼고, Windows 대기 옆의 `static_assert`가
@@ -1665,7 +1672,7 @@ it is the last resort behind a graceful path (suspend, `RecoverToHost`, resume) 
 performs there, which makes the graceful path the only one.
 
 Since Task 503d-17 the `repiu` loader **links on Linux**. Its entry point is the same
-`src/host/win32/main.cpp` the Windows host uses, and the child-process relaunch divides at
+`src/host/win32/main.cpp` the Windows host uses (`src/host/loader/main.cpp` since Task 731), and the child-process relaunch divides at
 `repiu::platform::RunChildProcessAndWait` — `CreateProcessA` on Windows, `posix_spawn` on Linux.
 Whether Task 500's reason for that relaunch, a GPU driver claiming the address space the guest needs,
 also applies to Linux is **not yet measured**. The unlimited-wait spelling moved to a neutral constant

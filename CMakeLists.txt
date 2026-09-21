@@ -734,17 +734,18 @@ if(UNIX AND NOT EMSCRIPTEN)
     )
     repiu_link_linux_engine(repiu_launcher)
 
-    # Task 503d-17: the loader itself. The entry point is the same source the
-    # Windows host uses -- `src/host/win32/main.cpp` under a Linux build looks
-    # wrong against its path. Task 520 fixed that mismatch for the engine by
-    # moving it to `src/engine`; the loader is the one that remains, and moving
-    # 5,577 lines is a task of its own.
+    # Task 503d-17: the loader itself, built from the same source as the
+    # Windows host. Task 731 moved it from `src/host/win32/` to
+    # `src/host/loader/`: it includes no Windows header and branches on the
+    # platform in one log line, so the old path named a platform the code does
+    # not depend on. Its "Win32 ..." log prefixes were left as they are, because
+    # scripts, guides and regression records parse them.
     #
     # GL by name for the same reason repiu_launcher names it: the Glide backend
     # calls into it directly, and only the plain name resolves in the i386
     # library directory `-m32` puts on the search path.
     add_executable(repiu
-        src/host/win32/main.cpp
+        src/host/loader/main.cpp
         src/launcher/launcher_ui.cpp
     )
     target_link_libraries(repiu
@@ -831,7 +832,7 @@ if(WIN32)
         src/tools/glide_render_probe/main.cpp
     )
     add_executable(repiu
-        src/host/win32/main.cpp
+        src/host/loader/main.cpp
         src/launcher/launcher_ui.cpp
     )
     target_link_libraries(repiu_exe_analyzer
