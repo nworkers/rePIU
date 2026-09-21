@@ -3595,8 +3595,9 @@ Task 728의 단일 shadow(staging surface 자체)는 측정에서 재사용 0건
 swap 1회뿐**임을 확인했고, 그래서 swap을 손실이 아니라 교환으로 모델링했습니다.
 
 `REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true`는 계수만, `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`는
-실제 적용입니다. **둘 다 기본 OFF이며, apply 모드 실행 3회 중 1회에서 원인 미확정 teardown
-segfault가 있었으므로 기본값을 켜서는 안 됩니다.** 별도로
+실제 적용입니다. **둘 다 기본 OFF입니다.** apply 모드에서 관찰된 teardown segfault는 같은 설정의 OFF
+실행에서도 같은 모양으로 재현되어 이 기능과 무관한 기존 결함으로 확인됐습니다(Task 729 후속).
+기본값 전환은 OFF 대 OFF 장면 기준선과 성능 측정 뒤에 검토합니다. 별도로
 `REPIU_GLIDE_LFB_LOCK_INTERVAL_CENSUS=1|on|true`는 unlock과 다음 lock 사이 구간을 swap만 있음 /
 clear / draw / region으로 분류합니다.
 
@@ -3627,8 +3628,10 @@ found 303 of 303 held **exactly one swap and nothing else**, and so models the s
 exchange rather than a loss.
 
 `REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true` counts only; `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`
-applies. **Both are off by default, and neither should be turned on: one of three apply-mode runs
-hit a teardown segfault whose cause is not yet established.** Separately,
+applies. **Both are off by default.** The teardown segfault seen in apply mode reproduced with the
+same signature in an OFF run under the same settings, establishing it as a pre-existing defect
+unrelated to this feature (Task 729 follow-up). Changing the default waits for an OFF-against-OFF
+scene baseline and a performance measurement. Separately,
 `REPIU_GLIDE_LFB_LOCK_INTERVAL_CENSUS=1|on|true` classifies the window between an unlock and the
 next lock as swaps-only, cleared, drawn, or region.
 

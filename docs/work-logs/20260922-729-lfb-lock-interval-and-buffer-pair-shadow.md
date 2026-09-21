@@ -88,6 +88,18 @@ apply 모드 3회 중 1회(장면 표본 병용)가 예산 만료 직후 `elapse
 2. OFF 대 OFF 장면 기준선.
 3. 둘이 해소된 뒤 apply 기본값 검토.
 
+
+## 후속 — teardown segfault 귀속 (사용자 승인 후 반복 실행)
+
+같은 설정으로 reuse OFF·ON을 번갈아 5회씩 순차 실행했습니다. **OFF 3번째 실행이 같은 모양의
+segfault로 죽었고**(rip=rsp+0x18, 예산 만료 순간, 종료 마커 없음), ON 5회는 모두 정상 종료하며
+302/304 재사용을 재현했습니다. 이 설정에서 OFF 1/6, ON 1/6입니다. **크래시는 shadow 쌍과 무관한
+기존 결함입니다.** Task 728 이전 로그 4건에도 같은 구간의 fault가 있었고, Task 727의 "외부 종료로
+final report 없음"은 실제로 이 fault였습니다.
+
+원인 후보는 x64 종료 회수 판정이 RIP 하위 32비트만 본다는 점이며, 아직 검증하지 않았습니다.
+자세한 내용은 [linux-port-frontier](../analysis/linux-port-frontier.md)의 Task 729 후속 절에 있습니다.
+
 ---
 
 # English
@@ -170,3 +182,16 @@ a crash investigation proceed only after the user confirms.
 1. Attribute the teardown segfault by comparing repeated OFF and ON runs.
 2. An OFF-against-OFF scene baseline.
 3. Once both are settled, consider the apply default.
+
+## Follow-up — attributing the teardown segfault (repeated runs after user approval)
+
+Reuse OFF and ON were run alternately and sequentially, five times each, under the same settings.
+**OFF run 3 died with the same segfault** (rip at rsp+0x18, at budget expiry, no shutdown markers),
+while all five ON runs ended cleanly and reproduced 302 of 304 reuses. This setting crashed 1 of 6
+OFF and 1 of 6 ON. **The crash is a pre-existing defect unrelated to the shadow pair.** Four logs
+from before Task 728 show a fault in the same window, and Task 727's "no final report because of
+an external stop" was in fact this fault.
+
+The candidate cause, not yet verified, is that the x64 shutdown recovery check reads only the low
+32 bits of RIP. Details are in the Task 729 follow-up section of
+[linux-port-frontier](../analysis/linux-port-frontier.md).

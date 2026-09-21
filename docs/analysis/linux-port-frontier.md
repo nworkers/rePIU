@@ -17983,3 +17983,99 @@ establish cause. **Neither default should be turned on until it is attributed.**
    rates.
 2. Calibrate run-to-run variation in animated stretches with an OFF-against-OFF scene baseline.
 3. Once both are settled, consider the apply-mode default.
+
+---
+
+## 2026-09-22 Task 729 후속 — teardown segfault는 shadow와 무관하다
+
+### 확인됨 — 같은 설정에서 OFF도 똑같이 죽는다
+
+크래시가 난 설정(`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000
+REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000`)으로 reuse OFF·ON을 번갈아 5회씩 **순차로** 실행했습니다.
+
+| 실행 | OFF | ON |
+|---|---|---|
+| 1 | 정상 | 정상 |
+| 2 | 정상 | 정상 |
+| 3 | **segfault (rc=139)** | 정상 |
+| 4 | 정상 | 정상 |
+| 5 | 정상 | 정상 |
+
+앞선 실행까지 합치면 이 설정에서 OFF 1/6, ON 1/6입니다. 두 크래시의 모양은 같습니다.
+
+| | ON 크래시 | OFF 크래시 |
+|---|---|---|
+| rip − rsp | +0x18 | +0x18 |
+| entry_rsp − rsp | 0x2AC0 | 0x2AB0 |
+| 시점 | 예산 만료(30010ms) | 예산 만료(30000ms) |
+| `[repiu-shutdown]` 마커 | 0 | 0 |
+
+**따라서 이 teardown segfault는 Task 729의 shadow 쌍과 무관한 기존 결함입니다.** ON 5회는 모두
+302/304 재사용과 seed 2회를 재현했습니다.
+
+### 확인됨 — 이 결함은 Task 728 이전부터 있었다
+
+저장된 이전 로그 4건(`task722-trace`, `task726-...-rerun`, `task727-linux-source-off`,
+`task727-...-final`)도 모두 `elapsed_ms`가 예산과 같은 순간에 `[repiu-shutdown]` 마커 없이 SIGSEGV로
+끝났습니다. rip 값은 `0x1201e7f`, `0x201e7f` 등으로 다르지만 죽은 구간은 같습니다.
+
+**정정:** Task 727은 "외부 종료 경로가 final report를 남기지 않았다"고 기록했지만,
+`task727-linux-lfb-store-site-census-final.log`는 실제로 이 fault로 끝났습니다. final report가 없었던
+원인은 외부 종료가 아니라 이 teardown segfault입니다.
+
+### 추정 — 원인 후보: x64 회수 판정이 RIP 하위 32비트만 본다
+
+예산 만료 뒤 host는 guest thread에 시그널을 최대 40회 보내 회수를 시도합니다
+(`execution_trampoline.cpp`, `RecoverGuestThreadForShutdownCommon`). 회수 가능 여부는
+`registers->Eip`, 즉 **64비트 RIP의 하위 32비트**가 guest 이미지(`0x01000000`부터 약 140MB) 또는 AOT
+cache(`0x20000000`) 범위인지로 판정합니다. guest thread가 호스트 라이브러리(`0x7f..`) 안에 있을 때 그
+하위 32비트가 우연히 이 범위에 들면, 호스트 프레임을 cache 탈출 trampoline
+(`RepiuLinuxX64GuestExit`)으로 회수하게 되고, 그 trampoline은 cache 프레임 배치를 가정하고 되돌아가므로
+쓰레기 주소로 점프합니다.
+
+이 가설은 다음과 맞습니다: rip가 rsp 근처(스택 안)라는 점, 예산 만료 인터럽트 구간이라는 점,
+ASLR 때문에 실행마다 날 수도 안 날 수도 있다는 점(범위는 32비트 공간의 약 3.3%).
+**아직 검증하지 않았습니다.** 전체 RIP를 읽는 `ReadHostInstructionPointer`가 이미 있으므로, 판정에
+"전체 RIP의 상위 32비트가 0"을 더하면 이 경로는 닫힙니다. guest 이미지와 cache는 설계상 4 GiB 아래에
+놓이므로 이 조건은 올바른 회수를 막지 않습니다.
+
+## English
+
+### Confirmed — OFF crashes the same way under the same settings
+
+Reuse OFF and ON were run alternately and **sequentially**, five times each, under the settings of
+the crash (`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000
+REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000`). OFF run 3 segfaulted (rc=139); the other nine ended
+cleanly. Including the earlier runs, this setting crashed 1 of 6 OFF and 1 of 6 ON. Both crashes
+share the signature: rip at rsp+0x18, entry_rsp−rsp of 0x2AC0 and 0x2AB0, death at budget expiry
+(30010 and 30000 ms), and no `[repiu-shutdown]` markers.
+
+**This teardown segfault is therefore a pre-existing defect unrelated to Task 729's shadow pair.**
+All five ON runs reproduced 302 of 304 reuses and two seeds.
+
+### Confirmed — the defect predates Task 728
+
+Four saved earlier logs (`task722-trace`, `task726-...-rerun`, `task727-linux-source-off`,
+`task727-...-final`) also ended in SIGSEGV exactly when `elapsed_ms` reached the budget, with no
+`[repiu-shutdown]` markers. Their rip values differ (`0x1201e7f`, `0x201e7f`) but the window is the
+same.
+
+**Correction:** Task 727 recorded that "the external stop route did not emit a final report", but
+`task727-linux-lfb-store-site-census-final.log` actually ended in this fault. The missing report
+came from this teardown segfault, not from an external stop.
+
+### Inferred — candidate cause: the x64 recovery check reads only RIP's low 32 bits
+
+After budget expiry the host signals the guest thread up to 40 times to recover it
+(`execution_trampoline.cpp`, `RecoverGuestThreadForShutdownCommon`). Recoverability is judged on
+`registers->Eip` -- **the low 32 bits of a 64-bit RIP** -- falling in the guest image (from
+`0x01000000`, about 140 MB) or the AOT cache (`0x20000000`). If the guest thread is inside a host
+library (`0x7f..`) whose low 32 bits happen to land in those ranges, the host frame is "recovered"
+through the cache-exit trampoline (`RepiuLinuxX64GuestExit`), which unwinds assuming a cache frame
+layout and jumps to garbage.
+
+The hypothesis fits: rip near rsp (inside the stack), the budget-expiry interrupt window, and
+occurring on some runs but not others because of ASLR (the ranges are about 3.3% of the 32-bit
+space). **It has not been verified.** `ReadHostInstructionPointer` already reads the full RIP, so
+adding "the full RIP's upper 32 bits are zero" to the check would close this path; the guest image
+and cache are placed below 4 GiB by design, so the condition cannot block a legitimate recovery.
