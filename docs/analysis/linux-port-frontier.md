@@ -18079,3 +18079,49 @@ occurring on some runs but not others because of ASLR (the ranges are about 3.3%
 space). **It has not been verified.** `ReadHostInstructionPointer` already reads the full RIP, so
 adding "the full RIP's upper 32 bits are zero" to the check would close this path; the guest image
 and cache are placed below 4 GiB by design, so the condition cannot block a legitimate recovery.
+
+---
+
+## 2026-09-22 Task 730 — x64 종료 회수 판정에 전체 RIP
+
+### 확인됨
+
+x64 종료 회수 판정이 RIP 하위 32비트만 보던 결함을 `DecideShutdownRecovery`로 닫았습니다.
+상위 32비트가 0이 아니면 guest 코드일 수 없으므로 회수하지 않습니다. x64 core probe의
+`shutdown_recovery_policy` 그룹이 alias 거절과 4 GiB 경계를 결정적으로 검증합니다. 정당한 회수는
+유지됩니다: 관찰 중 1회가 guest 코드(`0x01030E9C`)에서 `decision=recover`로 회수되어 clean teardown
+전 단계와 summary를 남겼습니다.
+
+Task 729 설정의 순차 10회 관찰에서 teardown segfault는 0회였습니다(수정 전 2/12).
+
+### 미확정
+
+* 관찰된 segfault의 원인이 이 alias였는지는 **확정되지 않았습니다.** 원래 발생률(약 1/6)이어도
+  10회 무사할 확률이 약 16%이고, 10회 모두 `aliased=0`이었습니다.
+* 거절된 9회의 마지막 host 주소 하위 12비트가 모두 `0xE4F`였습니다. guest thread는 같은 호스트
+  함수의 같은 명령에서 자주 멈춰 있습니다. 이 한 주소의 alias 확률(약 3.3%)만으로는 1/6이라는
+  발생률을 설명하기 어렵습니다.
+* 같은 32비트 판정을 쓰는 fault 처리 경로(`execution_trampoline.cpp` 4851행 부근, 6327~6357행 부근)는
+  조사만 했습니다.
+
+## English
+
+### Confirmed
+
+`DecideShutdownRecovery` closes the defect where the x64 shutdown recovery decision read only the
+low 32 bits of RIP: an address with nonzero upper bits cannot be guest code and is not recovered. The
+x64 core probe's `shutdown_recovery_policy` group verifies alias refusal and the 4 GiB boundary
+deterministically. Legitimate recovery survives: one observation recovered from guest code
+(`0x01030E9C`) with `decision=recover` and left the full clean teardown and its summary.
+
+Ten sequential observations under Task 729's settings had zero teardown segfaults (2 of 12 before).
+
+### Unresolved
+
+* Whether the observed segfault was caused by this alias is **not established**: at the original
+  rate of about 1 in 6, ten clean runs occur about 16% of the time, and all ten reported `aliased=0`.
+* In the nine refusing runs, the last host address ended in `0xE4F` every time; the guest thread
+  is usually parked at the same instruction of the same host function. The alias probability of that
+  one address (about 3.3%) alone does not readily explain a 1-in-6 rate.
+* The fault-handling paths that use the same 32-bit decision (`execution_trampoline.cpp` near line
+  4851 and lines 6327-6357) were surveyed only.

@@ -3643,6 +3643,25 @@ uncertainties with the page-flip semantics of the original hardware.
 
 ---
 
+## x64 종료 회수 판정 / x64 shutdown recovery decision
+
+Task 730부터 예산 만료·종료 요청 시 guest thread 회수 여부는 `DecideShutdownRecovery`
+(`include/repiu/engine/shutdown_recovery_policy.h`)가 정합니다. x64 Linux에서는 시그널 context의
+**전체 RIP**를 읽어, 상위 32비트가 0이고 하위 32비트가 guest 이미지나 AOT cache 안일 때만 cache 탈출
+trampoline으로 회수합니다. guest 코드와 cache는 설계상 4 GiB 아래에 놓이므로 이 조건은 정당한 회수를
+막지 않습니다. 32비트 host는 이전과 같습니다. 결과는 `[repiu-shutdown]` 줄의 `host_ip=`,
+`decision=`, `aliased=`로 보고됩니다.
+
+From Task 730, whether the guest thread is recovered at budget expiry or on a quit request is decided
+by `DecideShutdownRecovery` (`include/repiu/engine/shutdown_recovery_policy.h`). On x64 Linux it reads
+the **full RIP** from the signal context and recovers through the cache-exit trampoline only when the
+upper 32 bits are zero and the low 32 bits are in the guest image or AOT cache. Guest code and the
+cache are placed below 4 GiB by design, so the condition never blocks a legitimate recovery. 32-bit
+hosts are unchanged. The outcome is reported as `host_ip=`, `decision=` and `aliased=` on the
+`[repiu-shutdown]` line.
+
+---
+
 ## 롬셋별 설정 파일 / Per-ROM-set configuration files
 
 Task 497부터 PIUIO(JAMMA) 입력의 호스트 키 매핑은 하드코딩이 아니라 `cfg/<롬셋 ID>.ini`에서

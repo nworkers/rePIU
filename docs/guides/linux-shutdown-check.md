@@ -99,6 +99,14 @@ bash scripts/task508_refused_recovery_repro.sh 3 60000 task508
 뒤의 둘은 **실패가 아니라 다른 결과**입니다. 로더는 기다리지 않고 내려가고, 게스트 스레드는
 프로세스가 끝날 때 함께 사라집니다.
 
+### `[repiu-shutdown]` 줄의 x64 필드 (Task 730)
+
+| 필드 | 뜻 |
+|---|---|
+| `host_ip=` | 마지막으로 본 guest thread의 **전체** native 주소. `eip=`는 x64에서 그 하위 32비트일 뿐입니다 |
+| `decision=` | `recover` / `outside-guest-code` / `aliased-host-address` / `host-address-unavailable` |
+| `aliased=` | 하위 32비트는 guest 범위인데 전체 주소는 host 주소라서 거절한 횟수. **0이 아니면 Task 730 이전 코드였다면 호스트 프레임을 잘못 회수했을 실행**입니다 |
+
 ## 4. 걸리기 쉬운 것
 
 * **감시견을 끄지 않으면 무엇을 시험한 것인지 말할 수 없습니다.** `REPIU_STALL_TIMEOUT_MS=0`
@@ -207,6 +215,14 @@ message.
 
 The last two are **different outcomes rather than failures**: the loader goes down without waiting,
 and the guest thread ends with the process.
+
+### x64 fields on the `[repiu-shutdown]` line (Task 730)
+
+| Field | Meaning |
+|---|---|
+| `host_ip=` | the **full** native address where the guest thread was last seen; on x64 `eip=` is only its low 32 bits |
+| `decision=` | `recover` / `outside-guest-code` / `aliased-host-address` / `host-address-unavailable` |
+| `aliased=` | refusals where the low half was in guest range but the full address was a host address. **Nonzero marks a run in which the code before Task 730 would have recovered a host frame wrongly** |
 
 ## 4. What trips this up
 

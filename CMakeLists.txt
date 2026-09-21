@@ -319,6 +319,7 @@ target_sources(repiu_exe
         src/engine/telemetry/glide_lfb_native_store_census.cpp
         src/engine/glide_lfb_staging_shadow.cpp
         src/engine/glide_lfb_lock_interval_census.cpp
+        src/engine/execution/shutdown_recovery_policy.cpp
         src/engine/telemetry/glide_setter_state_model.cpp
         src/engine/telemetry/glide_setter_state_census.cpp
         src/engine/telemetry/glide_async_present.cpp
@@ -580,6 +581,7 @@ endif()
 # on every host so the same assertions can be compared across them.
 add_executable(repiu_core_probe
     src/tools/core_probe/main.cpp
+    src/tools/aot_probe/shutdown_recovery_policy_probe.cpp
     src/tools/aot_probe/code_cache_placement_probe.cpp
     src/tools/aot_probe/dos_console_device_probe.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
@@ -800,6 +802,7 @@ if(WIN32)
         src/tools/aot_probe/glide_lfb_native_store_census_probe.cpp
         src/tools/aot_probe/glide_lfb_staging_shadow_probe.cpp
         src/tools/aot_probe/glide_lfb_lock_interval_probe.cpp
+        src/tools/aot_probe/shutdown_recovery_policy_probe.cpp
         src/tools/aot_probe/glide_setter_state_census_probe.cpp
         src/tools/aot_probe/glide_async_present_probe.cpp
         src/tools/aot_probe/glide_draw_batch_probe.cpp

@@ -1,3 +1,4 @@
+#include "repiu/engine/shutdown_recovery_policy.h"
 #include "repiu/engine/execution_trampoline.h"
 #include "native_fast_path.h"
 #include "native_linear_span.h"
@@ -6631,6 +6632,15 @@ struct GuestShutdownRecoveryRequest
     // acted, because "not in recoverable code" is only half an answer without
     // the address that says which code it was in.
     std::uint32_t last_eip = 0;
+    // Task 730: the full native address behind `last_eip`, and the decision
+    // taken on it. `last_eip` alone is the low half on an x64 host.
+    std::uintptr_t last_host_ip = 0;
+    ShutdownRecoveryDecision last_decision =
+        ShutdownRecoveryDecision::kOutsideGuestCode;
+    // Looks whose low half was in guest code but whose full address was a host
+    // address -- each one a thread the 32-bit check would have recovered from a
+    // host frame. Nonzero is direct evidence for the teardown segfault's cause.
+    std::uint32_t aliased_count = 0;
 };
 
 // **This runs on a different thread on each host.** Windows freezes the guest
@@ -6661,8 +6671,29 @@ bool RecoverGuestThreadForShutdownCommon(
     // engine's own -- it would return through a frame that was never set up.
     const std::uint32_t eip = static_cast<std::uint32_t>(registers->Eip);
     request->last_eip = eip;
-    if (!IsGuestInstructionPointer(request->context, eip) &&
-        !IsAotCacheAddress(request->context, eip))
+    // Task 730: on an x64 host `eip` is only the low half of RIP, and a host
+    // library address can alias guest code in it. The full address decides.
+    ShutdownRecoveryPosition position;
+    position.low_half_in_guest_code =
+        IsGuestInstructionPointer(request->context, eip) ||
+        IsAotCacheAddress(request->context, eip);
+#if defined(__x86_64__) && !defined(_WIN32)
+    position.host_address_required = true;
+    position.host_address =
+        repiu::platform::ReadHostInstructionPointer(host_context);
+    position.host_address_known = host_context != nullptr;
+#else
+    position.host_address = static_cast<std::uintptr_t>(eip);
+    position.host_address_known = true;
+#endif
+    request->last_host_ip = position.host_address;
+    const ShutdownRecoveryDecision decision = DecideShutdownRecovery(position);
+    request->last_decision = decision;
+    if (decision == ShutdownRecoveryDecision::kAliasedHostAddress)
+    {
+        ++request->aliased_count;
+    }
+    if (decision != ShutdownRecoveryDecision::kRecover)
     {
         return false;
     }
@@ -7896,12 +7927,13 @@ bool RunExecutionThread(
             //
             // Read without a lock on purpose -- both counters are written on the
             // host thread, which is the thread running this block.
-            char shutdown_line[320] = {};
+            char shutdown_line[448] = {};
             const int length = std::snprintf(
                 shutdown_line, sizeof(shutdown_line),
                 "[repiu-shutdown] reason=%s attempts=%u answered=%d "
                 "recovered=%d stopped=%d failure=%u eip=0x%08X gate=%d "
-                "frames=%llu span_ms=%llu\n",
+                "frames=%llu span_ms=%llu host_ip=0x%llX decision=%s "
+                "aliased=%u\n",
                 host_exit_requested ? "exit-requested" : "timeout",
                 static_cast<unsigned>(recovery_attempts),
                 interrupt_answered ? 1 : 0,
@@ -7913,7 +7945,10 @@ bool RunExecutionThread(
                 static_cast<unsigned long long>(
                     context.glide_backend.presented_frame_total()),
                 static_cast<unsigned long long>(
-                    context.glide_backend.presented_frame_span_milliseconds()));
+                    context.glide_backend.presented_frame_span_milliseconds()),
+                static_cast<unsigned long long>(recovery_request.last_host_ip),
+                ShutdownRecoveryDecisionName(recovery_request.last_decision),
+                static_cast<unsigned>(recovery_request.aliased_count));
             if (length > 0)
             {
                 repiu::platform::WriteHostErrorStream(

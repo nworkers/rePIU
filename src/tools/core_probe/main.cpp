@@ -33,6 +33,7 @@
 #include "far_jump_probe.h"
 #include "far_return_probe.h"
 #include "final_execution_report_probe.h"
+#include "shutdown_recovery_policy_probe.h"
 #include "flat_stack_segment_fold_probe.h"
 #include "execution_backend_probe.h"
 #include "execution_timeout_probe.h"
@@ -167,6 +168,11 @@ constexpr CoreProbe kCoreProbes[] = {
     {"host_thread", &repiu::tools::RunHostThreadProbe},
 #endif
     {"launcher", &repiu::tools::RunLauncherProbe},
+    // Task 730. Here as well as in the Win32 AOT probe because the case it
+    // exists for -- a host address aliasing guest code in its low half --
+    // needs a pointer wider than 32 bits, which only the x64 hosts have.
+    {"shutdown_recovery_policy",
+     &repiu::tools::RunShutdownRecoveryPolicyProbe},
 };
 
 // Task 513. Named, not counted: a list of what this host cannot ask is worth
