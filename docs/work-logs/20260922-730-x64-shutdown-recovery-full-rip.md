@@ -55,9 +55,10 @@ guest 이미지나 AOT cache 안일 때만** 회수합니다. 하위 32비트는
 ## 조사만 한 것 — 같은 32비트 판정을 쓰는 다른 경로
 
 `execution_trampoline.cpp`에서 `win32_context->Eip`(x64에서는 하위 32비트)로 guest/cache 여부를
-판정하는 곳이 더 있습니다. fault를 처리하며 **동작을 바꾸는** 곳은 4851행 부근(guest/cache가 아니면
-처리 거절)과 6327~6357행 부근(cache 주소면 복구 경로 선택)입니다. host 라이브러리 안의 fault가
-하위 절반 alias를 일으키면 같은 종류의 오판이 가능하지만, 이 작업에서는 고치지 않았습니다.
+판정하는 곳이 더 있습니다. **동작을 바꾸는** 곳은 `InjectPendingInterrupts`(4851행 부근, guest/cache
+안일 때만 인터럽트 주입)와 `DispatchGuestFault`(6327~6357행 부근, cache 주소면 복구 경로 선택)입니다.
+host 주소의 하위 절반이 guest 범위와 겹치면 같은 종류의 오판이 가능하지만, 이 작업에서는 고치지
+않았습니다. (처음 기록에서는 4851행을 fault 처리 거절로 적었으나, 실제로는 인터럽트 주입 판정입니다.)
 
 ---
 
@@ -118,7 +119,8 @@ below 1%.
 ## Surveyed only — other paths using the same 32-bit decision
 
 `execution_trampoline.cpp` has further decisions on `win32_context->Eip`, the low 32 bits on x64.
-The ones that **change behavior** while handling a fault are near line 4851 (refusing to handle
-outside guest/cache) and lines 6327-6357 (choosing the recovery path for a cache address). A fault
-inside a host library whose low half aliases guest code could be misjudged the same way; they are not
-changed here.
+The ones that **change behavior** are `InjectPendingInterrupts` (near line 4851, injecting an
+interrupt only inside guest code or the cache) and `DispatchGuestFault` (lines 6327-6357, choosing the
+recovery path for a cache address). A host address whose low half aliases guest code could be
+misjudged the same way; they are not changed here. (The first version of this log called line 4851 a
+fault-handling refusal; it is the interrupt-injection decision.)

@@ -18101,8 +18101,8 @@ Task 729 설정의 순차 10회 관찰에서 teardown segfault는 0회였습니�
 * 거절된 9회의 마지막 host 주소 하위 12비트가 모두 `0xE4F`였습니다. guest thread는 같은 호스트
   함수의 같은 명령에서 자주 멈춰 있습니다. 이 한 주소의 alias 확률(약 3.3%)만으로는 1/6이라는
   발생률을 설명하기 어렵습니다.
-* 같은 32비트 판정을 쓰는 fault 처리 경로(`execution_trampoline.cpp` 4851행 부근, 6327~6357행 부근)는
-  조사만 했습니다.
+* 같은 32비트 판정을 쓰는 경로(`execution_trampoline.cpp`의 `InjectPendingInterrupts`와
+  `DispatchGuestFault`)는 조사만 했습니다.
 
 ## English
 
@@ -18123,8 +18123,8 @@ Ten sequential observations under Task 729's settings had zero teardown segfault
 * In the nine refusing runs, the last host address ended in `0xE4F` every time; the guest thread
   is usually parked at the same instruction of the same host function. The alias probability of that
   one address (about 3.3%) alone does not readily explain a 1-in-6 rate.
-* The fault-handling paths that use the same 32-bit decision (`execution_trampoline.cpp` near line
-  4851 and lines 6327-6357) were surveyed only.
+* The paths that use the same 32-bit decision (`InjectPendingInterrupts` and `DispatchGuestFault`
+  in `execution_trampoline.cpp`) were surveyed only.
 
 ---
 
@@ -18157,3 +18157,113 @@ assertions, and in 4 of 6 runs the process died with 0xC0000005 or hung. The ass
 DOS environment access, first path traces and last opened file no longer match current guest
 behavior. The suite points at the nonexistent `build\win32_x86_debug`, which appears to be why it was
 not being run. The intermittent crash and hang of the Win32 pumpit1 legacy run were not investigated.
+
+---
+
+## 2026-09-22 다음 세션 인계 — 남은 과제 (Tasks 728~732 이후)
+
+브랜치 `work/20260919-718-default-safe-point-injection`, main 대비 커밋 18개. **main 머지·push는 하지
+않았습니다.** Linux 검증은 WSL Ubuntu-24.04(`build/linux_x64_debug`), Win32 빌드 트리는 `build/`입니다.
+
+```mermaid
+flowchart TD
+    A["1. test_all.ps1 정비<br/>(회귀 기준 부재)"] --> B["2. Task 730 인과 확정<br/>30회+ 관찰"]
+    B --> C["3. 같은 32비트 판정<br/>InjectPendingInterrupts / DispatchGuestFault"]
+    D["4. LFB shadow 쌍 기본값 판단<br/>장면 기준선 + vsync OFF 성능"] --> E["5. grBufferSwap 62.9% 분해"]
+    F["6. Linux 런처 문구 정리"]
+```
+
+### 1. `test_all.ps1` 정비 — 우선순위 가장 높음
+
+지금은 회귀를 막아 주지 못합니다(Task 732에서 발견).
+
+* `$Loader`가 이 머신에 없는 `build\win32_x86_debug\Debug\repiu.exe`를 가리킵니다. 스크립트 안의
+  빌드 단계(`scripts\build_win32_x86.bat`)가 어느 트리를 만드는지부터 확인해야 합니다.
+* pumpit1 단정 99개 중 **17개가 현재 동작과 불일치**(이름 변경 전 binary로도 동일): 결말 문구(Task 507
+  이후 `timeout reached; guest thread was not in recoverable code` 등), `DOS environment access observed`
+  (현재 `false`), DOS path trace #1·#2, 마지막 open 파일(현재 `spr.res`), 예외 결말 집합과
+  `Current execution blocker ...`.
+* Win32 pumpit1 legacy 실행(`REPIU_EXECUTION_BACKEND=legacy`, `REPIU_EXECUTION_TIMEOUT_MS=1000`)이
+  **간헐적으로 0xC0000005 crash 또는 hang**합니다(이름 변경 전 binary 6회 중 4회). 원인은 조사하지
+  않았습니다.
+* 실행마다 결말(immediate-exit 또는 clean teardown)이 달라 불일치 수도 달라집니다(13~17). 새 단정은
+  어느 결말에서도 성립해야 합니다.
+* Task 732에서 쓴 방법: binary 경로만 바꾸고 빌드 단계를 뺀 사본으로 단정만 평가하면, 99개 단정을
+  줄 단위로 어느 것이 맞지 않는지 볼 수 있습니다.
+
+### 2. Task 730의 인과 확정
+
+x64 종료 회수 판정은 전체 RIP로 고쳤지만, 관찰된 teardown segfault가 그 alias 때문이었는지는
+미확정입니다(수정 후 10회 무사, 그러나 `aliased=0`). Task 729 설정
+(`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000 REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000`)으로
+**30회 이상 순차 실행**하면 원래 발생률이 유지될 때 모두 무사할 확률이 1% 미만입니다. `[repiu-shutdown]`
+줄의 `aliased=`를 함께 기록합니다. 거절된 실행의 마지막 host 주소가 늘 `...E4F`로 끝난다는 점
+(같은 host 함수)이 1/6 발생률과 맞지 않는 부분도 설명해야 합니다.
+
+### 3. 같은 32비트 판정의 다른 경로
+
+`execution_trampoline.cpp`의 `InjectPendingInterrupts`(guest/cache 안일 때만 인터럽트 주입)와
+`DispatchGuestFault`(cache 주소면 복구 경로 선택)가 `win32_context->Eip`, 즉 x64에서 하위 32비트로
+판정합니다. `DecideShutdownRecovery`와 같은 방식으로 전체 주소를 쓰도록 할지 검토합니다.
+
+### 4. LFB shadow 쌍(Task 729)의 기본값 판단
+
+`REPIU_GLIDE_LFB_STAGING_REUSE`는 기본 OFF입니다. seed는 304→2(99.3%)로 줄었지만, LFB 구간 프레임
+속도는 27.7→28.0 fps로 사실상 같았습니다. 이 구간은 연산량이 아니라 게임의 프레임 조절에 묶여
+있는 것으로 추정됩니다. 기본값을 켜기 전에:
+
+* OFF 대 OFF 장면 표본 기준선(애니메이션 구간의 실행 간 변동 교정).
+* vsync OFF, 진단 출력 없이 여러 번 번갈아 성능 측정.
+
+### 5. `grBufferSwap` 비용 분해
+
+Task 723 기준 host work의 62.9%인데 아직 분해되지 않았습니다. 기존
+`REPIU_GLIDE_SWAP_TIME_PROFILE=1`(setup/present/accounting/finalize)을 WSL에서 먼저 돌려 봅니다.
+vsync 대기가 CPU 비용처럼 보일 수 있으니 vsync 상태를 함께 기록합니다.
+
+### 6. 기타
+
+* `src/host/linux/main.cpp`(Linux 런처)의 머리 주석은 "Linux에는 아직 실행 엔진이 없다"고 적혀 있고,
+  롬셋을 골라도 메시지만 찍고 시작하지 않습니다. Task 503d-17 이후 사실과 맞지 않습니다.
+* `ReadbackFramebuffer`는 drawable을 nearest-neighbor로 축소하므로, drawable이 정수배가 아니면
+  present→readback 왕복이 손실됩니다(Task 728, 코드 판독). 고치지 않았습니다.
+
+## English — handoff for the next session (after Tasks 728-732)
+
+Branch `work/20260919-718-default-safe-point-injection`, 18 commits ahead of main. **Not merged to
+main and not pushed.** Linux verification runs on WSL Ubuntu-24.04 (`build/linux_x64_debug`); the
+Win32 build tree is `build/`.
+
+1. **Repair `test_all.ps1` (highest priority; it currently protects nothing).** `$Loader` points at the
+   nonexistent `build\win32_x86_debug\Debug\repiu.exe` (check which tree its build step,
+   `scripts\build_win32_x86.bat`, produces). 17 of 99 pumpit1 assertions no longer match current
+   behavior, identically on the pre-rename binary: the ending wording (since Task 507), `DOS environment
+   access observed` (now `false`), DOS path traces #1 and #2, the last opened file (now `spr.res`), and
+   the exception-ending set with `Current execution blocker ...`. The Win32 pumpit1 legacy run
+   (`REPIU_EXECUTION_BACKEND=legacy`, `REPIU_EXECUTION_TIMEOUT_MS=1000`) intermittently crashes with
+   0xC0000005 or hangs (4 of 6 runs on the pre-rename binary), cause not investigated. The ending varies
+   by run (immediate-exit or clean teardown) and so does the mismatch count (13-17); new assertions must
+   hold for either. Method used in Task 732: a copy with only the binary path changed and the build steps
+   removed, evaluating the assertions line by line.
+2. **Settle Task 730's causation.** The x64 shutdown recovery decision now uses the full RIP, but
+   whether the observed teardown segfault came from that alias is unestablished (ten clean runs after
+   the fix, but `aliased=0`). Thirty or more sequential runs under Task 729's settings
+   (`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000 REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000`)
+   put the chance of all passing at the original rate below 1%; record `aliased=` from the
+   `[repiu-shutdown]` line. Also explain why the last host address always ends in `...E4F` (one host
+   function), which does not fit a 1-in-6 rate.
+3. **The same 32-bit decision elsewhere.** `InjectPendingInterrupts` (inject only inside guest code or
+   the cache) and `DispatchGuestFault` (choose the recovery path for a cache address) in
+   `execution_trampoline.cpp` decide on `win32_context->Eip`, the low 32 bits on x64. Consider moving
+   them to the full address the way `DecideShutdownRecovery` does.
+4. **Decide the LFB shadow pair's default (Task 729).** `REPIU_GLIDE_LFB_STAGING_REUSE` is off by
+   default. Seeds fell from 304 to 2 (99.3%), but the LFB stretch ran at 27.7 against 28.0 fps -- in
+   effect unchanged, inferred to be paced by the game rather than by work. Before turning it on: an
+   OFF-against-OFF scene baseline, and alternating performance runs with vsync off and no diagnostics.
+5. **Decompose `grBufferSwap`.** 62.9% of host work at Task 723 and still undecomposed. Run the existing
+   `REPIU_GLIDE_SWAP_TIME_PROFILE=1` (setup/present/accounting/finalize) on WSL first, recording the
+   vsync state, since vsync waiting can look like CPU cost.
+6. **Other.** The header comment of `src/host/linux/main.cpp` (the Linux launcher) says Linux has no
+   execution engine, and choosing a ROM set only prints a message; that has not been true since Task
+   503d-17. `ReadbackFramebuffer` downsamples the drawable nearest-neighbor, so a non-integer-multiple
+   drawable makes the present-then-readback round trip lossy (Task 728, code reading); not fixed.
