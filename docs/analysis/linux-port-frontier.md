@@ -17688,25 +17688,58 @@ surface는 framebuffer와 같고, 그 다음 lock은 GPU에 되물을 필요가 
 계수하고, `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`는 실제로 readback과 encode를 건너뜁니다.
 둘 다 기본 OFF입니다.
 
-### 미확정 — 실제 재사용 비율은 아직 측정되지 않았다
+### 측정됨 — 재사용은 한 번도 일어나지 않았고, 범인은 전부 `grBufferSwap`
 
-이 작업은 Linux VM에 접근할 수 없는 상태에서 수행됐습니다(`192.168.198.132` 연결 시간 초과).
-따라서 게임에서 두 lock 사이에 무효화 gate가 실제로 얼마나 자주 끼어드는지, 즉 재사용 가능
-비율은 **측정된 바 없습니다**. 프레임마다 `grBufferSwap`이 들어가는 구간에서는 재사용이
-거의 일어나지 않을 수 있습니다. 다음 관찰은 census 모드로 비율을 먼저 측정해야 하며, 그
-수치를 보기 전에는 이 경로의 이득을 주장해서는 안 됩니다.
+WSL Ubuntu-24.04에서 30초 bounded `pumpit2a` census 관찰을 수행했습니다
+(`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000
+REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1`). 결과는 **재사용 가능 lock 0건**입니다.
 
-Task 727이 남긴 top-EIP 관찰도 여전히 미완입니다. 두 관찰 모두 `REPIU_EXECUTION_TIMEOUT_MS`
+| 항목 | 값 |
+|---|---:|
+| write lock | 304 |
+| 재사용 가능 | **0** |
+| seed 수행 | 304 |
+| unlock validate 성공 | 304 |
+| 무효화 — swap gate | **304** |
+| 무효화 — draw / clear / region / other | 0 / 0 / 0 / 0 |
+| 무효화 — flipped-present / present-failed / surface-mismatch | 0 / 0 / 0 |
+
+즉 shadow는 **매번 정상적으로 성립했다가**(validate 304) **예외 없이 `grBufferSwap` 하나에만
+깨졌습니다**(swap-gate 304). 게스트의 LFB 경로는 `lock → write → unlock → grBufferSwap →
+lock`이며, unlock과 다음 lock 사이에 draw, clear, region write, 그 밖의 어떤 gate도 끼어들지
+않습니다. Task 728의 가설 — "두 lock 사이의 state setter만 견디면 재사용이 가능하다" — 는
+**측정으로 반증됐습니다.** 문제는 state setter가 아니라 프레임 경계 그 자체였습니다.
+
+### 이 반증이 드러낸 새 사실 — seed는 swap 뒤의 back buffer를 읽는다
+
+swap은 실제 `SDL_GL_SwapWindow`입니다(`glide_opengl_backend.cpp`). OpenGL 사양에서 swap 뒤
+back buffer의 내용은 **정의되지 않습니다**. 따라서 304번의 write-lock seed는 모두 사양상
+내용이 정의되지 않은 buffer를 읽고 있으며, Task 724가 잰 readback 6,496,580,582 cycles는
+그 정의되지 않은 내용을 가져오는 데 쓰였습니다.
+
+이 드라이버에서는 실제로 무언가가 보존됩니다. 같은 관찰의 `grLfbLock seed #2`가
+`framebuffer non-black=101340`을 보고했으므로 swap 직후 back buffer가 비어 있지는 않습니다.
+그러나 이는 드라이버 동작이지 보장이 아닙니다.
+
+원래 3dfx 하드웨어에서 buffer swap은 page flip이므로, swap 뒤 back buffer는 **두 swap 전
+프레임**을 담습니다. 그러므로 shadow를 buffer마다 하나씩 쌍으로 두고 swap에서 교환하면
+lock N은 lock N-2의 내용을 재사용할 수 있고, 이는 지금보다 빠를 뿐 아니라 원본 하드웨어
+의미에 **더 가깝습니다**. 이것이 이 측정이 가리키는 다음 설계이며, 아직 구현하지 않았습니다.
+화면 의미를 바꾸는 변경이므로 별도 설계와 확인이 필요합니다.
+
+Task 727이 남긴 top-EIP 관찰은 여전히 미완입니다. 관찰은 `REPIU_EXECUTION_TIMEOUT_MS`
 예산 만료 또는 SIGTERM으로 끝내야 final report가 남습니다(`docs/guides/linux-shutdown-check.md`).
 
 ### 검증 상태
 
-Win32 x86 Debug 전체 빌드가 성공했고 `repiu_aot_probe --glide-lfb-staging-shadow`의 9개 그룹이
+Win32 x86 Debug 전체 빌드가 성공했고 `repiu_aot_probe --glide-lfb-staging-shadow`의 10개 그룹이
 모두 통과했습니다. 인접 probe(`--glide-lfb-timing`, `--glide-lfb-write-footprint`,
 `--glide-lfb-native-store-census`)도 통과했습니다. Win32 core probe는 28개 중 실패 0이었고,
 Tasks 725~727이 기록한 `mode16_push_writes=false` 실패는 이 빌드에서 재현되지 않았습니다.
 그 그룹을 고친 변경은 없으므로 이는 해결의 증거가 아니라 재현되지 않았다는 기록입니다.
-Linux x64 빌드와 게임 관찰은 수행하지 못했습니다.
+Linux x64 Debug 빌드는 WSL Ubuntu-24.04에서 성공했고 Linux core probe는 30/30 통과했으며,
+위 census 관찰은 timeout 종료까지 fault 없이 완주해 final report를 남겼습니다. VM
+(`192.168.198.132`)은 더 이상 사용하지 않고 WSL을 사용합니다.
 
 ## English
 
@@ -17742,16 +17775,49 @@ resolution, format or buffer mismatch all invalidate as well.
 behavior; `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true` actually skips the readback and the encode.
 Both are off by default.
 
-### Unresolved — the real reuse rate has not been measured
+### Measured — reuse never fired once, and `grBufferSwap` accounts for all of it
 
-This work was done without access to the Linux VM (`192.168.198.132` timed out). How often an
-invalidating gate actually falls between two locks in the game -- that is, the reusable
-fraction -- is therefore **unmeasured**. In stretches where a `grBufferSwap` lands every frame,
-reuse may almost never fire. The next observation must measure that fraction in census mode
-first, and no benefit from this path should be claimed before seeing it.
+A 30-second bounded `pumpit2a` census observation ran on WSL Ubuntu-24.04
+(`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000
+REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1`). The result is **zero reusable locks**.
 
-Task 727's top-EIP observation also remains outstanding. Both observations must be ended
-through `REPIU_EXECUTION_TIMEOUT_MS` budget expiry or SIGTERM for the final report to survive
+| Item | Value |
+|---|---:|
+| Write locks | 304 |
+| Reusable | **0** |
+| Seeds performed | 304 |
+| Unlock validations | 304 |
+| Invalidation, swap gate | **304** |
+| Invalidation, draw / clear / region / other | 0 / 0 / 0 / 0 |
+| Invalidation, flipped-present / present-failed / surface-mismatch | 0 / 0 / 0 |
+
+The shadow was therefore **established correctly every single time** (304 validations) and
+**broken by exactly one thing, `grBufferSwap`** (304 swap-gate invalidations). The guest LFB
+path is `lock -> write -> unlock -> grBufferSwap -> lock`, with no draw, clear, region write or
+any other gate between an unlock and the next lock. Task 728's hypothesis -- that surviving the
+state setters between two locks is enough to make reuse possible -- is **refuted by
+measurement.** The obstacle was never the state setters; it is the frame boundary itself.
+
+### What the refutation exposed — the seed reads a post-swap back buffer
+
+The swap is a real `SDL_GL_SwapWindow` (`glide_opengl_backend.cpp`). In the OpenGL
+specification, back buffer contents after a swap are **undefined**. All 304 write-lock seeds
+therefore read a buffer whose contents the specification does not define, and the
+6,496,580,582 readback cycles Task 724 measured were spent fetching exactly that.
+
+On this driver something is in fact preserved: the same observation's `grLfbLock seed #2`
+reported `framebuffer non-black=101340`, so the back buffer right after a swap is not blank.
+That is driver behavior, not a guarantee.
+
+On original 3dfx hardware a buffer swap is a page flip, so the post-swap back buffer holds the
+frame from **two swaps earlier**. Keeping one shadow per buffer and exchanging them at the swap
+would therefore let lock N reuse the content of lock N-2, which would be not only faster than
+today but **closer to original hardware semantics** than reading an undefined GL buffer. That is
+the design this measurement points to; it is not implemented. Because it changes what reaches
+the screen, it needs its own design and confirmation.
+
+Task 727's top-EIP observation remains outstanding. Observations must be ended through
+`REPIU_EXECUTION_TIMEOUT_MS` budget expiry or SIGTERM for the final report to survive
 (`docs/guides/linux-shutdown-check.md`).
 
 ### Verification status
@@ -17762,4 +17828,5 @@ The full Win32 x86 Debug build succeeded and all nine groups of
 probes. The Win32 core probe reported zero failures of 28; the `mode16_push_writes=false`
 failure recorded by Tasks 725 through 727 did not reproduce in this build. Nothing in this task
 changed that group, so this records a non-reproduction rather than evidence of a fix. The Linux
-x64 build and in-game observation were not performed.
+x64 Debug build succeeded on WSL Ubuntu-24.04 and the Linux core probe passed 30/30. The VM
+(`192.168.198.132`) is no longer used; WSL is.

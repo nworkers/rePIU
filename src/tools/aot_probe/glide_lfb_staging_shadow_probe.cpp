@@ -167,13 +167,35 @@ bool RunGlideLfbStagingShadowProbe()
     RunLock(&gate_state, true);
     RunUnlock(&gate_state);
     engine::InvalidateGlideLfbStagingShadow(
-        &gate_state, GlideLfbStagingShadowInvalidation::kGate);
+        &gate_state,
+        engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrBufferSwap));
     engine::InvalidateGlideLfbStagingShadow(
-        &gate_state, GlideLfbStagingShadowInvalidation::kGate);
+        &gate_state,
+        engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrBufferSwap));
     const bool after_gate_reused = RunLock(&gate_state, true);
     const bool gate_invalidation =
         !after_gate_reused &&
-        ReasonCount(gate_state, GlideLfbStagingShadowInvalidation::kGate) == 1U;
+        ReasonCount(gate_state,
+                    GlideLfbStagingShadowInvalidation::kSwapGate) == 1U;
+
+    // The categories a report needs to tell "the frame loop swapped" from "an
+    // incidental gate got in the way".
+    const bool gate_classes =
+        engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrBufferSwap) ==
+            GlideLfbStagingShadowInvalidation::kSwapGate &&
+        engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrBufferClear) ==
+            GlideLfbStagingShadowInvalidation::kClearGate &&
+        engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrDrawTriangle) ==
+            GlideLfbStagingShadowInvalidation::kDrawGate &&
+        engine::ClassifyGlideLfbStagingShadowGate(
+            Gate::kGrAADrawPolygonVertexList) ==
+            GlideLfbStagingShadowInvalidation::kDrawGate &&
+        engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrLfbWriteRegion) ==
+            GlideLfbStagingShadowInvalidation::kRegionGate &&
+        engine::ClassifyGlideLfbStagingShadowGate(Gate::kGrRenderBuffer) ==
+            GlideLfbStagingShadowInvalidation::kOtherGate &&
+        engine::ClassifyGlideLfbStagingShadowGate(Gate::kUnknown) ==
+            GlideLfbStagingShadowInvalidation::kOtherGate;
 
     // A shadow of one buffer, pixel format or resolution is not a shadow of
     // another.
@@ -238,8 +260,8 @@ bool RunGlideLfbStagingShadowProbe()
     }
 
     const bool all = policy && invalidating_gates && preserving_gates &&
-        reuse_sequence && census_only && gate_invalidation && mismatch &&
-        present_outcomes && names;
+        reuse_sequence && census_only && gate_invalidation && gate_classes &&
+        mismatch && present_outcomes && names;
     std::cout << "glide_lfb_staging_shadow_policy="
               << (policy ? "true" : "false")
               << "\nglide_lfb_staging_shadow_invalidating_gates="
@@ -252,6 +274,8 @@ bool RunGlideLfbStagingShadowProbe()
               << (census_only ? "true" : "false")
               << "\nglide_lfb_staging_shadow_gate_invalidation="
               << (gate_invalidation ? "true" : "false")
+              << "\nglide_lfb_staging_shadow_gate_classes="
+              << (gate_classes ? "true" : "false")
               << "\nglide_lfb_staging_shadow_mismatch="
               << (mismatch ? "true" : "false")
               << "\nglide_lfb_staging_shadow_present_outcomes="

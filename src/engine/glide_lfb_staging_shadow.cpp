@@ -132,6 +132,37 @@ bool GlideOrdinalPreservesLfbStagingShadow(const repiu::hle::GlideGateId gate_id
     }
 }
 
+GlideLfbStagingShadowInvalidation ClassifyGlideLfbStagingShadowGate(
+    const repiu::hle::GlideGateId gate_id)
+{
+    using Gate = repiu::hle::GlideGateId;
+    switch (gate_id)
+    {
+        case Gate::kGrBufferSwap:
+            return Reason::kSwapGate;
+        case Gate::kGrBufferClear:
+            return Reason::kClearGate;
+        case Gate::kGrDrawLine:
+        case Gate::kGrDrawPoint:
+        case Gate::kGrDrawTriangle:
+        case Gate::kGrDrawPlanarPolygon:
+        case Gate::kGrDrawPlanarPolygonVertexList:
+        case Gate::kGrDrawPolygon:
+        case Gate::kGrDrawPolygonVertexList:
+        case Gate::kGrAADrawPoint:
+        case Gate::kGrAADrawLine:
+        case Gate::kGrAADrawTriangle:
+        case Gate::kGrAADrawPolygon:
+        case Gate::kGrAADrawPolygonVertexList:
+            return Reason::kDrawGate;
+        case Gate::kGrLfbWriteRegion:
+        case Gate::kGrLfbReadRegion:
+            return Reason::kRegionGate;
+        default:
+            return Reason::kOtherGate;
+    }
+}
+
 bool CanReuseGlideLfbStagingShadow(const GlideLfbStagingShadowState& state,
                                    const std::uint32_t buffer,
                                    const std::uint32_t color_format,
@@ -223,8 +254,16 @@ const char* GlideLfbStagingShadowInvalidationName(const Reason reason)
 {
     switch (reason)
     {
-        case Reason::kGate:
-            return "gate";
+        case Reason::kSwapGate:
+            return "swap-gate";
+        case Reason::kDrawGate:
+            return "draw-gate";
+        case Reason::kClearGate:
+            return "clear-gate";
+        case Reason::kRegionGate:
+            return "region-gate";
+        case Reason::kOtherGate:
+            return "other-gate";
         case Reason::kLockHandoff:
             return "lock-handoff";
         case Reason::kPresentFailed:

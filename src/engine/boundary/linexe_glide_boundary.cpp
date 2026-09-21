@@ -1715,7 +1715,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
         // so the two shadows of one surface do not depend on that ordering.
         InvalidateGlideLfbStagingShadow(
             &context->glide_lfb_staging_shadow,
-            GlideLfbStagingShadowInvalidation::kGate);
+            GlideLfbStagingShadowInvalidation::kRegionGate);
     }
     // Task 728: the lock/unlock shadow of the same staging surface. Unlike the
     // region shadow above it survives the state setters a guest issues between
@@ -1728,7 +1728,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
     {
         InvalidateGlideLfbStagingShadow(
             &context->glide_lfb_staging_shadow,
-            GlideLfbStagingShadowInvalidation::kGate);
+            ClassifyGlideLfbStagingShadowGate(glide_export->gate_id));
     }
     if (draw_batch != nullptr && !IsGlideDrawBatchGate(glide_export->gate_id))
     {

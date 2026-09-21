@@ -26,8 +26,14 @@ namespace repiu::engine
 enum class GlideLfbStagingShadowInvalidation : std::uint32_t
 {
     // A gate that may change frame buffer pixels, or one this layer does not
-    // recognize.
-    kGate = 0,
+    // recognize. Split by kind, because "the shadow did not survive" is only
+    // useful next to what did not let it: a swap is a property of the frame
+    // loop and cannot be argued with, while an incidental gate might be.
+    kSwapGate = 0,
+    kDrawGate,
+    kClearGate,
+    kRegionGate,
+    kOtherGate,
     // The lock handed the surface to the guest, which now owns its contents.
     kLockHandoff,
     // The unlock blit failed, so what the frame buffer holds is unknown.
@@ -91,6 +97,12 @@ bool GlideLfbStagingReuseEnabled();
 // alone. Everything else, including `kUnknown` and any gate added later,
 // invalidates -- a gate nobody classified must not be assumed harmless.
 bool GlideOrdinalPreservesLfbStagingShadow(repiu::hle::GlideGateId gate_id);
+
+// Which invalidation a non-preserving gate is. Callers pass any gate id; a
+// preserving one still classifies as `kOtherGate`, because the caller decides
+// whether to invalidate at all.
+GlideLfbStagingShadowInvalidation ClassifyGlideLfbStagingShadowGate(
+    repiu::hle::GlideGateId gate_id);
 
 bool CanReuseGlideLfbStagingShadow(const GlideLfbStagingShadowState& state,
                                    std::uint32_t buffer,

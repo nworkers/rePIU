@@ -90,6 +90,14 @@ framebuffer pixel을 바꾸지 않는다고 확인된 순수 state setter ordina
 
 기본값 변경은 이 작업에 포함하지 않습니다. `grBufferSwap`이 차지한 62.9%는 별도 작업입니다.
 
+### 사후 기록 — 이 설계의 가설은 반증됐습니다
+
+구현 후 측정에서 write lock 304건 중 재사용 가능은 0건이었고, 무효화 304건이 전부
+`grBufferSwap`이었습니다. "두 lock 사이의 state setter만 견디면 된다"는 위 전제는 틀렸습니다.
+게스트 경로가 `lock → unlock → grBufferSwap → lock`이라 프레임 경계가 매번 shadow를 깹니다.
+자세한 수치와 후속 설계 후보는 작업 로그와
+[linux-port-frontier](../analysis/linux-port-frontier.md)에 있습니다.
+
 ---
 
 ## English
@@ -180,3 +188,11 @@ the existing path.
 ### Out of scope
 
 Changing any default is not part of this task. The 62.9% held by `grBufferSwap` is separate work.
+
+### Postscript — this design's hypothesis is refuted
+
+Measurement after implementation found zero reusable locks of 304, with all 304 invalidations
+coming from `grBufferSwap`. The premise above, that surviving the state setters between two
+locks would be enough, was wrong: the guest path is `lock -> unlock -> grBufferSwap -> lock`, so
+the frame boundary breaks the shadow every time. The numbers and the candidate follow-on design
+are in the work log and [linux-port-frontier](../analysis/linux-port-frontier.md).

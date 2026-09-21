@@ -3595,6 +3595,13 @@ shadow는 두 lock 사이의 state setter를 견디도록 설계되었습니다.
 readback 왕복은 원래 pixel을 복원하지 못합니다. 따라서 shadow 재사용은 정확도를 희생하는
 최적화가 아니라 그 왕복 resample을 제거합니다.
 
+**측정된 한계:** 30초 `pumpit2a` census 관찰에서 write lock 304건 중 재사용 가능은 **0건**이고,
+무효화 304건이 전부 `grBufferSwap`이었습니다. 게스트 경로가
+`lock → unlock → grBufferSwap → lock`이라 shadow는 매번 성립했다가 프레임 경계에서 깨집니다.
+그러므로 이 경로는 현재 게임 패턴에서 이득이 없으며, 두 기본값을 켜서는 안 됩니다. 이득을 내려면
+shadow를 buffer마다 쌍으로 두고 swap에서 교환해 lock N이 lock N-2를 재사용하도록 해야 하며,
+이는 아직 구현되지 않았습니다.
+
 Task 728 attaches a second shadow state to the `grLfbLock` staging surface. Because
 `grLfbUnlock` presents the entire staging surface of a write lock to the framebuffer, right
 after a successful unlock the surface *is* the framebuffer. `GlideLfbStagingShadowState`
@@ -3614,6 +3621,13 @@ logical resolution, while `PresentLfbSurface` upscales it again, so when the dra
 integer multiple of the logical resolution the present-then-readback round trip does not restore
 the original pixel. Reusing the shadow therefore removes that resampling round trip rather than
 trading accuracy for speed.
+
+**Measured limit:** in a 30-second `pumpit2a` census observation, **zero** of 304 write locks
+were reusable, and all 304 invalidations were `grBufferSwap`. The guest path is
+`lock -> unlock -> grBufferSwap -> lock`, so the shadow is established every time and then lost
+at the frame boundary. This path therefore yields nothing under the current game pattern and
+neither default should be turned on. Making it pay would require one shadow per buffer,
+exchanged at the swap so that lock N reuses lock N-2; that is not implemented.
 
 ---
 
