@@ -535,59 +535,59 @@ void PrintPolicy(
     spdlog::logger& logger,
     const repiu::engine::RuntimeMemoryPolicy& policy)
 {
-    logger.info("Win32 loader policy: {}",
+    logger.info("loader policy: {}",
                 policy.valid ? "valid" : "invalid");
-    logger.info("Win32 host pointer bits: {}", policy.host_pointer_bits);
-    logger.info("Win32 direct x86 execution: {}",
+    logger.info("host pointer bits: {}", policy.host_pointer_bits);
+    logger.info("direct x86 execution: {}",
                 policy.direct_x86_execution_supported ? "supported"
                                                        : "unsupported");
-    logger.info("Win32 fixed reserve base: {}",
+    logger.info("fixed reserve base: {}",
                 Hex32(policy.preferred_allocation_base));
-    logger.info("Win32 fixed reserve size: {}",
+    logger.info("fixed reserve size: {}",
                 Hex32(policy.required_reserve_size));
-    logger.info("Win32 fixed reserve end: {}",
+    logger.info("fixed reserve end: {}",
                 Hex32(policy.hle_reserve_base));
-    logger.info("Win32 loader policy message: {}", policy.message);
+    logger.info("loader policy message: {}", policy.message);
 }
 
 void PrintReservation(
     spdlog::logger& logger,
     const repiu::engine::AddressRangeReservation& reservation)
 {
-    logger.info("Win32 early reservation attempt: {}",
+    logger.info("early reservation attempt: {}",
                 reservation.valid ? "valid" : "invalid");
     if (reservation.reserved)
     {
-        logger.info("Win32 early reservation result: reserved");
+        logger.info("early reservation result: reserved");
     }
     else
     {
-        logger.warn("Win32 early reservation result: not reserved");
+        logger.warn("early reservation result: not reserved");
     }
-    logger.info("Win32 requested reserve base: {}",
+    logger.info("requested reserve base: {}",
                 Hex32(reservation.requested_base));
-    logger.info("Win32 requested reserve size: {}",
+    logger.info("requested reserve size: {}",
                 Hex32(reservation.requested_size));
     if (reservation.reserved)
     {
-        logger.info("Win32 reserved base: {}",
+        logger.info("reserved base: {}",
                     Hex32(reservation.reserved_base));
-        logger.info("Win32 reserved size: {}",
+        logger.info("reserved size: {}",
                     Hex32(reservation.reserved_size));
     }
     if (reservation.windows_error != 0)
     {
-        logger.warn("Win32 reservation error: {}",
+        logger.warn("reservation error: {}",
                     reservation.windows_error);
     }
     if (reservation.reserved)
     {
-        logger.info("Win32 early reservation message: {}",
+        logger.info("early reservation message: {}",
                     reservation.message);
     }
     else
     {
-        logger.warn("Win32 early reservation message: {}",
+        logger.warn("early reservation message: {}",
                     reservation.message);
     }
 }
@@ -596,36 +596,36 @@ void PrintProbe(
     spdlog::logger& logger,
     const repiu::engine::AddressRangeProbe& probe)
 {
-    logger.info("Win32 host range probe: {}",
+    logger.info("host range probe: {}",
                 probe.valid ? "valid" : "invalid");
     if (probe.range_available)
     {
-        logger.info("Win32 host range available: true");
+        logger.info("host range available: true");
     }
     else
     {
-        logger.warn("Win32 host range available: false");
+        logger.warn("host range available: false");
     }
-    logger.info("Win32 host probe base: {}",
+    logger.info("host probe base: {}",
                 Hex32(probe.checked_base));
-    logger.info("Win32 host probe size: {}",
+    logger.info("host probe size: {}",
                 Hex32(probe.checked_size));
     if (probe.valid && !probe.range_available)
     {
-        logger.warn("Win32 host first blocking block base: {}",
+        logger.warn("host first blocking block base: {}",
                     Hex32(probe.first_block_base));
-        logger.warn("Win32 host first blocking block size: {}",
+        logger.warn("host first blocking block size: {}",
                     Hex32(probe.first_block_size));
-        logger.warn("Win32 host first blocking block state: {}",
+        logger.warn("host first blocking block state: {}",
                     probe.first_block_state);
     }
     if (probe.range_available)
     {
-        logger.info("Win32 host range probe message: {}", probe.message);
+        logger.info("host range probe message: {}", probe.message);
     }
     else
     {
-        logger.warn("Win32 host range probe message: {}", probe.message);
+        logger.warn("host range probe message: {}", probe.message);
     }
 }
 
@@ -633,32 +633,32 @@ void PrintPlacement(
     spdlog::logger& logger,
     const repiu::engine::RelocatedImagePlacement& placement)
 {
-    logger.info("Win32 relocated image placement: {}",
+    logger.info("relocated image placement: {}",
                 placement.valid ? "valid" : "invalid");
-    logger.info("Win32 relocated image placement result: {}",
+    logger.info("relocated image placement result: {}",
                 placement.placed ? "placed" : "not placed");
-    logger.info("Win32 relocated image requested base: {}",
+    logger.info("relocated image requested base: {}",
                 Hex32(placement.requested_base));
-    logger.info("Win32 relocated image requested size: {}",
+    logger.info("relocated image requested size: {}",
                 Hex32(placement.requested_size));
     if (placement.placed)
     {
-        logger.info("Win32 relocated image placed base: {}",
+        logger.info("relocated image placed base: {}",
                     Hex32(placement.placed_base));
-        logger.info("Win32 relocated image placed size: {}",
+        logger.info("relocated image placed size: {}",
                     Hex32(placement.placed_size));
     }
-    logger.info("Win32 relocated image copied objects: {}",
+    logger.info("relocated image copied objects: {}",
                 placement.copied_object_count);
-    logger.info("Win32 relocated image protected objects: {}",
+    logger.info("relocated image protected objects: {}",
                 placement.protected_object_count);
-    logger.info("Win32 relocated selector binding count: {}",
+    logger.info("relocated selector binding count: {}",
                 placement.selector_bindings.size());
     for (const repiu::runtime::RelocatedSelectorBinding& binding :
          placement.selector_bindings)
     {
         logger.info(
-            "Win32 relocated selector binding: selector={} object={} base={} limit={}",
+            "relocated selector binding: selector={} object={} base={} limit={}",
             Hex16(binding.selector),
             binding.target_object,
             Hex32(binding.relocated_base_address),
@@ -666,10 +666,10 @@ void PrintPlacement(
     }
     if (placement.windows_error != 0)
     {
-        logger.info("Win32 relocated image placement error: {}",
+        logger.info("relocated image placement error: {}",
                     placement.windows_error);
     }
-    logger.info("Win32 relocated image placement message: {}",
+    logger.info("relocated image placement message: {}",
                 placement.message);
 }
 
@@ -678,47 +678,47 @@ void PrintExecutionAttempt(
     const repiu::engine::MinimalExecutionAttempt& attempt,
     std::string_view executable_name)
 {
-    logger.info("Win32 minimal execution attempt: {}",
+    logger.info("minimal execution attempt: {}",
                 attempt.valid ? "valid" : "invalid");
-    logger.info("Win32 minimal execution supported: {}",
+    logger.info("minimal execution supported: {}",
                 attempt.supported ? "true" : "false");
-    logger.info("Win32 minimal execution attempted: {}",
+    logger.info("minimal execution attempted: {}",
                 attempt.attempted ? "true" : "false");
-    logger.info("Win32 minimal execution entry: {}",
+    logger.info("minimal execution entry: {}",
                 Hex32(attempt.entry_address));
-    logger.info("Win32 minimal execution returned: {}",
+    logger.info("minimal execution returned: {}",
                 attempt.returned ? "true" : "false");
     if (attempt.exception_caught)
     {
-        logger.error("Win32 minimal execution exception caught: true");
+        logger.error("minimal execution exception caught: true");
     }
     else
     {
-        logger.info("Win32 minimal execution exception caught: false");
+        logger.info("minimal execution exception caught: false");
     }
     if (attempt.exception_caught)
     {
-        logger.error("Win32 minimal execution exception code: {}",
+        logger.error("minimal execution exception code: {}",
                      Hex32(attempt.seh_exception_code));
-        logger.error("Win32 minimal execution exception address: {}",
+        logger.error("minimal execution exception address: {}",
                      Hex32(attempt.seh_exception_address));
-        logger.error("Win32 minimal execution exception EAX: {}",
+        logger.error("minimal execution exception EAX: {}",
                      Hex32(attempt.exception_eax));
-        logger.error("Win32 minimal execution exception EBX: {}",
+        logger.error("minimal execution exception EBX: {}",
                      Hex32(attempt.exception_ebx));
-        logger.error("Win32 minimal execution exception ECX: {}",
+        logger.error("minimal execution exception ECX: {}",
                      Hex32(attempt.exception_ecx));
-        logger.error("Win32 minimal execution exception EDX: {}",
+        logger.error("minimal execution exception EDX: {}",
                      Hex32(attempt.exception_edx));
-        logger.error("Win32 minimal execution exception ESI: {}",
+        logger.error("minimal execution exception ESI: {}",
                      Hex32(attempt.exception_esi));
-        logger.error("Win32 minimal execution exception EDI: {}",
+        logger.error("minimal execution exception EDI: {}",
                      Hex32(attempt.exception_edi));
-        logger.error("Win32 minimal execution exception access/fault VA: {}/{}",
+        logger.error("minimal execution exception access/fault VA: {}/{}",
                      attempt.exception_access_kind,
                      Hex32(attempt.exception_fault_va));
         logger.error(
-            "Win32 exception fault page base/alloc/state/protect/size: "
+            "exception fault page base/alloc/state/protect/size: "
             "{}/{}/{}/{}/{}",
             Hex32(attempt.exception_fault_region_base),
             Hex32(attempt.exception_fault_alloc_base),
@@ -726,7 +726,7 @@ void PrintExecutionAttempt(
             Hex32(attempt.exception_fault_protect),
             Hex32(attempt.exception_fault_region_size));
         logger.error(
-            "Win32 exception ESI structure +0x20..+0x3C (mask {}): "
+            "exception ESI structure +0x20..+0x3C (mask {}): "
             "{} {} {} {} {} {} {} {}",
             Hex32(attempt.exception_esi_dword_valid_mask),
             Hex32(attempt.exception_esi_dwords[0]),
@@ -766,11 +766,11 @@ void PrintExecutionAttempt(
                                  : '.';
                 }
                 logger.error(
-                    "Win32 exception register string {}: \"{}\" [{}]",
+                    "exception register string {}: \"{}\" [{}]",
                     kRegisterNames[reg], ascii, hex);
             }
         }
-        logger.error("Win32 exception stack window base/count: {}/{}",
+        logger.error("exception stack window base/count: {}/{}",
                      Hex32(attempt.exception_stack_base),
                      attempt.exception_stack_dword_count);
         for (std::uint32_t row = 0;
@@ -784,22 +784,22 @@ void PrintExecutionAttempt(
                 line += ' ';
                 line += Hex32(attempt.exception_stack_dwords[index]);
             }
-            logger.error("Win32 exception stack +{}:{}",
+            logger.error("exception stack +{}:{}",
                          Hex32(row * 4U), line);
         }
         const auto& breakpoint = attempt.unhandled_breakpoint_evidence;
-        logger.error("Win32 unhandled breakpoint evidence valid: {}",
+        logger.error("unhandled breakpoint evidence valid: {}",
                      breakpoint.valid ? "true" : "false");
         if (breakpoint.valid)
         {
             logger.error(
-                "Win32 unhandled breakpoint code/raw/entry/final: {}/{}/{}/{}",
+                "unhandled breakpoint code/raw/entry/final: {}/{}/{}/{}",
                 Hex32(breakpoint.code),
                 Hex32(breakpoint.exception_address),
                 Hex32(breakpoint.entry_eip),
                 Hex32(breakpoint.final_eip));
             logger.error(
-                "Win32 unhandled breakpoint ESP entry/final EFLAGS DR6/DR7: "
+                "unhandled breakpoint ESP entry/final EFLAGS DR6/DR7: "
                 "{}/{}/{}/{}/{}",
                 Hex32(breakpoint.entry_esp),
                 Hex32(breakpoint.final_esp),
@@ -807,29 +807,29 @@ void PrintExecutionAttempt(
                 Hex32(breakpoint.entry_dr6),
                 Hex32(breakpoint.entry_dr7));
             logger.error(
-                "Win32 unhandled breakpoint state entry/final "
+                "unhandled breakpoint state entry/final "
                 "(reentry/trace/fast/span/region bits): {}/{}",
                 Hex32(breakpoint.entry_state_flags),
                 Hex32(breakpoint.final_state_flags));
             logger.error(
-                "Win32 unhandled breakpoint AOT reentry cache/return count "
+                "unhandled breakpoint AOT reentry cache/return count "
                 "entry/final: {}/{}/{}",
                 Hex32(breakpoint.entry_aot_reentry_cache_address),
                 breakpoint.entry_aot_return_dispatch_count,
                 breakpoint.final_aot_return_dispatch_count);
             logger.error(
-                "Win32 unhandled breakpoint AOT return source/target "
+                "unhandled breakpoint AOT return source/target "
                 "entry/final: {}/{} / {}/{}",
                 Hex32(breakpoint.entry_aot_last_return_source),
                 Hex32(breakpoint.entry_aot_last_return_target),
                 Hex32(breakpoint.final_aot_last_return_source),
                 Hex32(breakpoint.final_aot_last_return_target));
             logger.error(
-                "Win32 unhandled breakpoint cache raw/eip: {}/{}",
+                "unhandled breakpoint cache raw/eip: {}/{}",
                 breakpoint.exception_address_in_aot_cache ? "true" : "false",
                 breakpoint.entry_eip_in_aot_cache ? "true" : "false");
             logger.error(
-                "Win32 unhandled breakpoint raw mapping exact/previous: "
+                "unhandled breakpoint raw mapping exact/previous: "
                 "{}/{}/{} / {}/{}/{}",
                 breakpoint.exception_exact_mapping_valid ? "valid" : "invalid",
                 Hex32(breakpoint.exception_exact_guest),
@@ -840,7 +840,7 @@ void PrintExecutionAttempt(
                 breakpoint.exception_previous_provenance_valid
                     ? breakpoint.exception_previous_provenance : 0xFFFFFFFFU);
             logger.error(
-                "Win32 unhandled breakpoint EIP mapping exact/previous: "
+                "unhandled breakpoint EIP mapping exact/previous: "
                 "{}/{}/{} / {}/{}/{}",
                 breakpoint.eip_exact_mapping_valid ? "valid" : "invalid",
                 Hex32(breakpoint.eip_exact_guest),
@@ -851,19 +851,19 @@ void PrintExecutionAttempt(
                 breakpoint.eip_previous_provenance_valid
                     ? breakpoint.eip_previous_provenance : 0xFFFFFFFFU);
             logger.error(
-                "Win32 unhandled breakpoint raw bytes base/count: {}/{} {}",
+                "unhandled breakpoint raw bytes base/count: {}/{} {}",
                 Hex32(breakpoint.exception_window_base),
                 breakpoint.exception_window_count,
                 HexBytes(breakpoint.exception_window,
                          breakpoint.exception_window_count));
             logger.error(
-                "Win32 unhandled breakpoint EIP bytes base/count: {}/{} {}",
+                "unhandled breakpoint EIP bytes base/count: {}/{} {}",
                 Hex32(breakpoint.eip_window_base),
                 breakpoint.eip_window_count,
                 HexBytes(breakpoint.eip_window,
                          breakpoint.eip_window_count));
             logger.error(
-                "Win32 unhandled breakpoint stack mask/dwords: {} {} {} {} {}",
+                "unhandled breakpoint stack mask/dwords: {} {} {} {} {}",
                 Hex32(breakpoint.stack_valid_mask),
                 Hex32(breakpoint.stack_dwords[0]),
                 Hex32(breakpoint.stack_dwords[1]),
@@ -873,7 +873,7 @@ void PrintExecutionAttempt(
         if (attempt.aot_probe_guest_address != 0)
         {
             logger.error(
-                "Win32 AOT runtime cache probe guest/cache/valid: {}/{}/{}",
+                "AOT runtime cache probe guest/cache/valid: {}/{}/{}",
                 Hex32(attempt.aot_probe_guest_address),
                 Hex32(attempt.aot_probe_cache_address),
                 attempt.aot_probe_cache_valid);
@@ -890,75 +890,75 @@ void PrintExecutionAttempt(
                                   attempt.aot_probe_cache_bytes[index]);
                     probe_line += byte_hex;
                 }
-                logger.error("Win32 AOT runtime cache probe +{}:{}",
+                logger.error("AOT runtime cache probe +{}:{}",
                              Hex32(base), probe_line);
             }
         }
         PrintX86ExecutionSnapshot(logger,
-                                  "Win32 minimal execution exception",
+                                  "minimal execution exception",
                                   attempt.exception_snapshot);
     }
-    logger.info("Win32 handled original fatal breakpoint count: {}",
+    logger.info("handled original fatal breakpoint count: {}",
                 attempt.handled_fatal_breakpoint_count);
     if (attempt.handled_fatal_breakpoint_count != 0)
     {
-        logger.error("Win32 last original fatal breakpoint address: {}",
+        logger.error("last original fatal breakpoint address: {}",
                      Hex32(attempt.last_fatal_breakpoint_address));
-        logger.error("Win32 last original fatal message address: {}",
+        logger.error("last original fatal message address: {}",
                      Hex32(attempt.last_fatal_message_address));
-        logger.error("Win32 last original fatal message: {}",
+        logger.error("last original fatal message: {}",
                      attempt.last_fatal_message);
     }
-    logger.info("Win32 original fatal halt reached: {}",
+    logger.info("original fatal halt reached: {}",
                 attempt.fatal_halt_reached ? "true" : "false");
-    logger.info("Win32 minimal execution timed out: {}",
+    logger.info("minimal execution timed out: {}",
                 attempt.timed_out ? "true" : "false");
-    logger.info("Win32 minimal execution stall timed out: {}",
+    logger.info("minimal execution stall timed out: {}",
                 attempt.stall_timed_out ? "true" : "false");
-    logger.info("Win32 SDL exit requested: {}",
+    logger.info("SDL exit requested: {}",
                 attempt.quit_requested ? "true" : "false");
     if (attempt.timed_out)
     {
         const auto& snapshot = attempt.timeout_snapshot;
-        logger.info("Win32 minimal execution timeout context captured: {}",
+        logger.info("minimal execution timeout context captured: {}",
                     snapshot.captured ? "true" : "false");
         if (snapshot.captured)
         {
-            logger.info("Win32 minimal execution timeout EIP: {}",
+            logger.info("minimal execution timeout EIP: {}",
                         Hex32(snapshot.eip));
-            logger.info("Win32 minimal execution timeout EAX: {}",
+            logger.info("minimal execution timeout EAX: {}",
                         Hex32(snapshot.eax));
-            logger.info("Win32 minimal execution timeout EBX: {}",
+            logger.info("minimal execution timeout EBX: {}",
                         Hex32(snapshot.ebx));
-            logger.info("Win32 minimal execution timeout ECX: {}",
+            logger.info("minimal execution timeout ECX: {}",
                         Hex32(snapshot.ecx));
-            logger.info("Win32 minimal execution timeout EDX: {}",
+            logger.info("minimal execution timeout EDX: {}",
                         Hex32(snapshot.edx));
-            logger.info("Win32 minimal execution timeout ESI: {}",
+            logger.info("minimal execution timeout ESI: {}",
                         Hex32(snapshot.esi));
-            logger.info("Win32 minimal execution timeout EDI: {}",
+            logger.info("minimal execution timeout EDI: {}",
                         Hex32(snapshot.edi));
-            logger.info("Win32 minimal execution timeout ESP: {}",
+            logger.info("minimal execution timeout ESP: {}",
                         Hex32(snapshot.esp));
-            logger.info("Win32 minimal execution timeout EBP: {}",
+            logger.info("minimal execution timeout EBP: {}",
                         Hex32(snapshot.ebp));
-            logger.info("Win32 minimal execution timeout EFLAGS: {}",
+            logger.info("minimal execution timeout EFLAGS: {}",
                         Hex32(snapshot.eflags));
-            logger.info("Win32 minimal execution timeout CS: {}",
+            logger.info("minimal execution timeout CS: {}",
                         Hex16(snapshot.cs));
-            logger.info("Win32 minimal execution timeout DS: {}",
+            logger.info("minimal execution timeout DS: {}",
                         Hex16(snapshot.ds));
-            logger.info("Win32 minimal execution timeout ES: {}",
+            logger.info("minimal execution timeout ES: {}",
                         Hex16(snapshot.es));
-            logger.info("Win32 minimal execution timeout SS: {}",
+            logger.info("minimal execution timeout SS: {}",
                         Hex16(snapshot.ss));
-            logger.info("Win32 minimal execution timeout FS: {}",
+            logger.info("minimal execution timeout FS: {}",
                         Hex16(snapshot.fs));
-            logger.info("Win32 minimal execution timeout GS: {}",
+            logger.info("minimal execution timeout GS: {}",
                         Hex16(snapshot.gs));
         }
     }
-    logger.info("Win32 single-step trace count: {}",
+    logger.info("single-step trace count: {}",
                 attempt.single_step_trace_count);
     // Task 337: exclusive by construction -- classified in the VEH prologue
     // before any handler can consume the exception. Kernel transition is now
@@ -971,7 +971,7 @@ void PrintExecutionAttempt(
             attempt.veh_access_violation_exception_count +
             attempt.veh_other_exception_count;
         logger.info(
-            "Win32 exception census single-step/breakpoint/access-violation/"
+            "exception census single-step/breakpoint/access-violation/"
             "other/total: {}/{}/{}/{}/{}",
             attempt.veh_single_step_exception_count,
             attempt.veh_breakpoint_exception_count,
@@ -984,7 +984,7 @@ void PrintExecutionAttempt(
                     static_cast<double>(census_total);
             };
             logger.info(
-                "Win32 exception census share single-step/breakpoint/"
+                "exception census share single-step/breakpoint/"
                 "access-violation/other: {:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
                 census_share(attempt.veh_single_step_exception_count),
                 census_share(attempt.veh_breakpoint_exception_count),
@@ -998,17 +998,17 @@ void PrintExecutionAttempt(
             {
                 continue;
             }
-            logger.info("Win32 exception census other code/count: {}/{}",
+            logger.info("exception census other code/count: {}/{}",
                         Hex32(attempt.veh_other_exception_codes[index]),
                         attempt.veh_other_exception_code_counts[index]);
         }
         if (attempt.veh_other_exception_code_overflow != 0U)
         {
-            logger.info("Win32 exception census other code overflow: {}",
+            logger.info("exception census other code overflow: {}",
                         attempt.veh_other_exception_code_overflow);
         }
         logger.info(
-            "Win32 single-step run buckets 1/2/3/4/5-8/9-16/17-32/33+: "
+            "single-step run buckets 1/2/3/4/5-8/9-16/17-32/33+: "
             "{}/{}/{}/{}/{}/{}/{}/{}",
             attempt.veh_single_step_run_buckets[0],
             attempt.veh_single_step_run_buckets[1],
@@ -1019,7 +1019,7 @@ void PrintExecutionAttempt(
             attempt.veh_single_step_run_buckets[6],
             attempt.veh_single_step_run_buckets[7]);
         logger.info(
-            "Win32 single-step run count/max/mean: {}/{}/{}",
+            "single-step run count/max/mean: {}/{}/{}",
             attempt.veh_single_step_run_total,
             attempt.veh_single_step_run_max,
             attempt.veh_single_step_run_total != 0U
@@ -1042,7 +1042,7 @@ void PrintExecutionAttempt(
             attempt.hle_reentry_reject_span_unsafe +
             attempt.hle_reentry_success;
         logger.info(
-            "Win32 hle reentry funnel not-pending/segment-write/"
+            "hle reentry funnel not-pending/segment-write/"
             "outside-arena/quarantined/span-unsafe/success/total: "
             "{}/{}/{}/{}/{}/{}/{}",
             attempt.hle_reentry_reject_not_pending,
@@ -1057,17 +1057,17 @@ void PrintExecutionAttempt(
             // IsGuestInstructionPointer.
             const auto& oos = attempt.out_of_arena_step_census;
             logger.info(
-                "Win32 out-of-arena step total/aot-cache/other: {}/{}/{}",
+                "out-of-arena step total/aot-cache/other: {}/{}/{}",
                 oos.total_count, oos.location_counts[0], oos.location_counts[1]);
             logger.info(
-                "Win32 out-of-arena step trace-on/reentry-pending: {}/{}",
+                "out-of-arena step trace-on/reentry-pending: {}/{}",
                 oos.trace_enabled_count, oos.reentry_pending_count);
             logger.info(
-                "Win32 single-step disposition trace-on/trace-off: {}/{}",
+                "single-step disposition trace-on/trace-off: {}/{}",
                 oos.trace_enabled_handled_count,
                 oos.trace_disabled_fallthrough_count);
             logger.info(
-                "Win32 out-of-arena step first/last eip/address-overflow: "
+                "out-of-arena step first/last eip/address-overflow: "
                 "{}/{}/{}",
                 Hex32(oos.first_eip), Hex32(oos.last_eip),
                 oos.address_overflow_count);
@@ -1075,19 +1075,19 @@ void PrintExecutionAttempt(
             {
                 if (slot.count != 0U)
                 {
-                    logger.info("Win32 out-of-arena step eip {}: {}",
+                    logger.info("out-of-arena step eip {}: {}",
                                 Hex32(slot.eip), slot.count);
                 }
             }
         }
-        logger.info("Win32 hle reentry cache miss count: {}",
+        logger.info("hle reentry cache miss count: {}",
                     attempt.hle_reentry_reject_cache_miss);
-        logger.info("Win32 hle reentry segment-write resumed: {}",
+        logger.info("hle reentry segment-write resumed: {}",
                     attempt.hle_reentry_segment_write_resumed);
         // Task 341: which pages quarantine, and whether the write source was
         // known. An unknown source quarantines by default, not by evidence.
         logger.info(
-            "Win32 quarantine events/unknown-source/deferred/overflow: "
+            "quarantine events/unknown-source/deferred/overflow: "
             "{}/{}/{}/{}",
             attempt.quarantine_trace_count,
             attempt.quarantine_unknown_source_count,
@@ -1098,7 +1098,7 @@ void PrintExecutionAttempt(
         {
             const auto& entry = attempt.quarantine_trace[index];
             logger.info(
-                "Win32 quarantine #{} page/source/destination/bytes: "
+                "quarantine #{} page/source/destination/bytes: "
                 "{}/{}/{}/{}",
                 index + 1U, Hex32(entry.page), Hex32(entry.source),
                 Hex32(entry.destination), entry.byte_count);
@@ -1123,7 +1123,7 @@ void PrintExecutionAttempt(
                               attempt.port_io_address_census[right].count;
                       });
             logger.info(
-                "Win32 port I/O address census entries/overflow/total: {}/{}/{}",
+                "port I/O address census entries/overflow/total: {}/{}/{}",
                 attempt.port_io_address_census_size,
                 attempt.port_io_address_census_overflow, census_total);
             for (std::uint32_t rank = 0;
@@ -1132,7 +1132,7 @@ void PrintExecutionAttempt(
                 const auto& entry =
                     attempt.port_io_address_census[order[rank]];
                 logger.info(
-                    "Win32 port I/O address #{} "
+                    "port I/O address #{} "
                     "guest/count/cache/arena/mapped/reentry: {}/{}/{}/{}/{}/{}",
                     rank + 1U, Hex32(entry.guest_address), entry.count,
                     entry.cache_count, entry.count - entry.cache_count,
@@ -1142,7 +1142,7 @@ void PrintExecutionAttempt(
                 if (entry.entry_transition_count != 0U)
                 {
                     logger.info(
-                        "Win32 port I/O address #{} entry "
+                        "port I/O address #{} entry "
                         "count/prev-code/prev-eip/flags: {}/{}/{}/{}",
                         rank + 1U, entry.entry_transition_count,
                         Hex32(entry.entry_previous_code),
@@ -1151,7 +1151,7 @@ void PrintExecutionAttempt(
                     // Task 409: the class of every transition, since the first
                     // sample described at most a tenth of them.
                     logger.info(
-                        "Win32 port I/O address #{} entry prev "
+                        "port I/O address #{} entry prev "
                         "step/bp/av/other: {}/{}/{}/{}",
                         rank + 1U, entry.entry_prev_single_step,
                         entry.entry_prev_breakpoint,
@@ -1161,7 +1161,7 @@ void PrintExecutionAttempt(
                     // equal to `prev-eip` means the consumer did not advance
                     // EIP; a cache address means it went back to the cache.
                     logger.info(
-                        "Win32 port I/O address #{} entry prev "
+                        "port I/O address #{} entry prev "
                         "exit-site/exit-eip: {}/{}",
                         rank + 1U,
                         repiu::engine::VehExitSiteName(
@@ -1182,14 +1182,14 @@ void PrintExecutionAttempt(
         const std::uint32_t arena_entry_first =
             arena_entry_total < 16U ? 0U : arena_entry_total % 16U;
         logger.info(
-            "Win32 arena port I/O entry trace total/shown: {}/{}",
+            "arena port I/O entry trace total/shown: {}/{}",
             arena_entry_total, arena_entry_shown);
         for (std::uint32_t offset = 0; offset < arena_entry_shown; ++offset)
         {
             const std::uint32_t index = (arena_entry_first + offset) % 16U;
             const auto& entry = attempt.arena_port_io_entry_trace[index];
             logger.info(
-                "Win32 arena port I/O entry #{} guest/prev-code/prev-eip/"
+                "arena port I/O entry #{} guest/prev-code/prev-eip/"
                 "prev-in-cache/tf/reentry/legacy/step: {}/{}/{}/{}/{}/{}/{}/{}",
                 index + 1U, Hex32(entry.guest_address),
                 Hex32(entry.previous_code), Hex32(entry.previous_eip),
@@ -1210,7 +1210,7 @@ void PrintExecutionAttempt(
                     attempt.veh_arena_single_step_exit_site_counts[site];
             }
             logger.info(
-                "Win32 arena single-step exit total/sum: {}/{}",
+                "arena single-step exit total/sum: {}/{}",
                 attempt.veh_arena_single_step_count, exit_site_sum);
             for (std::uint32_t site = 0;
                  site < repiu::engine::kVehExitSiteCount; ++site)
@@ -1222,7 +1222,7 @@ void PrintExecutionAttempt(
                     continue;
                 }
                 logger.info(
-                    "Win32 arena single-step exit {}: {}",
+                    "arena single-step exit {}: {}",
                     repiu::engine::VehExitSiteName(site), count);
             }
         }
@@ -1230,7 +1230,7 @@ void PrintExecutionAttempt(
         // failed. The message is the reason, and it decides where the fix
         // belongs, so it is printed verbatim rather than classified here.
         logger.info(
-            "Win32 AOT generation failure events/overflow: {}/{}",
+            "AOT generation failure events/overflow: {}/{}",
             attempt.generation_failure_trace_count,
             attempt.generation_failure_trace_overflow);
         for (std::uint32_t index = 0;
@@ -1239,7 +1239,7 @@ void PrintExecutionAttempt(
         {
             const auto& entry = attempt.generation_failure_trace[index];
             logger.info(
-                "Win32 AOT generation failure #{} "
+                "AOT generation failure #{} "
                 "target/page/quarantined/terminal/message: {}/{}/{}/{}/{}",
                 index + 1U, Hex32(entry.target), Hex32(entry.page),
                 entry.quarantined, entry.terminal,
@@ -1252,7 +1252,7 @@ void PrintExecutionAttempt(
                     static_cast<double>(reentry_attempts);
             };
             logger.info(
-                "Win32 hle reentry funnel share not-pending/segment-write/"
+                "hle reentry funnel share not-pending/segment-write/"
                 "outside-arena/quarantined/span-unsafe/success: "
                 "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
                 funnel_share(attempt.hle_reentry_reject_not_pending),
@@ -1276,37 +1276,37 @@ void PrintExecutionAttempt(
                   static_cast<double>(step_profile.total_cycles)
             : 0.0;
     logger.info(
-        "Win32 single-step hotspot enabled/total/distinct/overflow: "
+        "single-step hotspot enabled/total/distinct/overflow: "
         "{}/{}/{}/{}",
         step_profile.enabled,
         step_profile.total_sample_count,
         step_profile.distinct_guest_count,
         step_profile.overflow_count);
     logger.info(
-        "Win32 single-step hotspot cycles total/max: {}/{}",
+        "single-step hotspot cycles total/max: {}/{}",
         step_profile.total_cycles,
         step_profile.max_cycles);
     logger.info(
-        "Win32 single-step hotspot dump written/entries/path: {}/{}/{}",
+        "single-step hotspot dump written/entries/path: {}/{}/{}",
         step_profile.dump_written,
         step_profile.dump_entry_count,
         step_profile.dump_path);
     logger.info(
-        "Win32 single-step hotspot outcome count "
+        "single-step hotspot outcome count "
         "HLE/timer/native/TF: {}/{}/{}/{}",
         step_profile.outcome_counts[0],
         step_profile.outcome_counts[1],
         step_profile.outcome_counts[2],
         step_profile.outcome_counts[3]);
     logger.info(
-        "Win32 single-step hotspot outcome cycles "
+        "single-step hotspot outcome cycles "
         "HLE/timer/native/TF: {}/{}/{}/{}",
         step_profile.outcome_cycles[0],
         step_profile.outcome_cycles[1],
         step_profile.outcome_cycles[2],
         step_profile.outcome_cycles[3]);
     logger.info(
-        "Win32 single-step hotspot top count/cycle coverage: "
+        "single-step hotspot top count/cycle coverage: "
         "{:.2f}%/{:.2f}%",
         step_count_coverage,
         step_cycle_coverage);
@@ -1328,13 +1328,13 @@ void PrintExecutionAttempt(
                 ? step_profile.total_cycles - staged_cycles
                 : 0U;
         logger.info(
-            "Win32 single-step stage count "
+            "single-step stage count "
             "prologue/hle/aot-resume/timer/native: {}/{}/{}/{}/{}",
             step_profile.stage_counts[0], step_profile.stage_counts[1],
             step_profile.stage_counts[2], step_profile.stage_counts[3],
             step_profile.stage_counts[4]);
         logger.info(
-            "Win32 single-step stage cycles "
+            "single-step stage cycles "
             "prologue/hle/aot-resume/timer/native/residual: "
             "{}/{}/{}/{}/{}/{}",
             step_profile.stage_cycles[0], step_profile.stage_cycles[1],
@@ -1353,12 +1353,12 @@ void PrintExecutionAttempt(
         }
         const std::uint64_t aot_resume_cycles = step_profile.stage_cycles[2];
         logger.info(
-            "Win32 single-step aot-resume sub-stage count "
+            "single-step aot-resume sub-stage count "
             "seg-write/quarantine/cache-lookup/span-safety: {}/{}/{}/{}",
             step_profile.stage_counts[5], step_profile.stage_counts[6],
             step_profile.stage_counts[7], step_profile.stage_counts[8]);
         logger.info(
-            "Win32 single-step aot-resume sub-stage cycles "
+            "single-step aot-resume sub-stage cycles "
             "seg-write/quarantine/cache-lookup/span-safety/residual: "
             "{}/{}/{}/{}/{}",
             step_profile.stage_cycles[5], step_profile.stage_cycles[6],
@@ -1372,7 +1372,7 @@ void PrintExecutionAttempt(
     {
         const auto& hotspot = step_profile.count_hotspots[index];
         logger.info(
-            "Win32 single-step count hotspot #{} "
+            "single-step count hotspot #{} "
             "address/count/cycles/max/outcome: {}/{}/{}/{}/{}/{}/{}/{}",
             index + 1U, Hex32(hotspot.guest_address),
             hotspot.sample_count, hotspot.total_cycles, hotspot.max_cycles,
@@ -1384,14 +1384,14 @@ void PrintExecutionAttempt(
     {
         const auto& hotspot = step_profile.cycle_hotspots[index];
         logger.info(
-            "Win32 single-step cycle hotspot #{} "
+            "single-step cycle hotspot #{} "
             "address/count/cycles/max/outcome: {}/{}/{}/{}/{}/{}/{}/{}",
             index + 1U, Hex32(hotspot.guest_address),
             hotspot.sample_count, hotspot.total_cycles, hotspot.max_cycles,
             hotspot.outcome_counts[0], hotspot.outcome_counts[1],
             hotspot.outcome_counts[2], hotspot.outcome_counts[3]);
         logger.info(
-            "Win32 single-step cycle hotspot #{} stage cycles "
+            "single-step cycle hotspot #{} stage cycles "
             "prologue/hle/aot-resume/timer/native: {}/{}/{}/{}/{}",
             index + 1U,
             hotspot.stage_cycles[0], hotspot.stage_cycles[1],
@@ -1401,7 +1401,7 @@ void PrintExecutionAttempt(
     // Task 415: whether the generation-failure penalty stayed at address scope
     // or fell back to quarantining a whole page.
     logger.info(
-        "Win32 AOT generation failure addresses/skips/quarantine-fallbacks/"
+        "AOT generation failure addresses/skips/quarantine-fallbacks/"
         "spanning-activations: {}/{}/{}/{}",
         repiu::engine::AotGenerationFailureAddressCount(),
         repiu::engine::AotGenerationFailureSkipCount(),
@@ -1413,23 +1413,23 @@ void PrintExecutionAttempt(
         const auto& delay_loop =
             repiu::engine::GetPortIoDelayLoopStats();
         logger.info(
-            "Win32 port I/O delay loop enabled/attempts/batches/skipped/max: "
+            "port I/O delay loop enabled/attempts/batches/skipped/max: "
             "{}/{}/{}/{}/{}",
             delay_loop.enabled, delay_loop.attempt_count,
             delay_loop.batch_count, delay_loop.skipped_iteration_count,
             delay_loop.max_skipped_iterations);
         logger.info(
-            "Win32 port I/O delay loop outcome "
+            "port I/O delay loop outcome "
             "batched/shape/register/not-dead/nothing/unreadable: "
             "{}/{}/{}/{}/{}/{}",
             delay_loop.outcome_counts[0], delay_loop.outcome_counts[1],
             delay_loop.outcome_counts[2], delay_loop.outcome_counts[3],
             delay_loop.outcome_counts[4], delay_loop.outcome_counts[5]);
         logger.info(
-            "Win32 port I/O delay loop last body/limit: {}/{}",
+            "port I/O delay loop last body/limit: {}/{}",
             Hex32(delay_loop.last_loop_address), delay_loop.last_limit);
         logger.info(
-            "Win32 port I/O delay loop wrapped candidates/batches/last-return: "
+            "port I/O delay loop wrapped candidates/batches/last-return: "
             "{}/{}/{}",
             delay_loop.wrapped_candidate_count,
             delay_loop.wrapped_batch_count,
@@ -1448,7 +1448,7 @@ void PrintExecutionAttempt(
             origin_total += position.origin_counts[index];
         }
         logger.info(
-            "Win32 guest position census "
+            "guest position census "
             "enabled/total/distinct/overflow/capture-failures/interval-ms: "
             "{}/{}/{}/{}/{}/{}",
             position.enabled, position.total_sample_count,
@@ -1458,14 +1458,14 @@ void PrintExecutionAttempt(
         // recorded: a classification that cannot be reconciled with its total
         // must not be read as a distribution.
         logger.info(
-            "Win32 guest position origin "
+            "guest position origin "
             "arena/cache-mapped/cache-unmapped/host/sum-matches-total: "
             "{}/{}/{}/{}/{}",
             position.origin_counts[0], position.origin_counts[1],
             position.origin_counts[2], position.origin_counts[3],
             origin_total == position.total_sample_count);
         logger.info(
-            "Win32 guest position census dump written/entries/path: {}/{}/{}",
+            "guest position census dump written/entries/path: {}/{}/{}",
             position.dump_written, position.dump_entry_count,
             position.dump_path);
         // Task 412: the one measurement that separates "busy in kernel
@@ -1481,7 +1481,7 @@ void PrintExecutionAttempt(
                       position.thread_time_elapsed_milliseconds
                 : 0.0;
         logger.info(
-            "Win32 guest position thread time "
+            "guest position thread time "
             "valid/kernel-ms/user-ms/wall-ms/cpu-share: "
             "{}/{:.0f}/{:.0f}/{}/{:.2f}%",
             position.thread_time_valid,
@@ -1494,7 +1494,7 @@ void PrintExecutionAttempt(
             position.host_scan_no_site_count +
             position.host_scan_failed_count;
         logger.info(
-            "Win32 guest position host scan "
+            "guest position host scan "
             "samples/sited/no-site/failed/distinct/overflow/parts-match: "
             "{}/{}/{}/{}/{}/{}/{}",
             position.host_scan_sample_count, position.host_scan_sited_count,
@@ -1511,7 +1511,7 @@ void PrintExecutionAttempt(
                           position.total_sample_count
                     : 0.0;
             logger.info(
-                "Win32 guest position top #{} "
+                "guest position top #{} "
                 "address/count/share/arena/cache/cache-unmapped/host/module: "
                 "{}/{}/{:.2f}%/{}/{}/{}/{}/{}+{}",
                 index + 1U, Hex32(sample.address), sample.sample_count, share,
@@ -1532,7 +1532,7 @@ void PrintExecutionAttempt(
                           position.host_scan_sited_count
                     : 0.0;
             logger.info(
-                "Win32 guest position host site #{} "
+                "guest position host site #{} "
                 "address/count/share-of-sited/module/offset/symbol: "
                 "{}/{}/{:.2f}%/{}/{}/{}",
                 index + 1U, Hex32(site.address), site.sample_count, share,
@@ -1567,16 +1567,16 @@ void PrintExecutionAttempt(
         const std::uint64_t veh_exclusive = shares.veh_exclusive;
         const std::uint64_t unaccounted = shares.unaccounted;
         logger.info(
-            "Win32 execution time profile enabled: {}", time_profile.enabled);
+            "execution time profile enabled: {}", time_profile.enabled);
         logger.info(
-            "Win32 execution time cycles "
+            "execution time cycles "
             "guest-run/veh/glide-gate/port-io/dos: {}/{}/{}/{}/{}",
             total, veh,
             bucket(ExecutionTimeBucket::kGlideGate),
             bucket(ExecutionTimeBucket::kPortIoDevice),
             bucket(ExecutionTimeBucket::kDosService));
         logger.info(
-            "Win32 execution time count "
+            "execution time count "
             "guest-run/veh/glide-gate/port-io/dos: {}/{}/{}/{}/{}",
             time_profile.counts[0], time_profile.counts[1],
             time_profile.counts[2], time_profile.counts[3],
@@ -1591,27 +1591,27 @@ void PrintExecutionAttempt(
                 gaps[0] + gaps[1] + gaps[2] +
                 time_profile.veh_gap_unclassified_cycles;
             logger.info(
-                "Win32 VEH gap cycles single-step/breakpoint/other/"
+                "VEH gap cycles single-step/breakpoint/other/"
                 "unclassified/total: {}/{}/{}/{}/{}",
                 gaps[0], gaps[1], gaps[2],
                 time_profile.veh_gap_unclassified_cycles, gap_total);
             logger.info(
-                "Win32 VEH gap counts single-step/breakpoint/other: {}/{}/{}",
+                "VEH gap counts single-step/breakpoint/other: {}/{}/{}",
                 gap_counts[0], gap_counts[1], gap_counts[2]);
             logger.info(
-                "Win32 VEH gap mean single-step/breakpoint/other: {}/{}/{}",
+                "VEH gap mean single-step/breakpoint/other: {}/{}/{}",
                 gap_counts[0] != 0U ? gaps[0] / gap_counts[0] : 0U,
                 gap_counts[1] != 0U ? gaps[1] / gap_counts[1] : 0U,
                 gap_counts[2] != 0U ? gaps[2] / gap_counts[2] : 0U);
             logger.info(
-                "Win32 VEH gap min/max/clamped: {}/{}/{}",
+                "VEH gap min/max/clamped: {}/{}/{}",
                 time_profile.veh_gap_min_cycles,
                 time_profile.veh_gap_max_cycles,
                 time_profile.veh_gap_clamped_count);
             if (total != 0U)
             {
                 logger.info(
-                    "Win32 VEH gap share of wall total/single-step: "
+                    "VEH gap share of wall total/single-step: "
                     "{:.2f}%/{:.2f}%",
                     100.0 * static_cast<double>(gap_total) /
                         static_cast<double>(total),
@@ -1620,24 +1620,24 @@ void PrintExecutionAttempt(
             }
         }
         logger.info(
-            "Win32 execution time inside-veh cycles "
+            "execution time inside-veh cycles "
             "glide-gate/port-io/dos: {}/{}/{}",
             inside(ExecutionTimeBucket::kGlideGate),
             inside(ExecutionTimeBucket::kPortIoDevice),
             inside(ExecutionTimeBucket::kDosService));
         logger.info(
-            "Win32 execution time inside-veh count "
+            "execution time inside-veh count "
             "glide-gate/port-io/dos: {}/{}/{}",
             time_profile.inside_veh_counts[2],
             time_profile.inside_veh_counts[3],
             time_profile.inside_veh_counts[4]);
         logger.info(
-            "Win32 execution time derived veh-exclusive/unaccounted: {}/{}",
+            "execution time derived veh-exclusive/unaccounted: {}/{}",
             veh_exclusive, unaccounted);
         // Task 368 stage one: what exception-free Glide gate dispatch would
         // remove, as opposed to the gate body it would still run.
         logger.info(
-            "Win32 Glide gate prologue cycles/count/mean/clamped: {}/{}/{}/{}",
+            "Glide gate prologue cycles/count/mean/clamped: {}/{}/{}/{}",
             time_profile.glide_gate_prologue_cycles,
             time_profile.glide_gate_prologue_count,
             time_profile.glide_gate_prologue_count == 0U
@@ -1681,7 +1681,7 @@ void PrintExecutionAttempt(
             const std::uint64_t veh_residual =
                 veh > veh_measured ? veh - veh_measured : 0U;
             logger.info(
-                "Win32 execution time veh sub-bucket cycles "
+                "execution time veh sub-bucket cycles "
                 "prologue/aot-transfer/telemetry/gates/hle-chain/residual: "
                 "{}/{}/{}/{}/{}/{}",
                 bucket(ExecutionTimeBucket::kVehPrologue),
@@ -1691,7 +1691,7 @@ void PrintExecutionAttempt(
                 bucket(ExecutionTimeBucket::kVehHleChain),
                 veh_residual);
             logger.info(
-                "Win32 execution time veh sub-bucket count "
+                "execution time veh sub-bucket count "
                 "prologue/aot-transfer/telemetry/gates/hle-chain: "
                 "{}/{}/{}/{}/{}",
                 time_profile.counts[
@@ -1712,7 +1712,7 @@ void PrintExecutionAttempt(
             if (veh != 0U)
             {
                 logger.info(
-                    "Win32 execution time veh sub-bucket share "
+                    "execution time veh sub-bucket share "
                     "prologue/aot-transfer/telemetry/gates/hle-chain/"
                     "single-step/residual: "
                     "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
@@ -1754,7 +1754,7 @@ void PrintExecutionAttempt(
             const std::uint64_t handler_residual =
                 transfer > handler_cycles ? transfer - handler_cycles : 0U;
             logger.info(
-                "Win32 aot transfer handler cycles "
+                "aot transfer handler cycles "
                 "write-completion/write-fault/reentry/indirect/conditional/"
                 "return/residual: {}/{}/{}/{}/{}/{}/{}",
                 bucket(ExecutionTimeBucket::kAotWriteCompletion),
@@ -1765,7 +1765,7 @@ void PrintExecutionAttempt(
                 bucket(ExecutionTimeBucket::kAotReturn),
                 handler_residual);
             logger.info(
-                "Win32 aot transfer function cycles "
+                "aot transfer function cycles "
                 "resolve/hle-boundary-scan/dynamic-translate/residency: "
                 "{}/{}/{}/{}",
                 bucket(ExecutionTimeBucket::kAotTransferResolve),
@@ -1773,7 +1773,7 @@ void PrintExecutionAttempt(
                 bucket(ExecutionTimeBucket::kAotDynamicTranslate),
                 bucket(ExecutionTimeBucket::kAotResidency));
             logger.info(
-                "Win32 aot transfer function count "
+                "aot transfer function count "
                 "resolve/hle-boundary-scan/dynamic-translate/residency: "
                 "{}/{}/{}/{}",
                 time_profile.counts[static_cast<std::uint32_t>(
@@ -1791,7 +1791,7 @@ void PrintExecutionAttempt(
                         static_cast<double>(transfer);
                 };
                 logger.info(
-                    "Win32 aot transfer handler share "
+                    "aot transfer handler share "
                     "write-completion/write-fault/reentry/indirect/conditional/"
                     "return/residual: "
                     "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
@@ -1803,7 +1803,7 @@ void PrintExecutionAttempt(
                     share(bucket(ExecutionTimeBucket::kAotReturn)),
                     share(handler_residual));
                 logger.info(
-                    "Win32 aot transfer function share "
+                    "aot transfer function share "
                     "resolve/hle-boundary-scan/dynamic-translate/residency: "
                     "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
                     share(bucket(ExecutionTimeBucket::kAotTransferResolve)),
@@ -1828,7 +1828,7 @@ void PrintExecutionAttempt(
             const std::uint64_t reentry_residual =
                 reentry > reentry_named ? reentry - reentry_named : 0U;
             logger.info(
-                "Win32 aot reentry cycles guest-lookup/provenance/retired/"
+                "aot reentry cycles guest-lookup/provenance/retired/"
                 "boundary-reason/native-span/single-step/residual: "
                 "{}/{}/{}/{}/{}/{}/{}",
                 bucket(ExecutionTimeBucket::kAotReentryGuestLookup),
@@ -1843,7 +1843,7 @@ void PrintExecutionAttempt(
                 return time_profile.counts[static_cast<std::uint32_t>(id)];
             };
             logger.info(
-                "Win32 aot reentry count guest-lookup/provenance/retired/"
+                "aot reentry count guest-lookup/provenance/retired/"
                 "boundary-reason/native-span/single-step: {}/{}/{}/{}/{}/{}",
                 reentry_count(ExecutionTimeBucket::kAotReentryGuestLookup),
                 reentry_count(ExecutionTimeBucket::kAotReentryProvenance),
@@ -1858,7 +1858,7 @@ void PrintExecutionAttempt(
                         static_cast<double>(reentry);
                 };
                 logger.info(
-                    "Win32 aot reentry share guest-lookup/provenance/retired/"
+                    "aot reentry share guest-lookup/provenance/retired/"
                     "boundary-reason/native-span/single-step/residual: "
                     "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
                     reentry_share(
@@ -1889,19 +1889,19 @@ void PrintExecutionAttempt(
                     ? worker.guest_total_cycles - measured
                     : 0U;
             logger.info(
-                "Win32 aot worker timing enabled/translate/other/clamped: "
+                "aot worker timing enabled/translate/other/clamped: "
                 "{}/{}/{}/{}",
                 worker.enabled, worker.translate_count,
                 worker.other_operation_count, worker.clamped_sample_count);
             logger.info(
-                "Win32 aot worker timing cycles "
+                "aot worker timing cycles "
                 "wake/segment-table/append/complete/residual/guest-total: "
                 "{}/{}/{}/{}/{}/{}",
                 worker.wake_latency_cycles, worker.segment_table_cycles,
                 worker.append_cycles, worker.complete_latency_cycles,
                 worker_residual, worker.guest_total_cycles);
             logger.info(
-                "Win32 aot worker timing max wake/append/guest-total: "
+                "aot worker timing max wake/append/guest-total: "
                 "{}/{}/{}",
                 worker.max_wake_latency_cycles, worker.max_append_cycles,
                 worker.max_guest_total_cycles);
@@ -1912,7 +1912,7 @@ void PrintExecutionAttempt(
                         static_cast<double>(worker.guest_total_cycles);
                 };
                 logger.info(
-                    "Win32 aot worker timing share "
+                    "aot worker timing share "
                     "wake/segment-table/append/complete/residual: "
                     "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
                     share(worker.wake_latency_cycles),
@@ -1921,7 +1921,7 @@ void PrintExecutionAttempt(
                     share(worker.complete_latency_cycles),
                     share(worker_residual));
                 logger.info(
-                    "Win32 aot worker timing mean per translate "
+                    "aot worker timing mean per translate "
                     "guest-total/append/request-gap: {}/{}/{}",
                     worker.guest_total_cycles / worker.translate_count,
                     worker.append_cycles / worker.translate_count,
@@ -1939,7 +1939,7 @@ void PrintExecutionAttempt(
                     ? worker.append_cycles - phase_sum
                     : 0U;
             logger.info(
-                "Win32 aot append phase cycles "
+                "aot append phase cycles "
                 "arena-snapshot/plan-build/image-emit/validate/placement/"
                 "residual: {}/{}/{}/{}/{}/{}",
                 worker.arena_snapshot_cycles, worker.plan_build_cycles,
@@ -1952,7 +1952,7 @@ void PrintExecutionAttempt(
                         static_cast<double>(worker.append_cycles);
                 };
                 logger.info(
-                    "Win32 aot append phase share "
+                    "aot append phase share "
                     "arena-snapshot/plan-build/image-emit/validate/placement/"
                     "residual: "
                     "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
@@ -1966,7 +1966,7 @@ void PrintExecutionAttempt(
             if (worker.append_phase_count != 0U)
             {
                 logger.info(
-                    "Win32 aot append scale count/mean "
+                    "aot append scale count/mean "
                     "blocks/instructions/emitted-bytes/snapshot-bytes: "
                     "{}/{}/{}/{}/{}",
                     worker.append_phase_count,
@@ -1975,7 +1975,7 @@ void PrintExecutionAttempt(
                     worker.emitted_byte_total / worker.append_phase_count,
                     worker.snapshot_byte_total / worker.append_phase_count);
                 logger.info(
-                    "Win32 aot append max snapshot-cycles/instructions: {}/{}",
+                    "aot append max snapshot-cycles/instructions: {}/{}",
                     worker.max_arena_snapshot_cycles,
                     worker.max_plan_instruction_count);
             }
@@ -1994,7 +1994,7 @@ void PrintExecutionAttempt(
                         ? worker.plan_total_cycles - plan_stage_sum
                         : 0U;
                 logger.info(
-                    "Win32 aot plan stage cycles "
+                    "aot plan stage cycles "
                     "decoder-init/decode/record-build/classify/walk/sweep/"
                     "residual: {}/{}/{}/{}/{}/{}/{}",
                     worker.plan_decoder_init_cycles, worker.plan_decode_cycles,
@@ -2008,7 +2008,7 @@ void PrintExecutionAttempt(
                             static_cast<double>(worker.plan_total_cycles);
                     };
                     logger.info(
-                        "Win32 aot plan stage share "
+                        "aot plan stage share "
                         "decoder-init/decode/record-build/classify/walk/sweep/"
                         "residual: "
                         "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/"
@@ -2022,7 +2022,7 @@ void PrintExecutionAttempt(
                         plan_share(plan_stage_residual));
                 }
                 logger.info(
-                    "Win32 aot plan scale builds/decodes/records/sweep-passes/"
+                    "aot plan scale builds/decodes/records/sweep-passes/"
                     "sweep-visits/max-passes: {}/{}/{}/{}/{}/{}",
                     worker.plan_profile_count, worker.plan_decode_count,
                     worker.plan_record_count, worker.plan_sweep_pass_count,
@@ -2031,7 +2031,7 @@ void PrintExecutionAttempt(
                 if (worker.plan_decode_count != 0U)
                 {
                     logger.info(
-                        "Win32 aot plan cycles per instruction "
+                        "aot plan cycles per instruction "
                         "total/decode/record-build: {}/{}/{}",
                         worker.plan_total_cycles / worker.plan_decode_count,
                         worker.plan_decode_cycles / worker.plan_decode_count,
@@ -2047,18 +2047,18 @@ void PrintExecutionAttempt(
         {
             const auto& gate = attempt.glide_gate_timing;
             logger.info(
-                "Win32 glide gate timing enabled/rendezvous/direct/clamped: "
+                "glide gate timing enabled/rendezvous/direct/clamped: "
                 "{}/{}/{}/{}",
                 gate.enabled, gate.rendezvous_count, gate.direct_count,
                 gate.clamped_sample_count);
             logger.info(
-                "Win32 glide gate cycles queue/wake/work/complete/residual/"
+                "glide gate cycles queue/wake/work/complete/residual/"
                 "total: {}/{}/{}/{}/{}/{}",
                 gate.queue_cycles, gate.wake_cycles, gate.work_cycles,
                 gate.complete_cycles, gate.residual_cycles,
                 gate.total_cycles);
             logger.info(
-                "Win32 glide gate direct cycles/max wake/work/total: "
+                "glide gate direct cycles/max wake/work/total: "
                 "{}/{}/{}/{}",
                 gate.direct_work_cycles, gate.max_wake_cycles,
                 gate.max_work_cycles, gate.max_total_cycles);
@@ -2069,7 +2069,7 @@ void PrintExecutionAttempt(
                         static_cast<double>(gate.total_cycles);
                 };
                 logger.info(
-                    "Win32 glide gate share queue/wake/work/complete/residual: "
+                    "glide gate share queue/wake/work/complete/residual: "
                     "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
                     gate_share(gate.queue_cycles),
                     gate_share(gate.wake_cycles),
@@ -2080,7 +2080,7 @@ void PrintExecutionAttempt(
             if (gate.rendezvous_count != 0U)
             {
                 logger.info(
-                    "Win32 glide gate mean per rendezvous total/wake/work: "
+                    "glide gate mean per rendezvous total/wake/work: "
                     "{}/{}/{}",
                     gate.total_cycles / gate.rendezvous_count,
                     gate.wake_cycles / gate.rendezvous_count,
@@ -2091,7 +2091,7 @@ void PrintExecutionAttempt(
             // ratio means the budget is short or the delay is not the
             // scheduler's.
             logger.info(
-                "Win32 glide gate spin budget-us/guest-hit/guest-miss/"
+                "glide gate spin budget-us/guest-hit/guest-miss/"
                 "host-hit/host-miss: {}/{}/{}/{}/{}",
                 attempt.glide_rendezvous_spin.budget_microseconds,
                 attempt.glide_rendezvous_spin.guest_hit,
@@ -2102,13 +2102,13 @@ void PrintExecutionAttempt(
         {
             const auto& ordinal = attempt.glide_ordinal_timing;
             logger.info(
-                "Win32 Glide ordinal timing enabled/entries/completed/"
+                "Glide ordinal timing enabled/entries/completed/"
                 "overflow/clamped: {}/{}/{}/{}/{}",
                 ordinal.enabled, ordinal.active_entry_count,
                 ordinal.completed_gate_count, ordinal.overflow_count,
                 ordinal.clamped_sample_count);
             logger.info(
-                "Win32 Glide ordinal cycles gate/queue/wake/work/complete/"
+                "Glide ordinal cycles gate/queue/wake/work/complete/"
                 "residual/backend-total/direct-work: {}/{}/{}/{}/{}/{}/{}/{}",
                 ordinal.gate_cycles, ordinal.queue_cycles,
                 ordinal.wake_cycles, ordinal.work_cycles,
@@ -2116,30 +2116,30 @@ void PrintExecutionAttempt(
                 ordinal.backend_total_cycles,
                 ordinal.direct_work_cycles);
             logger.info(
-                "Win32 Glide ordinal backend rendezvous/direct: {}/{}",
+                "Glide ordinal backend rendezvous/direct: {}/{}",
                 ordinal.rendezvous_count, ordinal.direct_count);
         }
         {
             const auto& swap = attempt.glide_buffer_swap_timing;
             logger.info(
-                "Win32 Glide buffer swap timing enabled/calls/success/failure/"
+                "Glide buffer swap timing enabled/calls/success/failure/"
                 "clamped: {}/{}/{}/{}/{}",
                 swap.enabled, swap.call_count, swap.success_count,
                 swap.failure_count, swap.clamped_sample_count);
             logger.info(
-                "Win32 Glide buffer swap cycles setup/present/accounting/"
+                "Glide buffer swap cycles setup/present/accounting/"
                 "finalize/total/max-present: {}/{}/{}/{}/{}/{}",
                 swap.setup_cycles, swap.present_cycles,
                 swap.accounting_cycles, swap.finalize_cycles,
                 swap.total_cycles, swap.max_present_cycles);
             logger.info(
-                "Win32 Glide buffer swap requested interval "
+                "Glide buffer swap requested interval "
                 "zero/one/other/min/max/last: {}/{}/{}/{}/{}/{}",
                 swap.requested_zero_count, swap.requested_one_count,
                 swap.requested_other_count, swap.requested_minimum,
                 swap.requested_maximum, swap.requested_last);
             logger.info(
-                "Win32 Glide buffer swap SDL interval "
+                "Glide buffer swap SDL interval "
                 "queries/success/failure/value: {}/{}/{}/{}",
                 swap.sdl_interval_query_count,
                 swap.sdl_interval_query_success_count,
@@ -2149,13 +2149,13 @@ void PrintExecutionAttempt(
         {
             const auto& lfb = attempt.glide_lfb_timing;
             logger.info(
-                "Win32 Glide LFB timing enabled/locks/read-ok/read-fail/"
+                "Glide LFB timing enabled/locks/read-ok/read-fail/"
                 "encode-ok/encode-fail/clamped: {}/{}/{}/{}/{}/{}/{}",
                 lfb.enabled, lfb.lock_count, lfb.readback_success_count,
                 lfb.readback_failure_count, lfb.encode_success_count,
                 lfb.encode_failure_count, lfb.clamped_sample_count);
             logger.info(
-                "Win32 Glide LFB timing cycles readback/encode/total/"
+                "Glide LFB timing cycles readback/encode/total/"
                 "max-readback/max-encode/max-total: {}/{}/{}/{}/{}/{}",
                 lfb.readback_cycles, lfb.encode_cycles, lfb.total_cycles,
                 lfb.max_readback_cycles, lfb.max_encode_cycles,
@@ -2164,7 +2164,7 @@ void PrintExecutionAttempt(
         {
             const auto& footprint = attempt.glide_lfb_write_footprint;
             logger.info(
-                "Win32 Glide LFB write census enabled/locks/compared/unchanged/"
+                "Glide LFB write census enabled/locks/compared/unchanged/"
                 "partial-extent/full-extent/all-pixels/malformed: {}/{}/{}/{}/{}/{}/{}/{}",
                 footprint.enabled, footprint.write_lock_count,
                 footprint.compared_lock_count, footprint.unchanged_lock_count,
@@ -2173,25 +2173,25 @@ void PrintExecutionAttempt(
                 footprint.all_pixels_changed_lock_count,
                 footprint.malformed_baseline_count);
             logger.info(
-                "Win32 Glide LFB write census changed/max-changed/max-bbox pixels: {}/{}/{}",
+                "Glide LFB write census changed/max-changed/max-bbox pixels: {}/{}/{}",
                 footprint.changed_pixel_count, footprint.max_changed_pixel_count,
                 footprint.max_bounding_box_pixel_count);
         }
         {
             const auto& stores = attempt.glide_lfb_native_store_census;
             logger.info(
-                "Win32 Glide LFB native-store census enabled/locks/completed/"
+                "Glide LFB native-store census enabled/locks/completed/"
                 "malformed/observer/decoded/active-decoded: {}/{}/{}/{}/{}/{}/{}",
                 stores.enabled, stores.write_lock_count,
                 stores.completed_write_lock_count, stores.malformed_range_count,
                 stores.observer_call_count, stores.decoded_store_count,
                 stores.active_decoded_store_count);
             logger.info(
-                "Win32 Glide LFB native-store census overlap stores/bytes/max-bytes: "
+                "Glide LFB native-store census overlap stores/bytes/max-bytes: "
                 "{}/{}/{}", stores.overlapping_store_count,
                 stores.overlapping_byte_count, stores.max_overlapping_byte_count);
             logger.info(
-                "Win32 Glide LFB native-store census source samples/stride/"
+                "Glide LFB native-store census source samples/stride/"
                 "overflow-samples/overflow-bytes: {}/{}/{}/{}",
                 stores.source_sample_count,
                 repiu::engine::kGlideLfbNativeStoreCensusSourceSampleStride,
@@ -2210,7 +2210,7 @@ void PrintExecutionAttempt(
                     break;
                 }
                 logger.info(
-                    "Win32 Glide LFB native-store census source #{} eip=0x{:08X} "
+                    "Glide LFB native-store census source #{} eip=0x{:08X} "
                     "samples/bytes/max-bytes: {}/{}/{}",
                     index + 1U, source.guest_eip,
                     source.sample_count,
@@ -2221,7 +2221,7 @@ void PrintExecutionAttempt(
         {
             const auto& shadow = attempt.glide_lfb_staging_shadow;
             logger.info(
-                "Win32 Glide LFB staging shadow census/reuse/locks/reusable/"
+                "Glide LFB staging shadow census/reuse/locks/reusable/"
                 "reused/seeds/stores/rotations: {}/{}/{}/{}/{}/{}/{}/{}",
                 shadow.census_enabled, shadow.reuse_enabled, shadow.lock_count,
                 shadow.reusable_lock_count, shadow.reused_lock_count,
@@ -2235,7 +2235,7 @@ void PrintExecutionAttempt(
                     static_cast<repiu::engine::GlideLfbStagingShadowInvalidation>(
                         index);
                 logger.info(
-                    "Win32 Glide LFB staging shadow invalidation {}: {}",
+                    "Glide LFB staging shadow invalidation {}: {}",
                     repiu::engine::GlideLfbStagingShadowInvalidationName(reason),
                     shadow.invalidate_counts[index]);
             }
@@ -2243,12 +2243,12 @@ void PrintExecutionAttempt(
         {
             const auto& interval = attempt.glide_lfb_lock_interval;
             logger.info(
-                "Win32 Glide LFB lock interval census enabled/swaps total/min/max: "
+                "Glide LFB lock interval census enabled/swaps total/min/max: "
                 "{}/{}/{}/{}",
                 interval.enabled, interval.swap_total, interval.swap_minimum,
                 interval.swap_maximum);
             logger.info(
-                "Win32 Glide LFB lock interval swap buckets zero/one/multi, "
+                "Glide LFB lock interval swap buckets zero/one/multi, "
                 "clear/draw totals: {}/{}/{}, {}/{}",
                 interval.zero_swap_interval_count,
                 interval.single_swap_interval_count,
@@ -2258,7 +2258,7 @@ void PrintExecutionAttempt(
                  index < repiu::engine::kGlideLfbLockIntervalKindCount; ++index)
             {
                 logger.info(
-                    "Win32 Glide LFB lock interval {}: {}",
+                    "Glide LFB lock interval {}: {}",
                     repiu::engine::GlideLfbLockIntervalName(
                         static_cast<repiu::engine::GlideLfbLockInterval>(index)),
                     interval.interval_counts[index]);
@@ -2267,13 +2267,13 @@ void PrintExecutionAttempt(
         {
             const auto& census = attempt.glide_setter_census;
             logger.info(
-                "Win32 Glide setter census enabled/entries/calls/first/same/"
+                "Glide setter census enabled/entries/calls/first/same/"
                 "changed/failure/unsupported: {}/{}/{}/{}/{}/{}/{}/{}",
                 census.enabled, census.active_entry_count, census.call_count,
                 census.first_count, census.same_count, census.changed_count,
                 census.failure_count, census.unsupported_count);
             logger.info(
-                "Win32 Glide setter census key-overflow/distinct-overflow/"
+                "Glide setter census key-overflow/distinct-overflow/"
                 "ordinal-overflow/invalidations/frames/texture-generation: "
                 "{}/{}/{}/{}/{}/{}",
                 census.key_overflow_count, census.distinct_overflow_count,
@@ -2281,10 +2281,10 @@ void PrintExecutionAttempt(
                 census.frame_count, census.texture_generation);
             const auto& phase = attempt.glide_setter_phase_timing;
             logger.info(
-                "Win32 Glide setter phase enabled/clamped: {}/{}",
+                "Glide setter phase enabled/clamped: {}/{}",
                 phase.enabled, phase.clamped_sample_count);
             logger.info(
-                "Win32 Glide setter phase depth-mask calls/drain/apply/error/"
+                "Glide setter phase depth-mask calls/drain/apply/error/"
                 "total/max-total/max-apply/max-error/drain-iterations/errors: "
                 "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
                 phase.depth_mask.call_count, phase.depth_mask.drain_cycles,
@@ -2296,7 +2296,7 @@ void PrintExecutionAttempt(
                 phase.depth_mask.drain_iteration_count,
                 phase.depth_mask.error_count);
             logger.info(
-                "Win32 Glide setter phase alpha-blend calls/drain/apply/error/"
+                "Glide setter phase alpha-blend calls/drain/apply/error/"
                 "total/max-total/max-apply/max-error/drain-iterations/errors: "
                 "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
                 phase.alpha_blend.call_count, phase.alpha_blend.drain_cycles,
@@ -2309,7 +2309,7 @@ void PrintExecutionAttempt(
                 phase.alpha_blend.error_count);
             const auto& elision = attempt.glide_setter_state_cache;
             logger.info(
-                "Win32 Glide setter elision enabled/texture-state/batch-three/"
+                "Glide setter elision enabled/texture-state/batch-three/"
                 "batch-four/entries/elided/applied/voided/invalidations/"
                 "ordinal-overflow/texture-generation: "
                 "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
@@ -2327,7 +2327,7 @@ void PrintExecutionAttempt(
                 return batch.flush_reasons[static_cast<std::size_t>(value)];
             };
             logger.info(
-                "Win32 Glide draw batch enabled/primitives-queued/"
+                "Glide draw batch enabled/primitives-queued/"
                 "primitives-drawn/vertices-drawn/flushes/failures/max-batch/"
                 "pending/mean-batch: {}/{}/{}/{}/{}/{}/{}/{}/{:.2f}",
                 batch.enabled, batch.queued_primitive_count,
@@ -2340,7 +2340,7 @@ void PrintExecutionAttempt(
                     : static_cast<double>(batch.drawn_primitive_count) /
                         static_cast<double>(batch.flush_count));
             logger.info(
-                "Win32 Glide draw batch flush reason "
+                "Glide draw batch flush reason "
                 "non-draw-gate/primitive-change/capacity: {}/{}/{}",
                 reason_count(reason::kNonDrawGate),
                 reason_count(reason::kPrimitiveChange),
@@ -2350,7 +2350,7 @@ void PrintExecutionAttempt(
             // place work lost on that path becomes visible.
             const auto& async_present = attempt.glide_async_present;
             logger.info(
-                "Win32 Glide async present enabled/posted/swaps/executed/"
+                "Glide async present enabled/posted/swaps/executed/"
                 "failures/back-pressure/refused/pending/max-depth: "
                 "{}/{}/{}/{}/{}/{}/{}/{}/{}",
                 async_present.enabled, async_present.posted_count,
@@ -2365,7 +2365,7 @@ void PrintExecutionAttempt(
         if (total != 0U)
         {
             logger.info(
-                "Win32 execution time share "
+                "execution time share "
                 "veh/glide-gate/port-io/dos/unaccounted: "
                 "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
                 100.0 * static_cast<double>(veh) /
@@ -2383,26 +2383,26 @@ void PrintExecutionAttempt(
                     static_cast<double>(total));
         }
     }
-    logger.info("Win32 native fast path entry/return/cancel: {}/{}/{}",
+    logger.info("native fast path entry/return/cancel: {}/{}/{}",
                 attempt.native_fast_path_entry_count,
                 attempt.native_fast_path_return_count,
                 attempt.native_fast_path_cancel_count);
-    logger.info("Win32 native fast path last entry/return: {}/{}",
+    logger.info("native fast path last entry/return: {}/{}",
                 Hex32(attempt.native_fast_path_last_entry),
                 Hex32(attempt.native_fast_path_last_return));
     logger.info(
-        "Win32 native linear span entry/boundary/cancel/instructions/reject: "
+        "native linear span entry/boundary/cancel/instructions/reject: "
         "{}/{}/{}/{}/{}",
         attempt.native_linear_span_entry_count,
         attempt.native_linear_span_boundary_count,
         attempt.native_linear_span_cancel_count,
         attempt.native_linear_span_instruction_total,
         attempt.native_linear_span_reject_count);
-    logger.info("Win32 native linear span cache hit/miss: {}/{}",
+    logger.info("native linear span cache hit/miss: {}/{}",
                 attempt.native_linear_span_cache_hit_count,
                 attempt.native_linear_span_cache_miss_count);
     logger.info(
-        "Win32 native linear span reject cache hit/miss/stale/store/capacity-skip: "
+        "native linear span reject cache hit/miss/stale/store/capacity-skip: "
         "{}/{}/{}/{}/{}",
         attempt.native_linear_span_reject_cache_hit_count,
         attempt.native_linear_span_reject_cache_miss_count,
@@ -2410,53 +2410,53 @@ void PrintExecutionAttempt(
         attempt.native_linear_span_reject_cache_store_count,
         attempt.native_linear_span_reject_cache_capacity_skip_count);
     logger.info(
-        "Win32 native linear span write cross/uncovered/fault-cancel: {}/{}/{}",
+        "native linear span write cross/uncovered/fault-cancel: {}/{}/{}",
                 attempt.native_linear_span_write_cross_count,
                 attempt.native_linear_span_write_guard_uncovered_count,
                 attempt.native_linear_span_write_fault_cancel_count);
-    logger.info("Win32 native linear span last cancel code/eip: {}/{}",
+    logger.info("native linear span last cancel code/eip: {}/{}",
                 Hex32(attempt.native_linear_span_last_cancel_code),
                 Hex32(attempt.native_linear_span_last_cancel_eip));
-    logger.info("Win32 native linear span #DB cancel tf/dr0/dr1/dr2/dr3/other: {}/{}/{}/{}/{}/{}",
+    logger.info("native linear span #DB cancel tf/dr0/dr1/dr2/dr3/other: {}/{}/{}/{}/{}/{}",
                 attempt.native_linear_span_cancel_tf_count,
                 attempt.native_linear_span_cancel_dr0_count,
                 attempt.native_linear_span_cancel_dr1_count,
                 attempt.native_linear_span_cancel_dr2_count,
                 attempt.native_linear_span_cancel_dr3_count,
                 attempt.native_linear_span_cancel_other_db_count);
-    logger.info("Win32 native linear span #DB first eip tf/dr0/dr1/dr2/dr3/other: {}/{}/{}/{}/{}/{}",
+    logger.info("native linear span #DB first eip tf/dr0/dr1/dr2/dr3/other: {}/{}/{}/{}/{}/{}",
                 Hex32(attempt.native_linear_span_cancel_tf_first_eip),
                 Hex32(attempt.native_linear_span_cancel_dr0_first_eip),
                 Hex32(attempt.native_linear_span_cancel_dr1_first_eip),
                 Hex32(attempt.native_linear_span_cancel_dr2_first_eip),
                 Hex32(attempt.native_linear_span_cancel_dr3_first_eip),
                 Hex32(attempt.native_linear_span_cancel_other_db_first_eip));
-    logger.info("Win32 native linear span jump chain/backward-stop: {}/{}",
+    logger.info("native linear span jump chain/backward-stop: {}/{}",
                 attempt.native_linear_span_direct_jump_chain_count,
                 attempt.native_linear_span_backward_jump_stop_count);
-    logger.info("Win32 execution backend: {}",
+    logger.info("execution backend: {}",
                 repiu::runtime::ExecutionBackendName(
                     attempt.execution_backend));
-    logger.info("Win32 AOT entry/boundary/reentry/fallback: {}/{}/{}/{}",
+    logger.info("AOT entry/boundary/reentry/fallback: {}/{}/{}/{}",
                 attempt.aot_cache_entry_count,
                 attempt.aot_boundary_count,
                 attempt.aot_reentry_count,
                 attempt.aot_legacy_fallback_count);
-    logger.info("Win32 AOT-DBT HLE reentry attempt/success: {}/{}",
+    logger.info("AOT-DBT HLE reentry attempt/success: {}/{}",
                 attempt.aot_dbt_hle_reentry_attempt_count,
                 attempt.aot_dbt_hle_reentry_success_count);
-    logger.info("Win32 AOT-DBT post-HLE translation attempt/success: {}/{}",
+    logger.info("AOT-DBT post-HLE translation attempt/success: {}/{}",
                 attempt.aot_dbt_hle_translation_attempt_count,
                 attempt.aot_dbt_hle_translation_success_count);
     logger.info(
-        "Win32 AOT-DBT HLE host dispatch entry/attempt/success/fallback: "
+        "AOT-DBT HLE host dispatch entry/attempt/success/fallback: "
         "{}/{}/{}/{}",
         attempt.aot_dbt_hle_dispatch_entry_count,
         attempt.aot_dbt_hle_dispatch_attempt_count,
         attempt.aot_dbt_hle_dispatch_success_count,
         attempt.aot_dbt_hle_dispatch_fallback_count);
     logger.info(
-        "Win32 AOT-DBT HLE host fallback reason "
+        "AOT-DBT HLE host fallback reason "
         "site/veh-required/unhandled/target/state/unknown: "
         "{}/{}/{}/{}/{}/{}",
         attempt.aot_dbt_hle_dispatch_fallback_reason_counts[0],
@@ -2466,29 +2466,29 @@ void PrintExecutionAttempt(
         attempt.aot_dbt_hle_dispatch_fallback_reason_counts[4],
         attempt.aot_dbt_hle_dispatch_fallback_reason_counts[5]);
     logger.info(
-        "Win32 AOT selector guard native/HLE/unresolved-site/HLE-exit/mismatch: {}/{}/{}/{}/{}",
+        "AOT selector guard native/HLE/unresolved-site/HLE-exit/mismatch: {}/{}/{}/{}/{}",
         attempt.aot_selector_guard_native_site_count,
         attempt.aot_selector_guard_hle_site_count,
         attempt.aot_selector_guard_unresolved_site_count,
         attempt.aot_selector_guard_hle_exit_count,
         attempt.aot_selector_guard_mismatch_count);
     logger.info(
-        "Win32 AOT-DBT HLE host last source/next/bytes: {}/{}/{}",
+        "AOT-DBT HLE host last source/next/bytes: {}/{}/{}",
         Hex32(attempt.aot_dbt_hle_dispatch_last_source),
         Hex32(attempt.aot_dbt_hle_dispatch_last_next),
         Hex32(attempt.aot_dbt_hle_dispatch_last_bytes));
-    logger.info("Win32 AOT guarded segment-pop success/fallback: {}/{}",
+    logger.info("AOT guarded segment-pop success/fallback: {}/{}",
                 attempt.aot_guarded_segment_pop_success_count,
                 attempt.aot_guarded_segment_pop_fallback_count);
-    logger.info("Win32 AOT guarded segment-load success/fallback: {}/{}",
+    logger.info("AOT guarded segment-load success/fallback: {}/{}",
                 attempt.aot_guarded_segment_load_success_count,
                 attempt.aot_guarded_segment_load_fallback_count);
-    logger.info("Win32 AOT timer safe-point trap/injected/deferred: {}/{}/{}",
+    logger.info("AOT timer safe-point trap/injected/deferred: {}/{}/{}",
                 attempt.aot_timer_safe_point_trap_count,
                 attempt.aot_timer_safe_point_injected_count,
                 attempt.aot_timer_safe_point_deferred_count);
     logger.info(
-        "Win32 AOT timer source profile enabled/entries/overflow/"
+        "AOT timer source profile enabled/entries/overflow/"
         "attributed-ticks: {}/{}/{}/{}",
         attempt.aot_timer_source_profile.enabled,
         attempt.aot_timer_source_profile.entry_count,
@@ -2505,7 +2505,7 @@ void PrintExecutionAttempt(
         {
             const auto& source = timer_sources[index];
             logger.info(
-                "Win32 AOT timer source top {} "
+                "AOT timer source top {} "
                 "guest/trap/injected/deferred/attributed-ticks/"
                 "first-tick/last-tick: {}/{}/{}/{}/{}/{}/{}",
                 index + 1U,
@@ -2519,13 +2519,13 @@ void PrintExecutionAttempt(
         }
     }
     logger.info(
-        "Win32 AOT-DBT return entry/attempt/success/fallback: {}/{}/{}/{}",
+        "AOT-DBT return entry/attempt/success/fallback: {}/{}/{}/{}",
         attempt.aot_dbt_return_entry_count,
         attempt.aot_dbt_return_attempt_count,
         attempt.aot_dbt_return_success_count,
         attempt.aot_dbt_return_fallback_count);
     logger.info(
-        "Win32 AOT-DBT return fallback reason "
+        "AOT-DBT return fallback reason "
         "site/state/opcode/source/zero/hle/quarantine/non-guest/translate/unknown: "
         "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
         attempt.aot_dbt_return_fallback_reason_counts[0],
@@ -2544,16 +2544,16 @@ void PrintExecutionAttempt(
     {
         aot_dbt_return_fallback_reason_total += count;
     }
-    logger.info("Win32 AOT-DBT return fallback reason total: {}",
+    logger.info("AOT-DBT return fallback reason total: {}",
                 aot_dbt_return_fallback_reason_total);
     logger.info(
-        "Win32 AOT-DBT indirect entry/attempt/success/fallback: {}/{}/{}/{}",
+        "AOT-DBT indirect entry/attempt/success/fallback: {}/{}/{}/{}",
         attempt.aot_dbt_indirect_entry_count,
         attempt.aot_dbt_indirect_attempt_count,
         attempt.aot_dbt_indirect_success_count,
         attempt.aot_dbt_indirect_fallback_count);
     logger.info(
-        "Win32 AOT-DBT indirect fallback reason "
+        "AOT-DBT indirect fallback reason "
         "site/state/opcode/source/zero/hle/quarantine/non-guest/translate/unknown: "
         "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
         attempt.aot_dbt_indirect_fallback_reason_counts[0],
@@ -2572,16 +2572,16 @@ void PrintExecutionAttempt(
     {
         aot_dbt_indirect_fallback_reason_total += count;
     }
-    logger.info("Win32 AOT-DBT indirect fallback reason total: {}",
+    logger.info("AOT-DBT indirect fallback reason total: {}",
                 aot_dbt_indirect_fallback_reason_total);
-    logger.info("Win32 AOT boundary reason ret/indir/direct/cond/other: "
+    logger.info("AOT boundary reason ret/indir/direct/cond/other: "
                 "{}/{}/{}/{}/{}",
                 attempt.aot_boundary_return_count,
                 attempt.aot_boundary_indirect_count,
                 attempt.aot_boundary_direct_count,
                 attempt.aot_boundary_conditional_count,
                 attempt.aot_boundary_other_count);
-    logger.info("Win32 AOT breakpoint provenance "
+    logger.info("AOT breakpoint provenance "
                 "hle/seg/inline/jtable/retired/probe/fixup/unknown: "
                 "{}/{}/{}/{}/{}/{}/{}/{}",
                 attempt.aot_breakpoint_provenance_counts[0],
@@ -2593,7 +2593,7 @@ void PrintExecutionAttempt(
                 attempt.aot_breakpoint_provenance_counts[6],
                 attempt.aot_breakpoint_provenance_counts[7]);
     logger.info(
-        "Win32 AOT boundary opcode census samples/escapes/prefixed/segment/"
+        "AOT boundary opcode census samples/escapes/prefixed/segment/"
         "opsize/truncated/prefix-overflow/empty: {}/{}/{}/{}/{}/{}/{}/{}",
         attempt.aot_opcode_census_samples,
         attempt.aot_opcode_census_escapes,
@@ -2604,7 +2604,7 @@ void PrintExecutionAttempt(
         attempt.aot_opcode_census_prefix_overflow,
         attempt.aot_opcode_census_empty);
     logger.info(
-        "Win32 AOT boundary effective opcodes "
+        "AOT boundary effective opcodes "
         "[{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} "
         "{:02X}:{} {:02X}:{}]",
         attempt.aot_effective_opcode_ranks[0].opcode,
@@ -2624,7 +2624,7 @@ void PrintExecutionAttempt(
         attempt.aot_effective_opcode_ranks[7].opcode,
         attempt.aot_effective_opcode_ranks[7].count);
     logger.info(
-        "Win32 AOT boundary 0F escape opcodes "
+        "AOT boundary 0F escape opcodes "
         "[{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} "
         "{:02X}:{} {:02X}:{}]",
         attempt.aot_escape_opcode_ranks[0].opcode,
@@ -2643,7 +2643,7 @@ void PrintExecutionAttempt(
         attempt.aot_escape_opcode_ranks[6].count,
         attempt.aot_escape_opcode_ranks[7].opcode,
         attempt.aot_escape_opcode_ranks[7].count);
-    logger.info("Win32 AOT other-boundary top opcodes "
+    logger.info("AOT other-boundary top opcodes "
                 "[{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} "
                 "{:02X}:{} {:02X}:{}] last={}/{}",
                 attempt.aot_other_top_opcodes[0], attempt.aot_other_top_counts[0],
@@ -2674,46 +2674,46 @@ void PrintExecutionAttempt(
         // measured" rather than "no straight-line instructions". The state is
         // reported alongside the values so a later session cannot read the zero
         // as a result.
-        logger.info("Win32 AOT residency enabled/total/samples/avg/max/"
+        logger.info("AOT residency enabled/total/samples/avg/max/"
                     "coverage%: {}/{}/{}/{:.2f}/{}/{:.2f}",
                     repiu::engine::AotResidencySampleEnabled(),
                     attempt.aot_residency_total, attempt.aot_residency_samples,
                     average_residency, attempt.aot_residency_max, coverage);
     }
-    logger.info("Win32 AOT last fallback address: {}",
+    logger.info("AOT last fallback address: {}",
                 Hex32(attempt.aot_last_fallback_address));
-    logger.info("Win32 AOT dynamic attempt/success/bytes: {}/{}/{}",
+    logger.info("AOT dynamic attempt/success/bytes: {}/{}/{}",
                 attempt.aot_dynamic_attempt_count,
                 attempt.aot_dynamic_success_count,
                 attempt.aot_dynamic_added_bytes);
-    logger.info("Win32 AOT indirect dispatch/source/target: {}/{}/{}",
+    logger.info("AOT indirect dispatch/source/target: {}/{}/{}",
                 attempt.aot_indirect_dispatch_count,
                 Hex32(attempt.aot_last_indirect_source),
                 Hex32(attempt.aot_last_indirect_target));
-    logger.info("Win32 AOT inline-cache patch attempt/success: {}/{}",
+    logger.info("AOT inline-cache patch attempt/success: {}/{}",
                 attempt.aot_inline_cache_patch_attempt_count,
                 attempt.aot_inline_cache_patch_success_count);
-    logger.info("Win32 AOT inline-cache sites/last cache boundary: {}/{}",
+    logger.info("AOT inline-cache sites/last cache boundary: {}/{}",
                 attempt.aot_inline_cache_site_count,
                 Hex32(attempt.aot_last_reentry_cache_address));
     // Task 479: `scans` counts patches the site index did not answer, which is
     // how a silently invalidated index shows up as something other than speed.
     logger.info(
-        "Win32 AOT inline-cache site index sites/indexed/scans/rebuilds: "
+        "AOT inline-cache site index sites/indexed/scans/rebuilds: "
         "{}/{}/{}/{}",
         attempt.aot_inline_cache_site_count,
         attempt.aot_inline_cache_site_index_lookup_count,
         attempt.aot_inline_cache_site_index_scan_count,
         attempt.aot_inline_cache_site_index_rebuild_count);
     logger.info(
-        "Win32 AOT return dispatch site index sites/lookups/scans/rebuilds: "
+        "AOT return dispatch site index sites/lookups/scans/rebuilds: "
         "{}/{}/{}/{}",
         attempt.aot_return_dispatch_site_count,
         attempt.aot_return_dispatch_site_index_lookup_count,
         attempt.aot_return_dispatch_site_index_scan_count,
         attempt.aot_return_dispatch_site_index_rebuild_count);
     logger.info(
-        "Win32 AOT return patch policy observations/megamorphic/bypasses: "
+        "AOT return patch policy observations/megamorphic/bypasses: "
         "{}/{}/{}",
         attempt.aot_return_patch_policy_observation_count,
         attempt.aot_return_patch_policy_megamorphic_site_count,
@@ -2730,28 +2730,28 @@ void PrintExecutionAttempt(
                 static_cast<double>(stage.outer_cycles)
             : 0.0;
         logger.info(
-            "Win32 AOT return stage profile enabled/returns/outer/max-outer/"
+            "AOT return stage profile enabled/returns/outer/max-outer/"
             "covered/coverage/residual: {}/{}/{}/{}/{}/{:.2f}%/{}",
             stage.enabled, stage.outer_count, stage.outer_cycles,
             stage.max_outer_cycles, covered, coverage,
             stage.residual_cycles);
         logger.info(
-            "Win32 AOT return stage cycles entry/read/resolve/patch/"
+            "AOT return stage cycles entry/read/resolve/patch/"
             "continuation: {}/{}/{}/{}/{}",
             stage.cycles[0], stage.cycles[1], stage.cycles[2],
             stage.cycles[3], stage.cycles[4]);
         logger.info(
-            "Win32 AOT return stage counts entry/read/resolve/patch/"
+            "AOT return stage counts entry/read/resolve/patch/"
             "continuation: {}/{}/{}/{}/{}",
             stage.counts[0], stage.counts[1], stage.counts[2],
             stage.counts[3], stage.counts[4]);
         logger.info(
-            "Win32 AOT return stage max entry/read/resolve/patch/"
+            "AOT return stage max entry/read/resolve/patch/"
             "continuation: {}/{}/{}/{}/{}",
             stage.max_cycles[0], stage.max_cycles[1], stage.max_cycles[2],
             stage.max_cycles[3], stage.max_cycles[4]);
         logger.info(
-            "Win32 AOT return stage clamped residual/sample: {}/{}",
+            "AOT return stage clamped residual/sample: {}/{}",
             stage.residual_clamp_count, stage.clamped_sample_count);
     }
     {
@@ -2767,7 +2767,7 @@ void PrintExecutionAttempt(
                 static_cast<double>(reached)
             : 0.0;
         logger.info(
-            "Win32 AOT direct-return table enabled/sites/entries/hits/share/"
+            "AOT direct-return table enabled/sites/entries/hits/share/"
             "inserts/overwrites/clears: {}/{}/{}/{}/{:.2f}%/{}/{}/{}",
             attempt.aot_direct_return_table_enabled,
             attempt.aot_direct_return_probe_site_count,
@@ -2780,31 +2780,31 @@ void PrintExecutionAttempt(
     for (const auto& site : attempt.aot_return_stage_sites)
     {
         logger.info(
-            "Win32 AOT return stage site: index={} guest={} miss_offset={} "
+            "AOT return stage site: index={} guest={} miss_offset={} "
             "observations={} distinct={} bypasses={} megamorphic={}",
             site.site_index, Hex32(site.guest_source),
             Hex32(site.miss_cache_offset), site.observation_count,
             site.distinct_target_count, site.bypass_count,
             site.megamorphic);
     }
-    logger.info("Win32 AOT code writes/retire attempt/success: {}/{}/{}",
+    logger.info("AOT code writes/retire attempt/success: {}/{}/{}",
                 attempt.aot_code_write_count,
                 attempt.aot_page_retire_attempt_count,
                 attempt.aot_page_retire_success_count);
     // Task 445: the A/B reads from here -- a worker count of zero means the
     // event round trip is gone.
     logger.info(
-        "Win32 AOT inline cache patch direct/worker: {}/{}",
+        "AOT inline cache patch direct/worker: {}/{}",
         attempt.aot_inline_cache_direct_patch_count,
         attempt.aot_inline_cache_worker_patch_count);
-    logger.info("Win32 AOT generation publishes/quarantines: {}/{}",
+    logger.info("AOT generation publishes/quarantines: {}/{}",
                 attempt.aot_generation_publish_count,
                 attempt.aot_quarantine_count);
-    logger.info("Win32 AOT generation failures/relinked/retired traps: {}/{}/{}",
+    logger.info("AOT generation failures/relinked/retired traps: {}/{}/{}",
                 attempt.aot_generation_failure_count,
                 attempt.aot_generation_relinked_entry_count,
                 attempt.aot_retired_entry_trap_count);
-    logger.info("Win32 AOT retired span attempt/success: {}/{}",
+    logger.info("AOT retired span attempt/success: {}/{}",
                 attempt.aot_retired_span_attempt_count,
                 attempt.aot_retired_span_success_count);
     const auto& retired_profile = attempt.aot_retired_trap_profile;
@@ -2814,25 +2814,25 @@ void PrintExecutionAttempt(
                   retired_profile.total_trap_count
             : 0.0;
     logger.info(
-        "Win32 AOT retired profile enabled/total/distinct guest/cache: "
+        "AOT retired profile enabled/total/distinct guest/cache: "
         "{}/{}/{}/{}",
         retired_profile.enabled,
         retired_profile.total_trap_count,
         retired_profile.distinct_guest_count,
         retired_profile.distinct_cache_count);
     logger.info(
-        "Win32 AOT retired profile top16 coverage/relinkable/short/metadata miss: "
+        "AOT retired profile top16 coverage/relinkable/short/metadata miss: "
         "{:.2f}%/{}/{}/{}",
         retired_top_coverage,
         retired_profile.relinkable_trap_count,
         retired_profile.short_trap_count,
         retired_profile.metadata_miss_count);
     logger.info(
-        "Win32 AOT retired profile overflow guest/cache: {}/{}",
+        "AOT retired profile overflow guest/cache: {}/{}",
         retired_profile.guest_histogram_overflow_count,
         retired_profile.cache_histogram_overflow_count);
     logger.info(
-        "Win32 AOT retired profile resolution active/generation/quarantine/"
+        "AOT retired profile resolution active/generation/quarantine/"
         "failure/fallback/trace: {}/{}/{}/{}/{}/{}",
         retired_profile.resolution_counts[0],
         retired_profile.resolution_counts[1],
@@ -2844,7 +2844,7 @@ void PrintExecutionAttempt(
          index < retired_profile.guest_hotspot_count; ++index)
     {
         const auto& hotspot = retired_profile.guest_hotspots[index];
-        logger.info("Win32 AOT retired guest hotspot #{} address/count: {}/{}",
+        logger.info("AOT retired guest hotspot #{} address/count: {}/{}",
                     index + 1U,
                     Hex32(hotspot.guest_address),
                     hotspot.trap_count);
@@ -2854,7 +2854,7 @@ void PrintExecutionAttempt(
     {
         const auto& hotspot = retired_profile.cache_hotspots[index];
         logger.info(
-            "Win32 AOT retired cache hotspot #{} cache/guest/count/generation/"
+            "AOT retired cache hotspot #{} cache/guest/count/generation/"
             "guest-length/emitted-length/relinkable: {}/{}/{}/{}/{}/{}/{}",
             index + 1U,
             Hex32(hotspot.cache_address),
@@ -2865,45 +2865,45 @@ void PrintExecutionAttempt(
             static_cast<std::uint32_t>(hotspot.emitted_length),
             hotspot.metadata_valid && hotspot.emitted_length >= 5U);
     }
-    logger.info("Win32 AOT last code write source/destination: {}/{}",
+    logger.info("AOT last code write source/destination: {}/{}",
                 Hex32(attempt.aot_last_code_write_source),
                 Hex32(attempt.aot_last_code_write_destination));
-    logger.info("Win32 AOT last retired page/published generation: {}/{}",
+    logger.info("AOT last retired page/published generation: {}/{}",
                 Hex32(attempt.aot_last_retired_page),
                 attempt.aot_last_published_generation);
-    logger.info("Win32 AOT exception cache/guest mapping: {}/{}/{}",
+    logger.info("AOT exception cache/guest mapping: {}/{}/{}",
                 attempt.aot_exception_mapping_valid ? "valid" : "invalid",
                 Hex32(attempt.aot_exception_cache_address),
                 Hex32(attempt.aot_exception_guest_address));
     if (attempt.aot_exception_mapping_valid)
     {
-        logger.info("Win32 AOT exception cache bytes: {}",
+        logger.info("AOT exception cache bytes: {}",
                     HexBytes(attempt.aot_exception_cache_bytes,
                              sizeof(attempt.aot_exception_cache_bytes)));
-        logger.info("Win32 AOT exception guest bytes: {}",
+        logger.info("AOT exception guest bytes: {}",
                     HexBytes(attempt.aot_exception_guest_bytes,
                              sizeof(attempt.aot_exception_guest_bytes)));
     }
-    logger.info("Win32 AOT return dispatch/source/target: {}/{}/{}",
+    logger.info("AOT return dispatch/source/target: {}/{}/{}",
                 attempt.aot_return_dispatch_count,
                 Hex32(attempt.aot_last_return_source),
                 Hex32(attempt.aot_last_return_target));
-    logger.info("Win32 AOT return stack: {} {} {} {}",
+    logger.info("AOT return stack: {} {} {} {}",
                 Hex32(attempt.aot_last_return_stack[0]),
                 Hex32(attempt.aot_last_return_stack[1]),
                 Hex32(attempt.aot_last_return_stack[2]),
                 Hex32(attempt.aot_last_return_stack[3]));
-    logger.info("Win32 AOT call depth/return match/expected: {}/{}/{}",
+    logger.info("AOT call depth/return match/expected: {}/{}/{}",
                 attempt.aot_call_depth,
                 attempt.aot_last_return_matches_call ? "true" : "false",
                 Hex32(attempt.aot_last_expected_return));
-    logger.info("Win32 AOT last call source/target: {}/{}",
+    logger.info("AOT last call source/target: {}/{}",
                 Hex32(attempt.aot_last_call_source),
                 Hex32(attempt.aot_last_call_target));
-    logger.info("Win32 AOT expected call source/target: {}/{}",
+    logger.info("AOT expected call source/target: {}/{}",
                 Hex32(attempt.aot_last_expected_call_source),
                 Hex32(attempt.aot_last_expected_call_target));
-    logger.info("Win32 AOT return trace entries: {}",
+    logger.info("AOT return trace entries: {}",
                 attempt.aot_return_trace_count);
     const std::uint32_t trace_begin = attempt.aot_return_trace_count >
         repiu::engine::kAotReturnTraceCapacity
@@ -2915,12 +2915,12 @@ void PrintExecutionAttempt(
     {
         const auto& trace = attempt.aot_return_trace[
             sequence % repiu::engine::kAotReturnTraceCapacity];
-        logger.info("Win32 AOT return trace #{} source/actual/expected/ESP/match: {}/{}/{}/{}/{}",
+        logger.info("AOT return trace #{} source/actual/expected/ESP/match: {}/{}/{}/{}/{}",
                     sequence + 1U, Hex32(trace.source),
                     Hex32(trace.actual_target), Hex32(trace.expected_target),
                     Hex32(trace.esp), trace.matches ? "true" : "false");
     }
-    logger.info("Win32 AOT transfer trace entries: {}",
+    logger.info("AOT transfer trace entries: {}",
                 attempt.aot_transfer_trace_count);
     const std::uint32_t transfer_begin = attempt.aot_transfer_trace_count >
         repiu::engine::kAotTransferTraceCapacity
@@ -2932,7 +2932,7 @@ void PrintExecutionAttempt(
     {
         const auto& transfer = attempt.aot_transfer_trace[
             sequence % repiu::engine::kAotTransferTraceCapacity];
-        logger.info("Win32 AOT transfer trace #{} source/target/kind: {}/{}/{}",
+        logger.info("AOT transfer trace #{} source/target/kind: {}/{}/{}",
                     sequence + 1U, Hex32(transfer.source),
                     Hex32(transfer.target),
                     transfer.is_call ? "call" : "jump");
@@ -2940,7 +2940,7 @@ void PrintExecutionAttempt(
     if (attempt.aot_dbt_call_return_trace_configured)
     {
         logger.info(
-            "Win32 AOT-DBT CALL/RET trace "
+            "AOT-DBT CALL/RET trace "
             "stored-events/calls/returns-observed/matches/mismatches/"
             "overwrites: "
             "{}/{}/{}/{}/{}/{}",
@@ -2987,7 +2987,7 @@ void PrintExecutionAttempt(
         if (attempt.aot_dbt_call_return_first_divergence_valid)
         {
             log_call_return_trace(
-                "Win32 AOT-DBT CALL/RET first divergence",
+                "AOT-DBT CALL/RET first divergence",
                 attempt.aot_dbt_call_return_first_divergence);
         }
         const std::uint32_t call_return_begin =
@@ -3006,7 +3006,7 @@ void PrintExecutionAttempt(
                 sequence %
                 repiu::engine::
                     kAotCallReturnTraceCapacity];
-            log_call_return_trace("Win32 AOT-DBT CALL/RET trace", entry);
+            log_call_return_trace("AOT-DBT CALL/RET trace", entry);
         }
     }
     if (attempt.aot_dbt_call_step_probe_configured)
@@ -3029,7 +3029,7 @@ void PrintExecutionAttempt(
                 }
             };
         logger.info(
-            "Win32 AOT-DBT CALL step probe "
+            "AOT-DBT CALL step probe "
             "targets/events/arms/completes/conflicts/skipped/phase/active: "
             "{}/{}/{}/{}/{}/{}/{}/{}",
             attempt.aot_dbt_call_step_probe_target_count,
@@ -3051,7 +3051,7 @@ void PrintExecutionAttempt(
             }
             targets << attempt.aot_dbt_call_step_probe_targets[index];
         }
-        logger.info("Win32 AOT-DBT CALL step probe target sequences: {}",
+        logger.info("AOT-DBT CALL step probe target sequences: {}",
                     targets.str());
         const std::uint32_t begin =
             attempt.aot_dbt_call_step_probe_trace_count >
@@ -3092,7 +3092,7 @@ void PrintExecutionAttempt(
                     break;
             }
             logger.info(
-                "Win32 AOT-DBT CALL step #{} {} call#/source/target/return/"
+                "AOT-DBT CALL step #{} {} call#/source/target/return/"
                 "EIP/ESP/expected-EIP/expected-ESP/eip-match/esp-match/"
                 "EFLAGS/DR6: {}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
                 entry.sequence, kind, entry.call_sequence,
@@ -3104,7 +3104,7 @@ void PrintExecutionAttempt(
                 entry.esp_matches ? "true" : "false",
                 Hex32(entry.eflags), Hex32(entry.dr6));
             logger.info(
-                "Win32 AOT-DBT CALL step #{} "
+                "AOT-DBT CALL step #{} "
                 "EAX/EBX/ECX/EDX/ESI/EDI/EBP/stack-mask/stack: "
                 "{}/{}/{}/{}/{}/{}/{}/{}/{},{},{},{}",
                 entry.sequence, Hex32(entry.eax), Hex32(entry.ebx),
@@ -3117,37 +3117,37 @@ void PrintExecutionAttempt(
                 Hex32(entry.stack_dwords[3]));
         }
     }
-    logger.info("Win32 execution probe configured/hit/offset: {}/{}/{}",
+    logger.info("execution probe configured/hit/offset: {}/{}/{}",
                 attempt.execution_probe_configured ? "true" : "false",
                 attempt.execution_probe_hit ? "true" : "false",
                 Hex32(attempt.execution_probe_offset));
-    logger.info("Win32 execution probe memory offset: {}",
+    logger.info("execution probe memory offset: {}",
                 Hex32(attempt.execution_probe_memory_offset));
     if (attempt.execution_probe_dump_configured)
     {
         logger.info(
-            "Win32 execution probe dump captured/written/base/source/bytes: "
+            "execution probe dump captured/written/base/source/bytes: "
             "{}/{}/{}/{}/{}",
             attempt.execution_probe_dump_captured ? "true" : "false",
             attempt.execution_probe_dump_written ? "true" : "false",
             Hex32(attempt.execution_probe_dump_base_address),
             Hex32(attempt.execution_probe_dump_source_address),
             Hex32(attempt.execution_probe_dump_byte_count));
-        logger.info("Win32 execution probe dump path: {}",
+        logger.info("execution probe dump path: {}",
                     attempt.execution_probe_dump_path);
     }
     if (attempt.execution_probe_hit)
     {
         const auto& probe = attempt.execution_probe_snapshot;
-        logger.info("Win32 execution probe EIP/ESP/EFLAGS: {}/{}/{}",
+        logger.info("execution probe EIP/ESP/EFLAGS: {}/{}/{}",
                     Hex32(probe.eip), Hex32(probe.esp),
                     Hex32(probe.eflags));
-        logger.info("Win32 execution probe EAX/EBX/ECX/EDX: {}/{}/{}/{}",
+        logger.info("execution probe EAX/EBX/ECX/EDX: {}/{}/{}/{}",
                     Hex32(probe.eax), Hex32(probe.ebx),
                     Hex32(probe.ecx), Hex32(probe.edx));
-        logger.info("Win32 execution probe ESI/EDI/EBP: {}/{}/{}",
+        logger.info("execution probe ESI/EDI/EBP: {}/{}/{}",
                     Hex32(probe.esi), Hex32(probe.edi), Hex32(probe.ebp));
-        logger.info("Win32 execution probe stack: {} {} {} {} {} {} {} {}",
+        logger.info("execution probe stack: {} {} {} {} {} {} {} {}",
                     Hex32(attempt.execution_probe_stack[0]),
                     Hex32(attempt.execution_probe_stack[1]),
                     Hex32(attempt.execution_probe_stack[2]),
@@ -3168,12 +3168,12 @@ void PrintExecutionAttempt(
             if (!window.valid)
             {
                 logger.info(
-                    "Win32 execution probe memory {} address/valid: {}/false",
+                    "execution probe memory {} address/valid: {}/false",
                     kRegisterNames[index], Hex32(window.address));
                 continue;
             }
             logger.info(
-                "Win32 execution probe memory {} address/valid/bytes: "
+                "execution probe memory {} address/valid/bytes: "
                 "{}/true/{}",
                 kRegisterNames[index], Hex32(window.address),
                 HexBytes(window.bytes, sizeof(window.bytes)));
@@ -3182,7 +3182,7 @@ void PrintExecutionAttempt(
     if (attempt.execution_trace_configured)
     {
         logger.info(
-            "Win32 execution trace start/end/esp_offset/hits: "
+            "execution trace start/end/esp_offset/hits: "
             "{}/{}/{}/{}",
             Hex32(attempt.execution_trace_start_offset),
             Hex32(attempt.execution_trace_end_offset),
@@ -3191,7 +3191,7 @@ void PrintExecutionAttempt(
         if (attempt.execution_trace_sentinel2_configured)
         {
             logger.info(
-                "Win32 execution trace sentinel2_offset/rearm_count: {}/{}",
+                "execution trace sentinel2_offset/rearm_count: {}/{}",
                 Hex32(attempt.execution_trace_sentinel2_offset),
                 attempt.execution_trace_sentinel_rearm_count);
         }
@@ -3204,20 +3204,20 @@ void PrintExecutionAttempt(
         {
             const auto& entry = attempt.execution_trace[index];
             logger.info(
-                "Win32 execution trace #{} seq={} eip/esp/value: {}/{}/{}",
+                "execution trace #{} seq={} eip/esp/value: {}/{}/{}",
                 index, entry.sequence, Hex32(entry.eip), Hex32(entry.esp),
                 Hex32(entry.value_at_esp_offset));
         }
     }
-    logger.info("Win32 diagnostic poll iterations: {}",
+    logger.info("diagnostic poll iterations: {}",
                 attempt.diagnostic_poll_iteration_count);
-    logger.info("Win32 diagnostic progress count: {}",
+    logger.info("diagnostic progress count: {}",
                 attempt.diagnostic_progress_count);
-    logger.info("Win32 diagnostic quiet iterations: {}",
+    logger.info("diagnostic quiet iterations: {}",
                 attempt.diagnostic_quiet_iteration_count);
-    logger.info("Win32 exception dispatch entry count: {}",
+    logger.info("exception dispatch entry count: {}",
                 attempt.exception_dispatch_entry_count);
-    logger.info("Win32 exception dispatch exit count: {}",
+    logger.info("exception dispatch exit count: {}",
                 attempt.exception_dispatch_exit_count);
     const std::uint32_t outstanding_dispatch_count =
         attempt.exception_dispatch_entry_count >=
@@ -3225,57 +3225,57 @@ void PrintExecutionAttempt(
             ? attempt.exception_dispatch_entry_count -
                   attempt.exception_dispatch_exit_count
             : 0;
-    logger.info("Win32 exception dispatch outstanding count: {}",
+    logger.info("exception dispatch outstanding count: {}",
                 outstanding_dispatch_count);
-    logger.info("Win32 exception dispatch last EIP: {}",
+    logger.info("exception dispatch last EIP: {}",
                 Hex32(attempt.exception_dispatch_last_eip));
-    logger.info("Win32 exception dispatch malformed count: {}",
+    logger.info("exception dispatch malformed count: {}",
                 attempt.exception_dispatch_malformed_count);
-    logger.info("Win32 exception dispatch last bad ContextRecord: {}",
+    logger.info("exception dispatch last bad ContextRecord: {}",
                 Hex32(attempt.exception_dispatch_last_bad_context));
-    logger.info("Win32 exception dispatch last bad ExceptionRecord: {}",
+    logger.info("exception dispatch last bad ExceptionRecord: {}",
                 Hex32(attempt.exception_dispatch_last_bad_record));
-    logger.info("Win32 selector table valid: {}",
+    logger.info("selector table valid: {}",
                 attempt.selector_table_valid ? "true" : "false");
-    logger.info("Win32 selector descriptor count: {}",
+    logger.info("selector descriptor count: {}",
                 attempt.selector_descriptor_count);
-    logger.info("Win32 LINEXE environment active: {}",
+    logger.info("LINEXE environment active: {}",
                 attempt.linexe_environment_active ? "true" : "false");
-    logger.info("Win32 LINEXE saved client GS: {}",
+    logger.info("LINEXE saved client GS: {}",
                 Hex32(attempt.linexe_saved_client_gs));
-    logger.info("Win32 LINEXE client descriptor: {} base={} limit={}",
+    logger.info("LINEXE client descriptor: {} base={} limit={}",
                 attempt.linexe_client_descriptor_valid ? "valid" : "invalid",
                 Hex32(attempt.linexe_client_descriptor_base),
                 Hex32(attempt.linexe_client_descriptor_limit));
-    logger.info("Win32 LINEXE direct root: {}:{}",
+    logger.info("LINEXE direct root: {}:{}",
                 Hex32(attempt.linexe_root_selector),
                 Hex32(attempt.linexe_root_offset));
-    logger.info("Win32 LINEXE data descriptor: {} base={}",
+    logger.info("LINEXE data descriptor: {} base={}",
                 attempt.linexe_data_descriptor_valid ? "valid" : "invalid",
                 Hex32(attempt.linexe_data_descriptor_base));
-    logger.info("Win32 LINEXE module name pointer: {}:{}",
+    logger.info("LINEXE module name pointer: {}:{}",
                 Hex32(attempt.linexe_module_name_selector),
                 Hex32(attempt.linexe_module_name_offset));
-    logger.info("Win32 LINEXE direct module name: {}",
+    logger.info("LINEXE direct module name: {}",
                 attempt.linexe_direct_module_name);
-    logger.info("Win32 LINEXE direct exports: count={} table={}:{}",
+    logger.info("LINEXE direct exports: count={} table={}:{}",
                 attempt.linexe_direct_export_count,
                 Hex32(attempt.linexe_direct_export_table_selector),
                 Hex32(attempt.linexe_direct_export_table_offset));
-    logger.info("Win32 LINEXE direct first export name: {}:{}",
+    logger.info("LINEXE direct first export name: {}:{}",
                 Hex32(attempt.linexe_direct_first_export_name_selector),
                 Hex32(attempt.linexe_direct_first_export_name_offset));
-    logger.info("Win32 LINEXE GS byte loads: {} first_offset={} first_value={}",
+    logger.info("LINEXE GS byte loads: {} first_offset={} first_value={}",
                 attempt.linexe_gs_byte_load_count,
                 Hex32(attempt.linexe_first_gs_byte_offset),
                 Hex32(attempt.linexe_first_gs_byte_value));
-    logger.info("Win32 LINEXE resolved export count: {}",
+    logger.info("LINEXE resolved export count: {}",
                 attempt.linexe_resolved_export_count);
-    logger.info("Win32 LINEXE scan entry/match/return: {}/{}/{}",
+    logger.info("LINEXE scan entry/match/return: {}/{}/{}",
                 attempt.linexe_scan_entry_count,
                 attempt.linexe_export_match_count,
                 attempt.linexe_scan_return_count);
-    logger.info("Win32 LINEXE indirect far call count/source/pointer/target: {}/{}/{}/{}:{} ({})",
+    logger.info("LINEXE indirect far call count/source/pointer/target: {}/{}/{}/{}:{} ({})",
                 attempt.linexe_indirect_far_call_count,
                 Hex32(attempt.linexe_indirect_far_call_source),
                 Hex32(attempt.linexe_indirect_far_call_pointer),
@@ -3285,7 +3285,7 @@ void PrintExecutionAttempt(
     {
         const auto& ticks = attempt.timer_tick_delivery;
         logger.info(
-            "Win32 timer tick delivery backlog-enabled/due/injected/coalesced/"
+            "timer tick delivery backlog-enabled/due/injected/coalesced/"
             "dropped/deferred/max-backlog/remaining: {}/{}/{}/{}/{}/{}/{}/{}",
             ticks.backlog_enabled, ticks.due_total, ticks.injected_total,
             ticks.coalesced_total, ticks.dropped_total, ticks.deferred_total,
@@ -3294,95 +3294,95 @@ void PrintExecutionAttempt(
         // the Glide gate, where no safe point is reachable and the tick could
         // not have been delivered at all.
         logger.info(
-            "Win32 timer tick in-gate due/coalesced/coalesced-share: {}/{}/{}%",
+            "timer tick in-gate due/coalesced/coalesced-share: {}/{}/{}%",
             ticks.due_in_gate_total, ticks.coalesced_in_gate_total,
             ticks.coalesced_total != 0U
                 ? ticks.coalesced_in_gate_total * 100U / ticks.coalesced_total
                 : 0U);
     }
-    logger.info("Win32 INT 8 chain HLE count/source/pointer/target: {}/{}/{}/{}:{}",
+    logger.info("INT 8 chain HLE count/source/pointer/target: {}/{}/{}/{}:{}",
                 attempt.timer_interrupt_chain_hle_count,
                 Hex32(attempt.timer_interrupt_chain_hle_source),
                 Hex32(attempt.timer_interrupt_chain_hle_pointer),
                 Hex32(attempt.timer_interrupt_chain_hle_selector),
                 Hex32(attempt.timer_interrupt_chain_hle_offset));
-    logger.info("Win32 LINEXE export entry loop count: {}",
+    logger.info("LINEXE export entry loop count: {}",
                 attempt.linexe_export_entry_loop_count);
-    logger.info("Win32 LINEXE export compare count/EAX/ECX/EFLAGS: {}/{}/{}/{}",
+    logger.info("LINEXE export compare count/EAX/ECX/EFLAGS: {}/{}/{}/{}",
                 attempt.linexe_export_compare_count,
                 Hex32(attempt.linexe_export_compare_eax),
                 Hex32(attempt.linexe_export_compare_ecx),
                 Hex32(attempt.linexe_export_compare_eflags));
-    logger.info("Win32 LINEXE export count load EDX/GS: {}/{}",
+    logger.info("LINEXE export count load EDX/GS: {}/{}",
                 Hex32(attempt.linexe_export_count_load_edx),
                 Hex32(attempt.linexe_export_count_load_gs));
-    logger.info("Win32 LINEXE module candidate/match: {}/{}",
+    logger.info("LINEXE module candidate/match: {}/{}",
                 attempt.linexe_module_candidate_count,
                 attempt.linexe_module_match_count);
-    logger.info("Win32 LINEXE name pointer/byte instruction: {}/{}",
+    logger.info("LINEXE name pointer/byte instruction: {}/{}",
                 attempt.linexe_name_pointer_valid_count,
                 attempt.linexe_name_byte_instruction_count);
-    logger.info("Win32 LINEXE GS=0090h load count: {}",
+    logger.info("LINEXE GS=0090h load count: {}",
                 attempt.linexe_data_gs_load_count);
-    logger.info("Win32 LINEXE module selector stack value: {}",
+    logger.info("LINEXE module selector stack value: {}",
                 Hex32(attempt.linexe_module_selector_stack_value));
-    logger.info("Win32 LINEXE module/export stack pointer: {}:{}/{}:{}",
+    logger.info("LINEXE module/export stack pointer: {}:{}/{}:{}",
                 Hex32(attempt.linexe_module_selector_stack_value),
                 Hex32(attempt.linexe_module_offset_stack_value),
                 Hex32(attempt.linexe_export_selector_stack_value),
                 Hex32(attempt.linexe_export_offset_stack_value));
-    logger.info("Win32 LINEXE export jump source ESP/module: {}/{}:{}",
+    logger.info("LINEXE export jump source ESP/module: {}/{}:{}",
                 Hex32(attempt.linexe_export_jump_source_esp),
                 Hex32(attempt.linexe_export_jump_source_module_selector),
                 Hex32(attempt.linexe_export_jump_source_module_offset));
-    logger.info("Win32 LINEXE export jump target ESP/module: {}/{}:{}",
+    logger.info("LINEXE export jump target ESP/module: {}/{}:{}",
                 Hex32(attempt.linexe_export_jump_target_esp),
                 Hex32(attempt.linexe_export_jump_target_module_selector),
                 Hex32(attempt.linexe_export_jump_target_module_offset));
-    logger.info("Win32 LINEXE export name compare count/GS/EDI/ESI/bytes: {}/{}/{}/{}/{}/{}",
+    logger.info("LINEXE export name compare count/GS/EDI/ESI/bytes: {}/{}/{}/{}/{}/{}",
                 attempt.linexe_export_name_compare_count,
                 Hex32(attempt.linexe_export_name_compare_gs),
                 Hex32(attempt.linexe_export_name_compare_edi),
                 Hex32(attempt.linexe_export_name_compare_esi),
                 Hex32(attempt.linexe_export_name_actual_byte),
                 Hex32(attempt.linexe_export_name_expected_byte));
-    logger.info("Win32 LINEXE export name stage mask: {}",
+    logger.info("LINEXE export name stage mask: {}",
                 Hex32(attempt.linexe_export_name_stage_mask));
-    logger.info("Win32 LINEXE export entry name loaded offset/selector: {}/{}",
+    logger.info("LINEXE export entry name loaded offset/selector: {}/{}",
                 Hex32(attempt.linexe_export_entry_name_offset_value),
                 Hex32(attempt.linexe_export_entry_name_selector_value));
-    logger.info("Win32 LINEXE export result stores count/destination/value: {}/{}/{}",
+    logger.info("LINEXE export result stores count/destination/value: {}/{}/{}",
                 attempt.linexe_export_result_store_count,
                 Hex32(attempt.linexe_export_result_store_destination),
                 Hex32(attempt.linexe_export_result_store_value));
-    logger.info("Win32 LINEXE export value load selector/offset/value: {}/{}/{}",
+    logger.info("LINEXE export value load selector/offset/value: {}/{}/{}",
                 Hex32(attempt.linexe_export_value_load_selector),
                 Hex32(attempt.linexe_export_value_load_offset),
                 Hex32(attempt.linexe_export_value_load_value));
-    logger.info("Win32 LINEXE bridge entry/gate/target/service: {}/{}/{}:{}/{}",
+    logger.info("LINEXE bridge entry/gate/target/service: {}/{}/{}:{}/{}",
                 attempt.linexe_bridge_entry_count,
                 attempt.linexe_bridge_gate_valid ? "valid" : "invalid",
                 Hex32(attempt.linexe_bridge_selector),
                 Hex32(attempt.linexe_bridge_offset),
                 attempt.linexe_bridge_service);
-    logger.info("Win32 LINEXE bridge ESP/EBP: {}/{}",
+    logger.info("LINEXE bridge ESP/EBP: {}/{}",
                 Hex32(attempt.linexe_bridge_esp),
                 Hex32(attempt.linexe_bridge_ebp));
-    logger.info("Win32 LINEXE bridge stack: {} {} {} {} {} {}",
+    logger.info("LINEXE bridge stack: {} {} {} {} {} {}",
                 Hex32(attempt.linexe_bridge_stack[0]),
                 Hex32(attempt.linexe_bridge_stack[1]),
                 Hex32(attempt.linexe_bridge_stack[2]),
                 Hex32(attempt.linexe_bridge_stack[3]),
                 Hex32(attempt.linexe_bridge_stack[4]),
                 Hex32(attempt.linexe_bridge_stack[5]));
-    logger.info("Win32 LINEXE bridge stack continued: {} {} {} {} {} {}",
+    logger.info("LINEXE bridge stack continued: {} {} {} {} {} {}",
                 Hex32(attempt.linexe_bridge_stack[6]),
                 Hex32(attempt.linexe_bridge_stack[7]),
                 Hex32(attempt.linexe_bridge_stack[8]),
                 Hex32(attempt.linexe_bridge_stack[9]),
                 Hex32(attempt.linexe_bridge_stack[10]),
                 Hex32(attempt.linexe_bridge_stack[11]));
-    logger.info("Win32 LINEXE bridge stack tail: {} {} {} {} {} {} {} {}",
+    logger.info("LINEXE bridge stack tail: {} {} {} {} {} {} {} {}",
                 Hex32(attempt.linexe_bridge_stack[12]),
                 Hex32(attempt.linexe_bridge_stack[13]),
                 Hex32(attempt.linexe_bridge_stack[14]),
@@ -3397,21 +3397,21 @@ void PrintExecutionAttempt(
     {
         if (attempt.linexe_bridge_stack_text[index][0] != '\0')
         {
-            logger.info("Win32 LINEXE bridge stack text #{}: {}",
+            logger.info("LINEXE bridge stack text #{}: {}",
                         index,
                         attempt.linexe_bridge_stack_text[index]);
         }
     }
-    logger.info("Win32 LINEXE bridge argument text: {}",
+    logger.info("LINEXE bridge argument text: {}",
                 attempt.linexe_bridge_argument_text);
-    logger.info("Win32 LINEXE virtual module loads/handle: {}/{}",
+    logger.info("LINEXE virtual module loads/handle: {}/{}",
                 attempt.linexe_virtual_module_load_count,
                 Hex32(attempt.linexe_virtual_module_handle));
-    logger.info("Win32 LINEXE get-proc count/name/result: {}/{}/{}",
+    logger.info("LINEXE get-proc count/name/result: {}/{}/{}",
                 attempt.linexe_get_proc_count,
                 attempt.linexe_get_proc_name,
                 Hex32(attempt.linexe_get_proc_result_pointer));
-    logger.info("Win32 Glide gate entries/handled/ESP: {}/{}/{}",
+    logger.info("Glide gate entries/handled/ESP: {}/{}/{}",
                 attempt.glide_gate_entry_count,
                 attempt.glide_gate_handled_count,
                 Hex32(attempt.glide_gate_esp));
@@ -3421,7 +3421,7 @@ void PrintExecutionAttempt(
         // omitted it could not be told apart from a clean one.
         const auto& gl_error = attempt.glide_gl_error_policy;
         logger.info(
-            "Win32 Glide GL error policy per-call-check/frame-interval/"
+            "Glide GL error policy per-call-check/frame-interval/"
             "frame-checks/frame-errors/first-code/drain-iterations: "
             "{}/{}/{}/{}/{}/{}",
             gl_error.per_call_check_enabled ? "true" : "false",
@@ -3431,7 +3431,7 @@ void PrintExecutionAttempt(
             Hex32(gl_error.first_error_code),
             gl_error.drain_iteration_count);
         logger.info(
-            "Win32 Glide GL debug output installed/messages/errors/first-id: "
+            "Glide GL debug output installed/messages/errors/first-id: "
             "{}/{}/{}/{}",
             gl_error.debug_output_installed ? "true" : "false",
             gl_error.debug_message_count,
@@ -3439,7 +3439,7 @@ void PrintExecutionAttempt(
             Hex32(gl_error.first_debug_message_id));
         if (gl_error.first_debug_message[0] != '\0')
         {
-            logger.error("Win32 Glide GL debug first message: {}",
+            logger.error("Glide GL debug first message: {}",
                          gl_error.first_debug_message.data());
         }
         // Task 371: the effective value is read back from the driver rather than
@@ -3447,7 +3447,7 @@ void PrintExecutionAttempt(
         // an A/B without saying so.
         const auto& swap_policy = attempt.glide_swap_interval_policy;
         logger.info(
-            "Win32 Glide swap interval override requested/value/applied/"
+            "Glide swap interval override requested/value/applied/"
             "effective: {}/{}/{}/{}",
             swap_policy.override_requested ? "true" : "false",
             swap_policy.requested_interval,
@@ -3456,13 +3456,13 @@ void PrintExecutionAttempt(
                 ? std::to_string(swap_policy.effective_interval)
                 : std::string("unknown"));
     }
-    logger.info("Win32 Glide gate ordinal/name/argument bytes: {}/{}/{}",
+    logger.info("Glide gate ordinal/name/argument bytes: {}/{}/{}",
                 attempt.glide_gate_ordinal,
                 attempt.glide_gate_name,
                 attempt.glide_gate_argument_bytes);
     const auto& glide_issues = attempt.glide_implementation_issues;
     logger.info(
-        "Win32 Glide implementation issues"
+        "Glide implementation issues"
         " unimplemented/unsupported/backend/abi/unique/overflow:"
         " {}/{}/{}/{}/{}/{}",
         glide_issues.total(
@@ -3495,16 +3495,16 @@ void PrintExecutionAttempt(
             logger.error("{}", line);
         }
     }
-    logger.info("Win32 Glide window opens/logical size: {}/{}x{}",
+    logger.info("Glide window opens/logical size: {}/{}x{}",
                 attempt.glide_window_open_count,
                 attempt.glide_logical_width,
                 attempt.glide_logical_height);
-    logger.info("Win32 Glide backend message: {}",
+    logger.info("Glide backend message: {}",
                 attempt.glide_backend_message);
-    logger.info("Win32 Glide virtual texture bytes/max address: {}/{}",
+    logger.info("Glide virtual texture bytes/max address: {}/{}",
                 attempt.glide_texture_memory_bytes,
                 Hex32(attempt.glide_texture_max_address));
-    logger.info("Win32 Glide gate stack: {} {} {} {} {} {} {} {}",
+    logger.info("Glide gate stack: {} {} {} {} {} {} {} {}",
                 Hex32(attempt.glide_gate_stack[0]),
                 Hex32(attempt.glide_gate_stack[1]),
                 Hex32(attempt.glide_gate_stack[2]),
@@ -3519,32 +3519,32 @@ void PrintExecutionAttempt(
         // silently missing.
         const auto& tex = attempt.glide_texture_census;
         logger.info(
-            "Win32 Glide texture census uploads/distinct/identical-repeats/"
+            "Glide texture census uploads/distinct/identical-repeats/"
             "changed-repeats: {}/{}/{}/{}",
             tex.upload_count, tex.distinct_address_count,
             tex.identical_repeat_count, tex.changed_repeat_count);
         logger.info(
-            "Win32 Glide texture census decode-failures/last-failed-format/"
+            "Glide texture census decode-failures/last-failed-format/"
             "extent-mismatch/palettized-without-palette/bytes: {}/{}/{}/{}/{}",
             tex.decode_failure_count, tex.last_failed_format,
             tex.extent_mismatch_count, tex.palettized_without_palette_count,
             tex.decoded_byte_total);
         logger.info(
-            "Win32 Glide texture census dump written/limited: {}/{}",
+            "Glide texture census dump written/limited: {}/{}",
             tex.dump_written_count,
             tex.dump_limit_reached ? "true" : "false");
         logger.info(
-            "Win32 Glide palette downloads/changed/identical: {}/{}/{}",
+            "Glide palette downloads/changed/identical: {}/{}/{}",
             tex.palette_download_count, tex.palette_changed_count,
             tex.palette_identical_count);
         logger.info(
-            "Win32 Glide palette lazy refreshes/failures/source-bytes/"
+            "Glide palette lazy refreshes/failures/source-bytes/"
             "rgba-bytes: {}/{}/{}/{}",
             tex.palette_refresh_count, tex.palette_refresh_failure_count,
             tex.palette_refresh_source_bytes,
             tex.palette_refresh_rgba_bytes);
         logger.info(
-            "Win32 Glide palette lazy refresh decode/upload ms: {:.3f}/{:.3f}",
+            "Glide palette lazy refresh decode/upload ms: {:.3f}/{:.3f}",
             static_cast<double>(tex.palette_refresh_decode_nanoseconds) /
                 1000000.0,
             static_cast<double>(tex.palette_refresh_upload_nanoseconds) /
@@ -3555,25 +3555,25 @@ void PrintExecutionAttempt(
             depth != nullptr && depth->enabled)
         {
             logger.info(
-                "Win32 Glide vertex depth census samples/z-meaningful/"
+                "Glide vertex depth census samples/z-meaningful/"
                 "ooz-meaningful/oow-meaningful: {}/{}/{}/{}",
                 depth->sample_count, depth->z.meaningful_count,
                 depth->ooz.meaningful_count, depth->oow.meaningful_count);
             logger.info(
-                "Win32 Glide vertex depth census z/ooz/oow meaningful ranges: "
+                "Glide vertex depth census z/ooz/oow meaningful ranges: "
                 "[{}, {}] / [{}, {}] / [{}, {}]",
                 depth->z.meaningful_minimum, depth->z.maximum,
                 depth->ooz.meaningful_minimum, depth->ooz.maximum,
                 depth->oow.meaningful_minimum, depth->oow.maximum);
             logger.info(
-                "Win32 Glide vertex depth census z/ooz/oow nonzero (incl "
+                "Glide vertex depth census z/ooz/oow nonzero (incl "
                 "denormals): {}/{}/{}",
                 depth->z.nonzero_count, depth->ooz.nonzero_count,
                 depth->oow.nonzero_count);
             for (std::size_t index = 0; index < depth->raw_count; ++index)
             {
                 logger.info(
-                    "Win32 Glide vertex depth sample #{} z/ooz/oow: {}/{}/{}",
+                    "Glide vertex depth sample #{} z/ooz/oow: {}/{}/{}",
                     index, depth->raw_z[index], depth->raw_ooz[index],
                     depth->raw_oow[index]);
             }
@@ -3584,7 +3584,7 @@ void PrintExecutionAttempt(
         {
             if (tex.format_counts[index] != 0U)
             {
-                logger.info("Win32 Glide texture census format {}: {}",
+                logger.info("Glide texture census format {}: {}",
                             index, tex.format_counts[index]);
             }
         }
@@ -3595,12 +3595,12 @@ void PrintExecutionAttempt(
             if (tex.dimension_counts[index] != 0U)
             {
                 logger.info(
-                    "Win32 Glide texture census longer-edge {}: {}",
+                    "Glide texture census longer-edge {}: {}",
                     1U << index, tex.dimension_counts[index]);
             }
         }
     }
-    logger.info("Win32 Glide texture gate trace count/wrapped: {}/{}",
+    logger.info("Glide texture gate trace count/wrapped: {}/{}",
                 attempt.glide_texture_gate_trace_count,
                 attempt.glide_texture_gate_trace_wrapped ? "true" : "false");
     for (const auto& entry : attempt.glide_texture_gate_trace)
@@ -3609,7 +3609,7 @@ void PrintExecutionAttempt(
         {
             continue;
         }
-        logger.info("Win32 Glide texture gate trace #{} kind={} ordinal={} entry-eip={} entry-esp={} return-address={} tmu={} entry-eax={} return-eax={} planned-return-esp={}",
+        logger.info("Glide texture gate trace #{} kind={} ordinal={} entry-eip={} entry-esp={} return-address={} tmu={} entry-eax={} return-eax={} planned-return-esp={}",
                     entry.sequence,
                     entry.is_max_address ? "max" : "min",
                     entry.ordinal,
@@ -3634,7 +3634,7 @@ void PrintExecutionAttempt(
                 }
                 vertex << Hex32(dword);
             }
-            logger.info("Win32 Glide first triangle vertex {} pointer/readable/dwords: {}/{}/{}",
+            logger.info("Glide first triangle vertex {} pointer/readable/dwords: {}/{}/{}",
                         index,
                         Hex32(attempt.glide_first_triangle.pointers[index]),
                         attempt.glide_first_triangle.pointer_readable[index] ? "true" : "false",
@@ -3642,7 +3642,7 @@ void PrintExecutionAttempt(
         }
     }
     for (const auto& call : attempt.glide_calls)    {
-        logger.info("Win32 Glide call trace: ordinal={} name={} count={} first_stack={} {} {} {} {} {} {} {}",
+        logger.info("Glide call trace: ordinal={} name={} count={} first_stack={} {} {} {} {} {} {} {}",
                     call.ordinal,
                     call.name,
                     call.count,
@@ -3659,7 +3659,7 @@ void PrintExecutionAttempt(
     {
         const auto& timing = observation.timing;
         logger.info(
-            "Win32 Glide ordinal timing: ordinal={} name={} count={} "
+            "Glide ordinal timing: ordinal={} name={} count={} "
             "gate={} max={} rendezvous={} queue={} wake={} work={} "
             "complete={} residual={} backend_total={} direct={} "
             "direct_work={}",
@@ -3675,7 +3675,7 @@ void PrintExecutionAttempt(
     {
         const auto& census = observation.census;
         logger.info(
-            "Win32 Glide setter census: ordinal={} name={} calls={} "
+            "Glide setter census: ordinal={} name={} calls={} "
             "first={} same={} changed={} failure={} unsupported={} "
             "key_overflow={} distinct={} distinct_overflow={} "
             "max_run={} max_frame_calls={} max_frame_changes={} "
@@ -3688,7 +3688,7 @@ void PrintExecutionAttempt(
             census.max_frame_call_count, census.max_frame_change_count,
             observation.elided_count, observation.applied_count);
     }
-    logger.info("Win32 MSCDEX available/audio/tracks/requests/current LBA: {}/{}/{}/{}/{}",
+    logger.info("MSCDEX available/audio/tracks/requests/current LBA: {}/{}/{}/{}/{}",
                 attempt.mscdex_available ? "true" : "false",
                 attempt.cd_audio_available ? "true" : "false",
                 attempt.mscdex_track_count,
@@ -3697,139 +3697,139 @@ void PrintExecutionAttempt(
     // Task 421: a regression is a music position that moved backwards while
     // playing, which the game reads as the song jumping.
     logger.info(
-        "Win32 CD audio position census entries/regressions: {}/{}",
+        "CD audio position census entries/regressions: {}/{}",
         attempt.cd_audio_position_dump_entry_count,
         attempt.cd_audio_position_regression_count);
     logger.info(
-        "Win32 MSCDEX command trace entries/commands: {}/{}",
+        "MSCDEX command trace entries/commands: {}/{}",
         attempt.mscdex_command_trace_entry_count,
         attempt.mscdex_command_trace_total);
-    logger.info("Win32 MSCDEX request ES/resolve kind/declines/reason/header: {}/{}/{}/{}/{}",
+    logger.info("MSCDEX request ES/resolve kind/declines/reason/header: {}/{}/{}/{}/{}",
                 Hex32(attempt.mscdex_frame_es),
                 attempt.mscdex_last_resolve_kind,
                 attempt.mscdex_decline_count,
                 attempt.mscdex_last_decline_reason,
                 Hex32(attempt.mscdex_last_header_bytes));
-    logger.info("Win32 MSCDEX IOCTL last subfunction/handled/declared length/reject mask: {}/{}/{}/{}",
+    logger.info("MSCDEX IOCTL last subfunction/handled/declared length/reject mask: {}/{}/{}/{}",
                 Hex32(attempt.mscdex_last_ioctl_subfunction),
                 attempt.mscdex_last_ioctl_handled ? "true" : "false",
                 attempt.mscdex_last_ioctl_length,
                 Hex32(attempt.mscdex_ioctl_reject_mask));
-    logger.info("Win32 MSCDEX last play mode/start/length/seek target: {}/{}/{}/{}",
+    logger.info("MSCDEX last play mode/start/length/seek target: {}/{}/{}/{}",
                 attempt.mscdex_last_play_mode,
                 attempt.mscdex_last_play_start,
                 attempt.mscdex_last_play_length,
                 attempt.mscdex_last_seek_target);
-    logger.info("Win32 LINEXE scan return EAX/EBP/caller EAX: {}/{}/{}",
+    logger.info("LINEXE scan return EAX/EBP/caller EAX: {}/{}/{}",
                 Hex32(attempt.linexe_scan_return_eax),
                 Hex32(attempt.linexe_scan_return_ebp),
                 Hex32(attempt.linexe_scan_caller_eax));
-    logger.info("Win32 LINEXE selector init results: {} {} {}",
+    logger.info("LINEXE selector init results: {} {} {}",
                 Hex32(attempt.linexe_selector_init_results[0]),
                 Hex32(attempt.linexe_selector_init_results[1]),
                 Hex32(attempt.linexe_selector_init_results[2]));
-    logger.info("Win32 DPMI selector allocations count/request/result: {}/{}/{}",
+    logger.info("DPMI selector allocations count/request/result: {}/{}/{}",
                 attempt.dpmi_allocate_call_count,
                 attempt.dpmi_last_allocate_requested_count,
                 Hex32(attempt.dpmi_last_allocated_selector));
-    logger.info("Win32 LINEXE root selector EAX/GS: {}/{}",
+    logger.info("LINEXE root selector EAX/GS: {}/{}",
                 Hex32(attempt.linexe_root_selector_eax),
                 Hex32(attempt.linexe_root_read_gs));
-    logger.info("Win32 LINEXE shared segment loads entry/read: {}/{}",
+    logger.info("LINEXE shared segment loads entry/read: {}/{}",
                 attempt.linexe_shared_load_entry_count,
                 attempt.linexe_shared_load_read_count);
-    logger.info("Win32 LINEXE shared segment last selector/offset/value: {}/{}/{}",
+    logger.info("LINEXE shared segment last selector/offset/value: {}/{}/{}",
                 Hex32(attempt.linexe_shared_load_selector),
                 Hex32(attempt.linexe_shared_load_offset),
                 Hex32(attempt.linexe_shared_load_value));
-    logger.info("Win32 LINEXE root word loads offset/selector: {}({})/{}({})",
+    logger.info("LINEXE root word loads offset/selector: {}({})/{}({})",
                 Hex32(attempt.linexe_root_offset_load_value),
                 attempt.linexe_root_offset_load_success,
                 Hex32(attempt.linexe_root_selector_load_value),
                 attempt.linexe_root_selector_load_success);
     for (std::uint32_t index = 0; index < 8; ++index)
     {
-        logger.info("Win32 LINEXE export slot #{}: {}",
+        logger.info("LINEXE export slot #{}: {}",
                     index,
                     Hex32(attempt.linexe_resolved_exports[index]));
     }
-    logger.info("Win32 LINEXE selector words: {} {} {} {}",
+    logger.info("LINEXE selector words: {} {} {} {}",
                 Hex32(attempt.linexe_selector_words[0]),
                 Hex32(attempt.linexe_selector_words[1]),
                 Hex32(attempt.linexe_selector_words[2]),
                 Hex32(attempt.linexe_selector_words[3]));
-    logger.info("Win32 DOS low memory valid: {}",
+    logger.info("DOS low memory valid: {}",
                 attempt.dos_low_memory_valid ? "true" : "false");
-    logger.info("Win32 DOS low memory bytes: {}",
+    logger.info("DOS low memory bytes: {}",
                 attempt.dos_low_memory_size);
-    logger.info("Win32 last single-step context captured: {}",
+    logger.info("last single-step context captured: {}",
                 attempt.last_single_step_snapshot.captured ? "true"
                                                            : "false");
     if (attempt.last_single_step_snapshot.captured)
     {
         const auto& snapshot = attempt.last_single_step_snapshot;
-        logger.info("Win32 last single-step EIP: {}", Hex32(snapshot.eip));
-        logger.info("Win32 last single-step EAX: {}", Hex32(snapshot.eax));
-        logger.info("Win32 last single-step EBX: {}", Hex32(snapshot.ebx));
-        logger.info("Win32 last single-step ECX: {}", Hex32(snapshot.ecx));
-        logger.info("Win32 last single-step EDX: {}", Hex32(snapshot.edx));
-        logger.info("Win32 last single-step ESI: {}", Hex32(snapshot.esi));
-        logger.info("Win32 last single-step EDI: {}", Hex32(snapshot.edi));
-        logger.info("Win32 last single-step ESP: {}", Hex32(snapshot.esp));
-        logger.info("Win32 last single-step EBP: {}", Hex32(snapshot.ebp));
-        logger.info("Win32 last single-step EFLAGS: {}",
+        logger.info("last single-step EIP: {}", Hex32(snapshot.eip));
+        logger.info("last single-step EAX: {}", Hex32(snapshot.eax));
+        logger.info("last single-step EBX: {}", Hex32(snapshot.ebx));
+        logger.info("last single-step ECX: {}", Hex32(snapshot.ecx));
+        logger.info("last single-step EDX: {}", Hex32(snapshot.edx));
+        logger.info("last single-step ESI: {}", Hex32(snapshot.esi));
+        logger.info("last single-step EDI: {}", Hex32(snapshot.edi));
+        logger.info("last single-step ESP: {}", Hex32(snapshot.esp));
+        logger.info("last single-step EBP: {}", Hex32(snapshot.ebp));
+        logger.info("last single-step EFLAGS: {}",
                     Hex32(snapshot.eflags));
-        logger.info("Win32 last single-step CS: {}", Hex16(snapshot.cs));
-        logger.info("Win32 last single-step DS: {}", Hex16(snapshot.ds));
-        logger.info("Win32 last single-step ES: {}", Hex16(snapshot.es));
-        logger.info("Win32 last single-step SS: {}", Hex16(snapshot.ss));
-        logger.info("Win32 last single-step FS: {}", Hex16(snapshot.fs));
-        logger.info("Win32 last single-step GS: {}", Hex16(snapshot.gs));
+        logger.info("last single-step CS: {}", Hex16(snapshot.cs));
+        logger.info("last single-step DS: {}", Hex16(snapshot.ds));
+        logger.info("last single-step ES: {}", Hex16(snapshot.es));
+        logger.info("last single-step SS: {}", Hex16(snapshot.ss));
+        logger.info("last single-step FS: {}", Hex16(snapshot.fs));
+        logger.info("last single-step GS: {}", Hex16(snapshot.gs));
     }
-    logger.info("Win32 DOS environment block bytes: {}",
+    logger.info("DOS environment block bytes: {}",
                 attempt.dos_environment_block_size);
-    logger.info("Win32 DOS environment access observed: {}",
+    logger.info("DOS environment access observed: {}",
                 attempt.last_dos_environment_access_valid ? "true" :
                                                             "false");
     if (attempt.last_dos_environment_access_valid)
     {
-        logger.info("Win32 last DOS environment read offset: {}",
+        logger.info("last DOS environment read offset: {}",
                     Hex32(attempt.last_dos_environment_access_offset));
-        logger.info("Win32 last DOS environment entry offset: {}",
+        logger.info("last DOS environment entry offset: {}",
                     Hex32(attempt.last_dos_environment_entry_offset));
-        logger.info("Win32 last DOS environment entry: {}=<redacted>",
+        logger.info("last DOS environment entry: {}=<redacted>",
                     attempt.last_dos_environment_entry_name);
-        logger.info("Win32 last DOS environment value bytes: {}",
+        logger.info("last DOS environment value bytes: {}",
                     attempt.last_dos_environment_value_length);
     }
-    logger.info("Win32 guest stack switch supported: {}",
+    logger.info("guest stack switch supported: {}",
                 attempt.guest_stack_switch_supported ? "true" : "false");
-    logger.info("Win32 guest stack switch attempted: {}",
+    logger.info("guest stack switch attempted: {}",
                 attempt.guest_stack_switch_attempted ? "true" : "false");
     if (attempt.guest_stack_switch_attempted)
     {
-        logger.info("Win32 guest stack initial ESP: {}",
+        logger.info("guest stack initial ESP: {}",
                     Hex32(attempt.guest_stack_initial_esp));
         if (attempt.guest_stack_return_esp != 0)
         {
-            logger.info("Win32 guest stack return ESP: {}",
+            logger.info("guest stack return ESP: {}",
                         Hex32(attempt.guest_stack_return_esp));
         }
     }
-    logger.info("Win32 handled HLE trap count: {}",
+    logger.info("handled HLE trap count: {}",
                 attempt.handled_hle_trap_count);
     if (attempt.handled_hle_trap_count > 0)
     {
-        logger.info("Win32 last handled HLE trap address: {}",
+        logger.info("last handled HLE trap address: {}",
                     Hex32(attempt.last_hle_trap_address));
-        logger.info("Win32 last handled HLE trap opcode: {}",
+        logger.info("last handled HLE trap opcode: {}",
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_hle_trap_opcode & 0xFFU)));
     }
-    logger.info("Win32 port I/O observation count: {}",
+    logger.info("port I/O observation count: {}",
                 attempt.port_io.observed_count);
     logger.info(
-        "Win32 JAMMA scan cycles/scans/key-queries/cycles-per-scan/"
+        "JAMMA scan cycles/scans/key-queries/cycles-per-scan/"
         "cycles-per-query: {}/{}/{}/{}/{}",
         attempt.port_io.jamma_scan_cycles,
         attempt.port_io.jamma_scan_count,
@@ -3841,7 +3841,7 @@ void PrintExecutionAttempt(
             ? attempt.port_io.jamma_scan_cycles / attempt.port_io.key_query_count
             : 0U);
     logger.info(
-        "Win32 JAMMA timeline edges/history-pruned/history-peak/"
+        "JAMMA timeline edges/history-pruned/history-peak/"
         "history-overflow/history-coverage-miss/due/due-overflow/"
         "replays/replay-reads/missing-due/frames-retired/frame-overflow/"
         "active-depth: {}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
@@ -3858,32 +3858,32 @@ void PrintExecutionAttempt(
         attempt.port_io.jamma_timeline_frame_retire_count,
         attempt.port_io.jamma_timeline_frame_overflow_count,
         attempt.port_io.jamma_timeline_active_frame_depth);
-    logger.info("Win32 port I/O input/output/handled/unhandled: {}/{}/{}/{}",
+    logger.info("port I/O input/output/handled/unhandled: {}/{}/{}/{}",
                 attempt.port_io.input_count, attempt.port_io.output_count,
                 attempt.port_io.handled_count, attempt.port_io.unhandled_count);
     if (attempt.port_io.observed_count > 0)
     {
-        logger.info("Win32 last port I/O address: {}",
+        logger.info("last port I/O address: {}",
                     Hex32(attempt.port_io.last_address));
-        logger.info("Win32 last port I/O opcode: {}",
+        logger.info("last port I/O opcode: {}",
                     Hex16(static_cast<std::uint16_t>(
                         attempt.port_io.last_opcode & 0xFFFFU)));
-        logger.info("Win32 last port I/O direction: {}",
+        logger.info("last port I/O direction: {}",
                     attempt.port_io.last_is_input ? "in" : "out");
-        logger.info("Win32 last port I/O port: {}",
+        logger.info("last port I/O port: {}",
                     Hex16(static_cast<std::uint16_t>(
                         attempt.port_io.last_port & 0xFFFFU)));
-        logger.info("Win32 last port I/O width: {}",
+        logger.info("last port I/O width: {}",
                     attempt.port_io.last_width);
-        logger.info("Win32 last port I/O value: {}",
+        logger.info("last port I/O value: {}",
                     Hex32(attempt.port_io.last_value));
-        logger.info("Win32 last port I/O handled: {}",
+        logger.info("last port I/O handled: {}",
                     attempt.port_io.last_handled ? "true" : "false");
-        logger.info("Win32 last port I/O result: {}",
+        logger.info("last port I/O result: {}",
                     attempt.port_io.last_result);
-        logger.info("Win32 port I/O trace stored count: {}",
+        logger.info("port I/O trace stored count: {}",
                     attempt.port_io.trace_stored_count);
-        logger.info("Win32 port I/O trace limit reached: {}",
+        logger.info("port I/O trace limit reached: {}",
                     attempt.port_io.trace_limit_reached ? "true" : "false");
         for (std::uint32_t index = 0;
              index < attempt.port_io.trace_stored_count &&
@@ -3897,7 +3897,7 @@ void PrintExecutionAttempt(
                 continue;
             }
             logger.info(
-                "Win32 port I/O trace #{} address={} opcode={} direction={} port={} width={} value={} handled={}",
+                "port I/O trace #{} address={} opcode={} direction={} port={} width={} value={} handled={}",
                 entry.sequence,
                 Hex32(entry.address),
                 Hex16(static_cast<std::uint16_t>(entry.opcode & 0xFFFFU)),
@@ -3908,9 +3908,9 @@ void PrintExecutionAttempt(
                 entry.handled ? "true" : "false");
         }
     }
-    logger.info("Win32 DOS path trace stored count: {}",
+    logger.info("DOS path trace stored count: {}",
                 attempt.dos_path.trace_stored_count);
-    logger.info("Win32 DOS path trace limit reached: {}",
+    logger.info("DOS path trace limit reached: {}",
                 attempt.dos_path.trace_limit_reached ? "true" : "false");
     if (attempt.dos_path.trace_stored_count > 0)
     {
@@ -3937,7 +3937,7 @@ void PrintExecutionAttempt(
             }
 
             logger.info(
-                "Win32 DOS path trace #{} service={} result={} error={} drive={} access={} guest={} virtual={} host={}",
+                "DOS path trace #{} service={} result={} error={} drive={} access={} guest={} virtual={} host={}",
                 entry.sequence,
                 entry.service,
                 entry.result,
@@ -3949,14 +3949,14 @@ void PrintExecutionAttempt(
                 entry.host_path);
         }
     }
-    logger.info("Win32 DOS file I/O trace observed/stored: {}/{}",
+    logger.info("DOS file I/O trace observed/stored: {}/{}",
                 attempt.dos_file_io.observed_count,
                 attempt.dos_file_io.trace_stored_count);
-    logger.info("Win32 DOS file I/O trace wrapped: {}",
+    logger.info("DOS file I/O trace wrapped: {}",
                 attempt.dos_file_io.trace_wrapped ? "true" : "false");
     // Task 374: one host open per read is the defect this reports. A healthy run
     // opens roughly once per file and reads many times against it.
-    logger.info("Win32 DOS file reads/host opens/reads per open: {}/{}/{:.2f}",
+    logger.info("DOS file reads/host opens/reads per open: {}/{}/{:.2f}",
                 attempt.dos_file_io.read_count,
                 attempt.dos_file_io.host_open_count,
                 attempt.dos_file_io.host_open_count != 0U
@@ -4002,7 +4002,7 @@ void PrintExecutionAttempt(
                 guest_stack << Hex32(value);
             }
             logger.info(
-                "Win32 DOS file I/O #{} op={} handle={} before={} after={} "
+                "DOS file I/O #{} op={} handle={} before={} after={} "
                 "origin={} offset={} requested={} actual={} error={} "
                 "eip={} esp={} stack=[{}] prefix=[{}] path={}",
                 entry.sequence,
@@ -4022,11 +4022,11 @@ void PrintExecutionAttempt(
                 entry.host_path);
         }
     }
-    logger.info("Win32 allocator probe observation count: {}",
+    logger.info("allocator probe observation count: {}",
                 attempt.allocator_probe.observed_count);
-    logger.info("Win32 allocator probe trace stored count: {}",
+    logger.info("allocator probe trace stored count: {}",
                 attempt.allocator_probe.trace_stored_count);
-    logger.info("Win32 allocator probe trace wrapped: {}",
+    logger.info("allocator probe trace wrapped: {}",
                 attempt.allocator_probe.trace_wrapped ? "true" : "false");
     if (attempt.allocator_probe.trace_stored_count > 0)
     {
@@ -4049,7 +4049,7 @@ void PrintExecutionAttempt(
                 continue;
             }
             logger.info(
-                "Win32 allocator probe trace #{} EAX={} ESI={} source={} DS={} pending-before={} size-before={} pending-after={} size-after={} result={}",
+                "allocator probe trace #{} EAX={} ESI={} source={} DS={} pending-before={} size-before={} pending-after={} size-after={} result={}",
                 entry.sequence,
                 Hex32(entry.eax),
                 Hex32(entry.esi),
@@ -4062,11 +4062,11 @@ void PrintExecutionAttempt(
                 entry.result);
         }
     }
-    logger.info("Win32 allocator control-flow observation count: {}",
+    logger.info("allocator control-flow observation count: {}",
                 attempt.allocator_control_flow.observed_count);
-    logger.info("Win32 allocator control-flow trace stored count: {}",
+    logger.info("allocator control-flow trace stored count: {}",
                 attempt.allocator_control_flow.trace_stored_count);
-    logger.info("Win32 allocator control-flow trace wrapped: {}",
+    logger.info("allocator control-flow trace wrapped: {}",
                 attempt.allocator_control_flow.trace_wrapped ? "true"
                                                              : "false");
     if (attempt.allocator_control_flow.trace_stored_count > 0)
@@ -4091,7 +4091,7 @@ void PrintExecutionAttempt(
                 continue;
             }
             logger.info(
-                "Win32 allocator control-flow trace #{} offset={} exception={} bytes={:02X} {:02X} {:02X} {:02X} EAX={} EBX={} EDX={} ESI={} EDI={} EFLAGS={} pending={} size={} read={} address={} value={} explicit-shadow={} zero-backed={} writer={} writer-sequence={} writer-offset={} writer-opcode={} writer-destination={} writer-value={} writer-width={}",
+                "allocator control-flow trace #{} offset={} exception={} bytes={:02X} {:02X} {:02X} {:02X} EAX={} EBX={} EDX={} ESI={} EDI={} EFLAGS={} pending={} size={} read={} address={} value={} explicit-shadow={} zero-backed={} writer={} writer-sequence={} writer-offset={} writer-opcode={} writer-destination={} writer-value={} writer-width={}",
                 entry.sequence,
                 Hex32(entry.eip_offset),
                 Hex32(entry.seh_code),
@@ -4124,7 +4124,7 @@ void PrintExecutionAttempt(
     const auto log_allocator_link_transition = [&](const char* name,
                                                     bool valid,
                                                     const auto& entry) {
-        logger.info("Win32 allocator {} link transition valid: {}",
+        logger.info("allocator {} link transition valid: {}",
                     name,
                     valid ? "true" : "false");
         if (!valid)
@@ -4132,7 +4132,7 @@ void PrintExecutionAttempt(
             return;
         }
         logger.info(
-            "Win32 allocator {} link transition sequence={} node={} address={} value={} explicit-shadow={} zero-backed={} writer={} writer-offset={} writer-opcode={} writer-destination={} writer-value={} writer-width={}",
+            "allocator {} link transition sequence={} node={} address={} value={} explicit-shadow={} zero-backed={} writer={} writer-offset={} writer-opcode={} writer-destination={} writer-value={} writer-width={}",
             name,
             entry.sequence,
             Hex32(entry.esi),
@@ -4159,256 +4159,256 @@ void PrintExecutionAttempt(
         "root-null",
         attempt.allocator_control_flow.root_transition_valid,
         attempt.allocator_control_flow.root_transition);
-    logger.info("Win32 handled DOS interrupt count: {}",
+    logger.info("handled DOS interrupt count: {}",
                 attempt.handled_dos_interrupt_count);
     repiu::engine::AotOpcodeRank dos_ah_ranks[4] = {};
     repiu::engine::RankAotOpcodeHistogram(
         attempt.handled_dos_interrupt_ah_counts, dos_ah_ranks, 4U);
-    logger.info("Win32 DOS AH hotspots [{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{}]",
+    logger.info("DOS AH hotspots [{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{}]",
                 dos_ah_ranks[0].opcode, dos_ah_ranks[0].count,
                 dos_ah_ranks[1].opcode, dos_ah_ranks[1].count,
                 dos_ah_ranks[2].opcode, dos_ah_ranks[2].count,
                 dos_ah_ranks[3].opcode, dos_ah_ranks[3].count);
     if (attempt.handled_dos_interrupt_count > 0)
     {
-        logger.info("Win32 last handled DOS interrupt vector: {}",
+        logger.info("last handled DOS interrupt vector: {}",
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_dos_interrupt_vector & 0xFFU)));
-        logger.info("Win32 last handled DOS interrupt AH: {}",
+        logger.info("last handled DOS interrupt AH: {}",
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_dos_interrupt_ah & 0xFFU)));
-        logger.info("Win32 last handled DOS interrupt AX: {}",
+        logger.info("last handled DOS interrupt AX: {}",
                     Hex16(static_cast<std::uint16_t>(
                         attempt.last_dos_interrupt_ax & 0xFFFFU)));
     }
-    logger.info("Win32 handled DOS chdir count: {}",
+    logger.info("handled DOS chdir count: {}",
                 attempt.handled_dos_chdir_count);
     if (attempt.handled_dos_chdir_count > 0)
     {
-        logger.info("Win32 last DOS chdir guest path: {}",
+        logger.info("last DOS chdir guest path: {}",
                     attempt.last_dos_chdir_guest_path);
-        logger.info("Win32 last DOS chdir virtual path: {}",
+        logger.info("last DOS chdir virtual path: {}",
                     attempt.last_dos_chdir_virtual_path);
-        logger.info("Win32 last DOS chdir host path: {}",
+        logger.info("last DOS chdir host path: {}",
                     attempt.last_dos_chdir_host_path);
-        logger.info("Win32 last DOS chdir result: {}",
+        logger.info("last DOS chdir result: {}",
                     attempt.last_dos_chdir_success ? "success" : "failure");
         if (!attempt.last_dos_chdir_success)
         {
-            logger.info("Win32 last DOS chdir error: {}",
+            logger.info("last DOS chdir error: {}",
                         Hex16(attempt.last_dos_chdir_error));
         }
     }
-    logger.info("Win32 handled DOS getcwd count: {}",
+    logger.info("handled DOS getcwd count: {}",
                 attempt.handled_dos_getcwd_count);
     if (attempt.handled_dos_getcwd_count > 0)
     {
-        logger.info("Win32 last DOS getcwd drive: {}",
+        logger.info("last DOS getcwd drive: {}",
                     Hex8(attempt.last_dos_getcwd_drive));
-        logger.info("Win32 last DOS getcwd path: {}",
+        logger.info("last DOS getcwd path: {}",
                     attempt.last_dos_getcwd_path);
-        logger.info("Win32 last DOS getcwd result: {}",
+        logger.info("last DOS getcwd result: {}",
                     attempt.last_dos_getcwd_success
                         ? "success"
                         : "failure");
         if (!attempt.last_dos_getcwd_success)
         {
-            logger.info("Win32 last DOS getcwd error: {}",
+            logger.info("last DOS getcwd error: {}",
                         Hex16(attempt.last_dos_getcwd_error));
         }
     }
-    logger.info("Win32 handled DOS get drive count: {}",
+    logger.info("handled DOS get drive count: {}",
                 attempt.handled_dos_getdrive_count);
     if (attempt.handled_dos_getdrive_count > 0)
     {
-        logger.info("Win32 last DOS get drive value: {}",
+        logger.info("last DOS get drive value: {}",
                     Hex8(attempt.last_dos_getdrive_value));
     }
-    logger.info("Win32 handled DOS open count: {}",
+    logger.info("handled DOS open count: {}",
                 attempt.handled_dos_open_count);
     if (attempt.handled_dos_open_count > 0)
     {
-        logger.info("Win32 last DOS open guest path: {}",
+        logger.info("last DOS open guest path: {}",
                     attempt.last_dos_open_guest_path);
-        logger.info("Win32 last DOS open virtual path: {}",
+        logger.info("last DOS open virtual path: {}",
                     attempt.last_dos_open_virtual_path);
-        logger.info("Win32 last DOS open host path: {}",
+        logger.info("last DOS open host path: {}",
                     attempt.last_dos_open_host_path);
-        logger.info("Win32 last DOS open access mode: {}",
+        logger.info("last DOS open access mode: {}",
                     Hex8(attempt.last_dos_open_access_mode));
-        logger.info("Win32 last DOS open result: {}",
+        logger.info("last DOS open result: {}",
                     attempt.last_dos_open_success ? "success" : "failure");
         if (attempt.last_dos_open_success)
         {
-            logger.info("Win32 last DOS open handle: {}",
+            logger.info("last DOS open handle: {}",
                         Hex16(attempt.last_dos_open_handle));
         }
         else
         {
-            logger.info("Win32 last DOS open error: {}",
+            logger.info("last DOS open error: {}",
                         Hex16(attempt.last_dos_open_error));
         }
     }
-    logger.info("Win32 handled DOS read count: {}",
+    logger.info("handled DOS read count: {}",
                 attempt.handled_dos_read_count);
     if (attempt.handled_dos_read_count > 0)
     {
-        logger.info("Win32 last DOS read handle: {}",
+        logger.info("last DOS read handle: {}",
                     Hex16(attempt.last_dos_read_handle));
-        logger.info("Win32 last DOS read requested bytes: {}",
+        logger.info("last DOS read requested bytes: {}",
                     attempt.last_dos_read_requested_bytes);
-        logger.info("Win32 last DOS read actual bytes: {}",
+        logger.info("last DOS read actual bytes: {}",
                     attempt.last_dos_read_actual_bytes);
-        logger.info("Win32 last DOS read buffer: {}",
+        logger.info("last DOS read buffer: {}",
                     Hex32(attempt.last_dos_read_buffer));
-        logger.info("Win32 last DOS read result: {}",
+        logger.info("last DOS read result: {}",
                     attempt.last_dos_read_success ? "success" : "failure");
         if (!attempt.last_dos_read_success)
         {
-            logger.info("Win32 last DOS read error: {}",
+            logger.info("last DOS read error: {}",
                         Hex16(attempt.last_dos_read_error));
         }
     }
-    logger.info("Win32 handled DOS create count: {}",
+    logger.info("handled DOS create count: {}",
                 attempt.handled_dos_create_count);
     if (attempt.handled_dos_create_count > 0)
     {
-        logger.info("Win32 last DOS create guest path: {}",
+        logger.info("last DOS create guest path: {}",
                     attempt.last_dos_create_guest_path);
-        logger.info("Win32 last DOS create host path: {}",
+        logger.info("last DOS create host path: {}",
                     attempt.last_dos_create_host_path);
-        logger.info("Win32 last DOS create virtual path: {}",
+        logger.info("last DOS create virtual path: {}",
                     attempt.last_dos_create_virtual_path);
-        logger.info("Win32 last DOS create handle: {}",
+        logger.info("last DOS create handle: {}",
                     Hex16(attempt.last_dos_create_handle));
-        logger.info("Win32 last DOS create attributes: {}",
+        logger.info("last DOS create attributes: {}",
                     Hex16(attempt.last_dos_create_attributes));
-        logger.info("Win32 last DOS create result: {}",
+        logger.info("last DOS create result: {}",
                     attempt.last_dos_create_success ? "success" : "failure");
         if (!attempt.last_dos_create_success)
         {
-            logger.info("Win32 last DOS create error: {}",
+            logger.info("last DOS create error: {}",
                         Hex16(attempt.last_dos_create_error));
         }
     }
-    logger.info("Win32 handled DOS write count: {}",
+    logger.info("handled DOS write count: {}",
                 attempt.handled_dos_write_count);
     if (attempt.handled_dos_write_count > 0)
     {
-        logger.info("Win32 last DOS write handle: {}",
+        logger.info("last DOS write handle: {}",
                     Hex16(attempt.last_dos_write_handle));
-        logger.info("Win32 last DOS write requested bytes: {}",
+        logger.info("last DOS write requested bytes: {}",
                     attempt.last_dos_write_requested_bytes);
-        logger.info("Win32 last DOS write actual bytes: {}",
+        logger.info("last DOS write actual bytes: {}",
                     attempt.last_dos_write_actual_bytes);
-        logger.info("Win32 last DOS write buffer: {}",
+        logger.info("last DOS write buffer: {}",
                     Hex32(attempt.last_dos_write_buffer));
-        logger.info("Win32 last DOS write result: {}",
+        logger.info("last DOS write result: {}",
                     attempt.last_dos_write_success ? "success" : "failure");
         if (!attempt.last_dos_write_success)
         {
-            logger.info("Win32 last DOS write error: {}",
+            logger.info("last DOS write error: {}",
                         Hex16(attempt.last_dos_write_error));
         }
     }
-    logger.info("Win32 handled DOS seek count: {}",
+    logger.info("handled DOS seek count: {}",
                 attempt.handled_dos_seek_count);
     if (attempt.handled_dos_seek_count > 0)
     {
-        logger.info("Win32 last DOS seek handle: {}",
+        logger.info("last DOS seek handle: {}",
                     Hex16(attempt.last_dos_seek_handle));
-        logger.info("Win32 last DOS seek origin: {}",
+        logger.info("last DOS seek origin: {}",
                     Hex8(attempt.last_dos_seek_origin));
-        logger.info("Win32 last DOS seek offset: {}",
+        logger.info("last DOS seek offset: {}",
                     attempt.last_dos_seek_offset);
-        logger.info("Win32 last DOS seek position: {}",
+        logger.info("last DOS seek position: {}",
                     attempt.last_dos_seek_position);
-        logger.info("Win32 last DOS seek result: {}",
+        logger.info("last DOS seek result: {}",
                     attempt.last_dos_seek_success ? "success" : "failure");
         if (!attempt.last_dos_seek_success)
         {
-            logger.info("Win32 last DOS seek error: {}",
+            logger.info("last DOS seek error: {}",
                         Hex16(attempt.last_dos_seek_error));
         }
     }
-    logger.info("Win32 handled DOS close count: {}",
+    logger.info("handled DOS close count: {}",
                 attempt.handled_dos_close_count);
     if (attempt.handled_dos_close_count > 0)
     {
-        logger.info("Win32 last DOS close handle: {}",
+        logger.info("last DOS close handle: {}",
                     Hex16(attempt.last_dos_close_handle));
-        logger.info("Win32 last DOS close result: {}",
+        logger.info("last DOS close result: {}",
                     attempt.last_dos_close_success ? "success" : "failure");
         if (!attempt.last_dos_close_success)
         {
-            logger.info("Win32 last DOS close error: {}",
+            logger.info("last DOS close error: {}",
                         Hex16(attempt.last_dos_close_error));
         }
     }
-    logger.info("Win32 handled DOS IOCTL count: {}",
+    logger.info("handled DOS IOCTL count: {}",
                 attempt.handled_dos_ioctl_count);
     if (attempt.handled_dos_ioctl_count > 0)
     {
-        logger.info("Win32 last DOS IOCTL subfunction: {}",
+        logger.info("last DOS IOCTL subfunction: {}",
                     Hex8(attempt.last_dos_ioctl_subfunction));
-        logger.info("Win32 last DOS IOCTL handle: {}",
+        logger.info("last DOS IOCTL handle: {}",
                     Hex16(attempt.last_dos_ioctl_handle));
-        logger.info("Win32 last DOS IOCTL result: {}",
+        logger.info("last DOS IOCTL result: {}",
                     attempt.last_dos_ioctl_success ? "success" : "failure");
         if (attempt.last_dos_ioctl_success)
         {
-            logger.info("Win32 last DOS IOCTL device info: {}",
+            logger.info("last DOS IOCTL device info: {}",
                         Hex16(attempt.last_dos_ioctl_device_info));
         }
         else
         {
-            logger.info("Win32 last DOS IOCTL error: {}",
+            logger.info("last DOS IOCTL error: {}",
                         Hex16(attempt.last_dos_ioctl_error));
         }
     }
-    logger.info("Win32 handled DOS resize count: {}",
+    logger.info("handled DOS resize count: {}",
                 attempt.handled_dos_resize_count);
     if (attempt.handled_dos_resize_count > 0)
     {
-        logger.info("Win32 last DOS resize selector: {}",
+        logger.info("last DOS resize selector: {}",
                     Hex16(attempt.last_dos_resize_selector));
-        logger.info("Win32 last DOS resize paragraphs: {}",
+        logger.info("last DOS resize paragraphs: {}",
                     Hex16(attempt.last_dos_resize_paragraphs));
-        logger.info("Win32 last DOS resize result: {}",
+        logger.info("last DOS resize result: {}",
                     attempt.last_dos_resize_success ? "success" : "failure");
-        logger.info("Win32 last DOS resize requested end: {}",
+        logger.info("last DOS resize requested end: {}",
                     Hex32(attempt.last_dos_resize_requested_end));
-        logger.info("Win32 last DOS resize allocator end: {}",
+        logger.info("last DOS resize allocator end: {}",
                     Hex32(attempt.last_dos_resize_allocator_end));
         if (!attempt.last_dos_resize_success)
         {
-            logger.info("Win32 last DOS resize error: {}",
+            logger.info("last DOS resize error: {}",
                         Hex16(attempt.last_dos_resize_error));
         }
     }
-    logger.info("Win32 handled segment load count: {}",
+    logger.info("handled segment load count: {}",
                 attempt.handled_segment_load_count);
     if (attempt.handled_segment_load_count > 0)
     {
-        logger.info("Win32 last handled segment load address: {}",
+        logger.info("last handled segment load address: {}",
                     Hex32(attempt.last_segment_load_address));
-        logger.info("Win32 last handled segment load opcode: {}",
+        logger.info("last handled segment load opcode: {}",
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_segment_load_opcode & 0xFFU)));
-        logger.info("Win32 last handled segment register: {}",
+        logger.info("last handled segment register: {}",
                     SegmentRegisterName(
                         attempt.last_segment_load_register));
-        logger.info("Win32 last handled segment selector: {}",
+        logger.info("last handled segment selector: {}",
                     Hex16(static_cast<std::uint16_t>(
                         attempt.last_segment_load_selector & 0xFFFFU)));
         if (attempt.last_segment_load_source != 0)
         {
-        logger.info("Win32 last segment load source: {}",
+        logger.info("last segment load source: {}",
                     Hex32(attempt.last_segment_load_source));
     }
-    logger.info("Win32 segment load trace stored count: {}",
+    logger.info("segment load trace stored count: {}",
                 attempt.segment_load.trace_stored_count);
-    logger.info("Win32 segment load trace wrapped: {}",
+    logger.info("segment load trace wrapped: {}",
                 attempt.segment_load.trace_wrapped ? "true" : "false");
     if (attempt.segment_load.trace_stored_count > 0)
     {
@@ -4431,7 +4431,7 @@ void PrintExecutionAttempt(
                 continue;
             }
             logger.info(
-                "Win32 segment load trace #{} offset={} register={} selector={} source={}",
+                "segment load trace #{} offset={} register={} selector={} source={}",
                 entry.sequence,
                 Hex32(entry.eip_offset),
                 SegmentRegisterName(entry.segment_register),
@@ -4440,172 +4440,172 @@ void PrintExecutionAttempt(
         }
     }
     }
-    logger.info("Win32 handled segment store count: {}",
+    logger.info("handled segment store count: {}",
                 attempt.handled_segment_store_count);
     if (attempt.handled_segment_store_count > 0)
     {
-        logger.info("Win32 last handled segment store address: {}",
+        logger.info("last handled segment store address: {}",
                     Hex32(attempt.last_segment_store_address));
-        logger.info("Win32 last handled segment store opcode: {}",
+        logger.info("last handled segment store opcode: {}",
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_segment_store_opcode & 0xFFU)));
-        logger.info("Win32 last stored segment register: {}",
+        logger.info("last stored segment register: {}",
                     SegmentRegisterName(
                         attempt.last_segment_store_register));
-        logger.info("Win32 last stored segment selector: {}",
+        logger.info("last stored segment selector: {}",
                     Hex16(static_cast<std::uint16_t>(
                         attempt.last_segment_store_selector & 0xFFFFU)));
-        logger.info("Win32 last segment store destination: {}",
+        logger.info("last segment store destination: {}",
                     Hex32(attempt.last_segment_store_destination));
     }
-    logger.info("Win32 handled segment memory load count: {}",
+    logger.info("handled segment memory load count: {}",
                 attempt.handled_segment_memory_load_count);
     if (attempt.handled_segment_memory_load_count > 0)
     {
-        logger.info("Win32 last handled segment memory load address: {}",
+        logger.info("last handled segment memory load address: {}",
                     Hex32(attempt.last_segment_memory_load_address));
-        logger.info("Win32 last handled segment memory load opcode: {}",
+        logger.info("last handled segment memory load opcode: {}",
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_segment_memory_load_opcode & 0xFFU)));
-        logger.info("Win32 last segment memory load register: {}",
+        logger.info("last segment memory load register: {}",
                     SegmentRegisterName(
                         attempt.last_segment_memory_load_register));
-        logger.info("Win32 last segment memory load selector: {}",
+        logger.info("last segment memory load selector: {}",
                     Hex16(static_cast<std::uint16_t>(
                         attempt.last_segment_memory_load_selector &
                         0xFFFFU)));
-        logger.info("Win32 last segment memory load offset: {}",
+        logger.info("last segment memory load offset: {}",
                     Hex32(attempt.last_segment_memory_load_offset));
-        logger.info("Win32 last segment memory load width: {}",
+        logger.info("last segment memory load width: {}",
                     attempt.last_segment_memory_load_width);
         if (attempt.last_segment_memory_load_width == 4)
         {
-            logger.info("Win32 last segment memory load value: {}",
+            logger.info("last segment memory load value: {}",
                         Hex32(attempt.last_segment_memory_load_value));
         }
         else
         {
-            logger.info("Win32 last segment memory load value: {}",
+            logger.info("last segment memory load value: {}",
                         Hex8(static_cast<std::uint8_t>(
                             attempt.last_segment_memory_load_value & 0xFFU)));
         }
     }
-    logger.info("Win32 handled low-memory access count: {}",
+    logger.info("handled low-memory access count: {}",
                 attempt.handled_low_memory_access_count);
     if (attempt.handled_low_memory_access_count > 0)
     {
-        logger.info("Win32 last low-memory access address: {}",
+        logger.info("last low-memory access address: {}",
                     Hex32(attempt.last_low_memory_access_address));
-        logger.info("Win32 last low-memory access opcode: {}",
+        logger.info("last low-memory access opcode: {}",
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_low_memory_access_opcode & 0xFFU)));
-        logger.info("Win32 last low-memory access ESI: {}",
+        logger.info("last low-memory access ESI: {}",
                     Hex32(attempt.last_low_memory_access_esi));
-        logger.info("Win32 last low-memory access EDI: {}",
+        logger.info("last low-memory access EDI: {}",
                     Hex32(attempt.last_low_memory_access_edi));
-        logger.info("Win32 last low-memory access destination: {}",
+        logger.info("last low-memory access destination: {}",
                     Hex32(attempt.last_low_memory_access_destination));
-        logger.info("Win32 last low-memory access value: {}",
+        logger.info("last low-memory access value: {}",
                     Hex32(attempt.last_low_memory_access_value));
     }
-    logger.info("Win32 low-memory read emulate count: {}",
+    logger.info("low-memory read emulate count: {}",
                 attempt.low_memory_read_emulate_count);
-    logger.info("Win32 low-memory read emulate debug stage: {}",
+    logger.info("low-memory read emulate debug stage: {}",
                 attempt.debug_emulate_stage);
     if (attempt.debug_emulate_stage > 0)
     {
-        logger.info("Win32 low-memory read emulate debug decode result: {}",
+        logger.info("low-memory read emulate debug decode result: {}",
                     Hex32(attempt.debug_emulate_decode_result));
-        logger.info("Win32 low-memory read emulate debug calculated address: {}",
+        logger.info("low-memory read emulate debug calculated address: {}",
                     Hex32(attempt.debug_emulate_calculated_address));
     }
     if (attempt.low_memory_read_emulate_count > 0)
     {
-        logger.info("Win32 last low-memory read emulate address: {}",
+        logger.info("last low-memory read emulate address: {}",
                     Hex32(attempt.last_low_memory_read_emulate_address));
-        logger.info("Win32 last low-memory read emulate EIP: {}",
+        logger.info("last low-memory read emulate EIP: {}",
                     Hex32(attempt.last_low_memory_read_emulate_eip));
-        logger.info("Win32 last low-memory read emulate value: {}",
+        logger.info("last low-memory read emulate value: {}",
                     Hex32(attempt.last_low_memory_read_emulate_value));
-        logger.info("Win32 last low-memory read emulate reg: {}",
+        logger.info("last low-memory read emulate reg: {}",
                     static_cast<unsigned>(attempt.last_low_memory_read_emulate_reg));
     }
-    logger.info("Win32 low-memory string service/iteration count: {}/{}",
+    logger.info("low-memory string service/iteration count: {}/{}",
                 attempt.low_memory_string_service_count,
                 attempt.low_memory_string_iteration_count);
     if (attempt.low_memory_string_service_count > 0)
     {
         logger.info(
-            "Win32 last low-memory string EIP/address/mnemonic/iterations: "
+            "last low-memory string EIP/address/mnemonic/iterations: "
             "{}/{}/{}/{}",
             Hex32(attempt.last_low_memory_string_eip),
             Hex32(attempt.last_low_memory_string_address),
             attempt.last_low_memory_string_mnemonic,
             attempt.last_low_memory_string_iterations);
     }
-    logger.info("Win32 handled memory store count: {}",
+    logger.info("handled memory store count: {}",
                 attempt.handled_memory_store_count);
     if (attempt.handled_memory_store_count > 0)
     {
-        logger.info("Win32 last handled memory store address: {}",
+        logger.info("last handled memory store address: {}",
                     Hex32(attempt.last_memory_store_address));
         if (attempt.last_memory_store_opcode > 0xFFU)
         {
-            logger.info("Win32 last memory store opcode: {}",
+            logger.info("last memory store opcode: {}",
                         Hex16(static_cast<std::uint16_t>(
                             attempt.last_memory_store_opcode & 0xFFFFU)));
         }
         else
         {
-            logger.info("Win32 last memory store opcode: {}",
+            logger.info("last memory store opcode: {}",
                         Hex8(static_cast<std::uint8_t>(
                             attempt.last_memory_store_opcode & 0xFFU)));
         }
-        logger.info("Win32 last memory store width: {}",
+        logger.info("last memory store width: {}",
                     attempt.last_memory_store_width);
-        logger.info("Win32 last memory store source kind: {}",
+        logger.info("last memory store source kind: {}",
                     attempt.last_memory_store_source_kind);
-        logger.info("Win32 last memory store destination: {}",
+        logger.info("last memory store destination: {}",
                     Hex32(attempt.last_memory_store_destination));
-        logger.info("Win32 last memory store value: {}",
+        logger.info("last memory store value: {}",
                     Hex32(attempt.last_memory_store_value));
-        logger.info("Win32 last memory store applied: {}",
+        logger.info("last memory store applied: {}",
                     attempt.last_memory_store_applied ? "true" : "false");
     }
-    logger.info("Win32 shadow memory write count: {}",
+    logger.info("shadow memory write count: {}",
                 attempt.shadow_memory_write_count);
-    logger.info("Win32 REP MOVS safe-copy failure count: {}",
+    logger.info("REP MOVS safe-copy failure count: {}",
                 attempt.rep_movs_copy_failure_count);
     if (attempt.rep_movs_copy_failure_count != 0)
     {
-        logger.info("Win32 last REP MOVS failure stage/error: {}/{}",
+        logger.info("last REP MOVS failure stage/error: {}/{}",
                     attempt.last_rep_movs_copy_failure_stage,
                     attempt.last_rep_movs_copy_error);
-        logger.info("Win32 last REP MOVS source/destination/bytes: {}/{}/{}",
+        logger.info("last REP MOVS source/destination/bytes: {}/{}/{}",
                     Hex32(attempt.last_rep_movs_copy_source),
                     Hex32(attempt.last_rep_movs_copy_destination),
                     attempt.last_rep_movs_copy_bytes);
     }
-    logger.info("Win32 shadow memory read hit count: {}",
+    logger.info("shadow memory read hit count: {}",
                 attempt.shadow_memory_read_hit_count);
-    logger.info("Win32 shadow memory byte count: {}",
+    logger.info("shadow memory byte count: {}",
                 attempt.shadow_memory_byte_count);
-    logger.info("Win32 shadow memory range valid: {}",
+    logger.info("shadow memory range valid: {}",
                 attempt.shadow_memory_range_valid ? "true" : "false");
     if (attempt.shadow_memory_range_valid)
     {
-        logger.info("Win32 shadow memory min address: {}",
+        logger.info("shadow memory min address: {}",
                     Hex32(attempt.shadow_memory_min_address));
-        logger.info("Win32 shadow memory max address: {}",
+        logger.info("shadow memory max address: {}",
                     Hex32(attempt.shadow_memory_max_address));
     }
-    logger.info("Win32 minimal execution thread exit code: {}",
+    logger.info("minimal execution thread exit code: {}",
                 attempt.thread_exit_code);
-    logger.info("Win32 DOS termination captured: {}",
+    logger.info("DOS termination captured: {}",
                 attempt.dos_termination_captured ? "true" : "false");
     if (attempt.dos_termination_captured)
     {
-        logger.info("Win32 DOS termination AX/EIP/ESP: {}/{}/{}",
+        logger.info("DOS termination AX/EIP/ESP: {}/{}/{}",
                     Hex16(static_cast<std::uint16_t>(
                         attempt.dos_termination_ax)),
                     Hex32(attempt.dos_termination_eip),
@@ -4622,12 +4622,12 @@ void PrintExecutionAttempt(
             }
             stack << Hex32(attempt.dos_termination_stack[index]);
         }
-        logger.info("Win32 DOS termination stack: {}", stack.str());
+        logger.info("DOS termination stack: {}", stack.str());
     }
     if (!attempt.hle_stdout_output.empty() ||
         !attempt.hle_stderr_output.empty())
     {
-        logger.info("Win32 HLE stdout/stderr bytes: {}/{}",
+        logger.info("HLE stdout/stderr bytes: {}/{}",
                     attempt.hle_stdout_output.size(),
                     attempt.hle_stderr_output.size());
         std::shared_ptr<spdlog::logger> guest_logger =
@@ -4648,11 +4648,11 @@ void PrintExecutionAttempt(
     }
     if (attempt.exception_caught)
     {
-        logger.error("Win32 minimal execution message: {}", attempt.message);
+        logger.error("minimal execution message: {}", attempt.message);
     }
     else
     {
-        logger.info("Win32 minimal execution message: {}", attempt.message);
+        logger.info("minimal execution message: {}", attempt.message);
     }
 }
 
@@ -4695,7 +4695,7 @@ bool SelectAndReserveRelocatedImageBase(
             continue;
         }
 
-        logger.info("Win32 relocated base candidate {}: {}",
+        logger.info("relocated base candidate {}: {}",
                     Hex32(candidate),
                     probe.range_available ? "available" : "occupied");
         if (!probe.range_available)
@@ -4713,7 +4713,7 @@ bool SelectAndReserveRelocatedImageBase(
         if (!candidate_reservation.reserved ||
             candidate_reservation.reserved_base != candidate)
         {
-            logger.warn("Win32 relocated base candidate {} reserve result: {}",
+            logger.warn("relocated base candidate {} reserve result: {}",
                         Hex32(candidate),
                         candidate_reservation.message);
             repiu::engine::ReleaseRuntimeAddressRange(
@@ -4721,7 +4721,7 @@ bool SelectAndReserveRelocatedImageBase(
             continue;
         }
 
-        logger.info("Win32 relocated base candidate {} reserved size: {}",
+        logger.info("relocated base candidate {} reserved size: {}",
                     Hex32(candidate),
                     Hex32(candidate_reservation.reserved_size));
         *reservation = candidate_reservation;
@@ -5069,8 +5069,8 @@ int main(int argc, char** argv)
         sound_rom_zip_path = mount.rom_zip_path;
         profile = &mounted_profile.value();
     }
-    logger->info("Win32 loader target: {}", profile->id);
-    logger->info("Win32 loader executable: {}",
+    logger->info("loader target: {}", profile->id);
+    logger->info("loader executable: {}",
                  profile->executable_path.string());
     logger->info("PIU JAMMA board enabled: {}",
                  profile->enable_piu_jamma_board ? "true" : "false");
@@ -5112,7 +5112,7 @@ int main(int argc, char** argv)
     ResolveRomSetNvramPaths(*logger, profile->rom_set_id,
                             ExecutableDirectory(argc, argv));
 #if defined(REPIU_WIN32_HOST_IMAGE_BASE)
-    logger->info("Win32 host image base policy: {}",
+    logger->info("host image base policy: {}",
                  Hex32(REPIU_WIN32_HOST_IMAGE_BASE));
 #endif
 
@@ -5294,7 +5294,7 @@ int main(int argc, char** argv)
     const std::uint32_t relocated_image_base =
         relocated_arena_reservation.reserved_base;
 
-    logger->info("Win32 selected relocated image base: {}",
+    logger->info("selected relocated image base: {}",
                  Hex32(relocated_image_base));
 
     repiu::runtime::RuntimeMemoryArenaPlan arena_plan;
@@ -5524,41 +5524,41 @@ int main(int argc, char** argv)
             relocated_arena_reservation);
         return 1;
     }
-    logger->info("Win32 requested execution backend: {}",
+    logger->info("requested execution backend: {}",
                  repiu::runtime::ExecutionBackendName(execution_backend));
     if (use_dynamic_backend)
     {
-        logger->info("Win32 AOT indirect inline-cache slots: {}",
+        logger->info("AOT indirect inline-cache slots: {}",
                      aot_build_options.indirect_inline_cache_entry_count);
-        logger->info("Win32 AOT guarded segment-pop enabled: {}",
+        logger->info("AOT guarded segment-pop enabled: {}",
                      aot_build_options.enable_guarded_segment_pop);
-        logger->info("Win32 AOT guarded segment-load enabled/sites: {}/{}",
+        logger->info("AOT guarded segment-load enabled/sites: {}/{}",
                      aot_build_options.enable_guarded_segment_load,
                      aot_image.guarded_segment_load_sites.size());
-        logger->info("Win32 AOT guarded segment-read enabled/sites: {}/{}",
+        logger->info("AOT guarded segment-read enabled/sites: {}/{}",
                      aot_build_options.enable_guarded_segment_read,
                      aot_image.guarded_segment_read_sites.size());
         // Task 424: return-miss dispatch had no log line of its own, so its
         // toggle could not be verified from the log alone. Direct-edge already
         // reported its site count and now reports the toggle beside it.
-        logger->info("Win32 AOT-DBT return-miss dispatch enabled: {}",
+        logger->info("AOT-DBT return-miss dispatch enabled: {}",
                      aot_build_options.enable_dbt_return_miss_dispatch);
         logger->info(
-            "Win32 AOT-DBT unresolved direct-edge dispatch enabled/sites: {}/{}",
+            "AOT-DBT unresolved direct-edge dispatch enabled/sites: {}/{}",
             aot_build_options.enable_dbt_direct_edge_dispatch,
             aot_image.dbt_direct_edge_dispatch_sites.size());
-        logger->info("Win32 AOT-DBT superblock HLE dispatch enabled: {}",
+        logger->info("AOT-DBT superblock HLE dispatch enabled: {}",
                      aot_build_options.enable_dbt_hle_dispatch);
-        logger->info("Win32 AOT-DBT Port-I/O dispatch enabled: {}",
+        logger->info("AOT-DBT Port-I/O dispatch enabled: {}",
                      aot_build_options.enable_dbt_port_io_dispatch);
-        logger->info("Win32 AOT-DBT segment-override dispatch enabled: {}",
+        logger->info("AOT-DBT segment-override dispatch enabled: {}",
                      aot_build_options.enable_dbt_segment_override_dispatch);
         logger->info(
-            "Win32 AOT-DBT Glide gate direct dispatch requested/capable/enabled: {}/{}/{}",
+            "AOT-DBT Glide gate direct dispatch requested/capable/enabled: {}/{}/{}",
             direct_glide_dispatch_requested,
             direct_glide_dispatch_capable,
             direct_glide_dispatch_enabled);
-        logger->info("Win32 AOT timer safe points enabled/sites: {}/{}",
+        logger->info("AOT timer safe points enabled/sites: {}/{}",
                      aot_build_options.enable_timer_safe_points,
                      aot_image.timer_safe_point_sites.size());
     }
@@ -5655,11 +5655,11 @@ int main(int argc, char** argv)
     }
     if (use_dynamic_backend)
     {
-        logger->info("Win32 AOT cache base/bytes/entry: {}/{}/{}",
+        logger->info("AOT cache base/bytes/entry: {}/{}/{}",
                      Hex32(aot_placement.base_address),
                      aot_placement.size,
                      Hex32(aot_placement.entry_address));
-        logger->info("Win32 AOT plan jump tables/targets: {}/{}",
+        logger->info("AOT plan jump tables/targets: {}/{}",
                      aot_plan.jump_table_count,
                      aot_plan.jump_table_target_count);
     }
@@ -5674,21 +5674,21 @@ int main(int argc, char** argv)
     if (execution_timeout_milliseconds ==
         repiu::runtime::kWaitForeverMilliseconds)
     {
-        logger->info("Win32 guest execution timeout: disabled");
+        logger->info("guest execution timeout: disabled");
     }
     else
     {
-        logger->info("Win32 guest execution timeout: {} ms",
+        logger->info("guest execution timeout: {} ms",
                      execution_timeout_milliseconds);
     }
     if (stall_timeout_milliseconds ==
         repiu::runtime::kWaitForeverMilliseconds)
     {
-        logger->info("Win32 guest stall timeout: disabled");
+        logger->info("guest stall timeout: disabled");
     }
     else
     {
-        logger->info("Win32 guest stall timeout: {} ms",
+        logger->info("guest stall timeout: {} ms",
                      stall_timeout_milliseconds);
     }
     // Task 709. How to report, registered before the guest starts.
@@ -5782,7 +5782,7 @@ int main(int argc, char** argv)
     const auto glide_dispatch_stats = repiu::engine::
         ReadGlideGateDirectDispatchStats();
     logger->info(
-        "Win32 Glide direct dispatch patched/verified/resolved-target/"
+        "Glide direct dispatch patched/verified/resolved-target/"
         "relinked-cache/entry/success/target-miss/terminal: "
         "{}/{}/{}/{}/{}/{}/{}/{}",
         glide_dispatch_stats.patched_gate_count,

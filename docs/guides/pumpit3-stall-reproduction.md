@@ -51,9 +51,9 @@ grep -c "DOS path trace #" run.txt
 교차 확인용 서명(멈춘 실행 5회가 전부 일치):
 
 ```
-Win32 Glide call trace: ... _GRBUFFERSWAP@4 count=   → 0 또는 1
-Win32 AOT generation publishes/quarantines:          → 79/1
-Win32 DOS AH hotspots [...]                          → 11/12 항목이 없음
+Glide call trace: ... _GRBUFFERSWAP@4 count=   → 0 또는 1
+AOT generation publishes/quarantines:          → 79/1
+DOS AH hotspots [...]                          → 11/12 항목이 없음
 ```
 
 `AH=11h`/`12h`는 정상 실행이 **프레임마다 1회씩** 부르므로 그 수가 곧 프레임 수입니다.
@@ -67,7 +67,7 @@ Win32 DOS AH hotspots [...]                          → 11/12 항목이 없음
 **Task 415 이후 함께 읽을 줄** — 세대 실패 정책의 현재 상태입니다.
 
 ```
-Win32 AOT generation failure addresses/skips/quarantine-fallbacks/spanning-activations: a/b/c/d
+AOT generation failure addresses/skips/quarantine-fallbacks/spanning-activations: a/b/c/d
 ```
 
 | 관측 | 판정 |
@@ -142,7 +142,7 @@ absence means the frame loop was never entered.
 the same reason, so it never separated the two — and since Task 415 narrowed the penalty to
 an address, the default path produces **no quarantine at all**, which also makes that `79/1`
 signature a figure from the old build. Read the policy line instead:
-`Win32 AOT generation failure addresses/skips/quarantine-fallbacks/spanning-activations`.
+`AOT generation failure addresses/skips/quarantine-fallbacks/spanning-activations`.
 Zero failed addresses with one or more spanning activations is healthy; a nonzero address
 count means a generation failure survives, with the skip count showing how often the guest
 still reaches it; a nonzero quarantine fallback means the page-wide penalty is back, either

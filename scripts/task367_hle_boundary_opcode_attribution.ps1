@@ -84,7 +84,7 @@ function Read-OpcodeList
     param([string]$Text, [string]$Label)
 
     $body = Get-LastMetricMatch $Text `
-        "Win32 AOT boundary $Label \[(.+?)\]" "$Label list"
+        "AOT boundary $Label \[(.+?)\]" "$Label list"
     $entries = @()
     foreach ($pair in ($body.Groups[1].Value -split ' '))
     {
@@ -131,19 +131,19 @@ for ($run = 1; $run -le $Runs; ++$run)
         (Join-Path $runDirectory "metrics.json") | ConvertFrom-Json
 
     $census = Get-LastMetricMatch $text `
-        "Win32 AOT boundary opcode census samples/escapes/prefixed/segment/opsize/truncated/prefix-overflow/empty: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+        "AOT boundary opcode census samples/escapes/prefixed/segment/opsize/truncated/prefix-overflow/empty: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
         "$runName opcode census"
     $reason = Get-LastMetricMatch $text `
-        "Win32 AOT boundary reason ret/indir/direct/cond/other: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+        "AOT boundary reason ret/indir/direct/cond/other: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
         "$runName boundary reason"
     $provenance = Get-LastMetricMatch $text `
-        "Win32 AOT breakpoint provenance hle/seg/inline/jtable/retired/probe/fixup/unknown: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+        "AOT breakpoint provenance hle/seg/inline/jtable/retired/probe/fixup/unknown: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
         "$runName breakpoint provenance"
     $timer = Get-LastMetricMatch $text `
-        "Win32 AOT timer safe-point trap/injected/deferred: (\d+)/(\d+)/(\d+)" `
+        "AOT timer safe-point trap/injected/deferred: (\d+)/(\d+)/(\d+)" `
         "$runName timer traps"
     $gate = Get-LastMetricMatch $text `
-        "Win32 Glide gate entries/handled/ESP: (\d+)/(\d+)/" `
+        "Glide gate entries/handled/ESP: (\d+)/(\d+)/" `
         "$runName Glide gate entries"
 
     $samples = [UInt64]$census.Groups[1].Value

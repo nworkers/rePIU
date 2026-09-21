@@ -110,20 +110,20 @@ for ($run = 1; $run -le $Runs; ++$run)
     $swap = Get-LastMatch $text "name=_GRBUFFERSWAP@4 count=\s*(\d+)"
     $frames = if ($null -eq $swap) { 0 } else { [UInt64]$swap.Groups[1].Value }
     $generations = Get-LastMatch $text `
-        "Win32 AOT generation publishes/quarantines: (\d+)/(\d+)"
+        "AOT generation publishes/quarantines: (\d+)/(\d+)"
     $censusLine = Get-LastMatch $text `
-        ("Win32 guest position census enabled/total/distinct/overflow/" +
+        ("guest position census enabled/total/distinct/overflow/" +
          "capture-failures/interval-ms: (\w+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)")
     # Task 412 lines. Absent on builds before that task, so a missing match is
     # tolerated and reported as zero rather than failing the run.
     $threadTimeLine = Get-LastMatch $text `
-        ("Win32 guest position thread time valid/kernel-ms/user-ms/wall-ms/" +
+        ("guest position thread time valid/kernel-ms/user-ms/wall-ms/" +
          "cpu-share: (\w+)/([\d.]+)/([\d.]+)/(\d+)/([\d.]+)%")
     $scanLine = Get-LastMatch $text `
-        ("Win32 guest position host scan samples/sited/no-site/failed/" +
+        ("guest position host scan samples/sited/no-site/failed/" +
          "distinct/overflow/parts-match: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\w+)")
     $originLine = Get-LastMatch $text `
-        ("Win32 guest position origin arena/cache-mapped/cache-unmapped/host/" +
+        ("guest position origin arena/cache-mapped/cache-unmapped/host/" +
          "sum-matches-total: (\d+)/(\d+)/(\d+)/(\d+)/(\w+)")
 
     # Three classes, not two. A run that renders a handful of frames is neither

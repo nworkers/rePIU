@@ -738,8 +738,8 @@ if(UNIX AND NOT EMSCRIPTEN)
     # Windows host. Task 731 moved it from `src/host/win32/` to
     # `src/host/loader/`: it includes no Windows header and branches on the
     # platform in one log line, so the old path named a platform the code does
-    # not depend on. Its "Win32 ..." log prefixes were left as they are, because
-    # scripts, guides and regression records parse them.
+    # not depend on. Task 732 then dropped the "Win32 " prefix from its log
+    # lines, which already carry the `[loader]` logger tag.
     #
     # GL by name for the same reason repiu_launcher names it: the Glide backend
     # calls into it directly, and only the plain name resolves in the i386

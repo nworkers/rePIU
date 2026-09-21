@@ -325,7 +325,9 @@ decode/upload time.
 
 진입점은 `src/host/loader/main.cpp`에 두며, `src/tools/` 아래의 분석 도구와 구분한다. Task 731 이전에는
 `src/host/win32/main.cpp`였으나, Windows 헤더를 쓰지 않는 플랫폼 공용 코드이므로 역할 이름의 위치로 옮겼다.
-로그의 `"Win32 ..."` 접두어는 스크립트·가이드·회귀 기록이 파싱하므로 그대로 두었다.
+로그 줄의 `"Win32 ..."` 접두어는 Task 732에서 제거했다. 모든 줄이 이미 `[loader]` 로거 태그를 달고 있으므로
+`[loader] minimal execution timed out: true`처럼 읽힌다. 스크립트와 가이드도 같은 작업에서 갱신했고,
+`tests/history/`와 작업 로그·분석 문서의 과거 인용은 당시 출력의 기록이므로 바꾸지 않았다.
 
 이 진입점은 현재 target profile 선택, 원본 executable 읽기, DOS/4GW load result 생성, relocated runtime image plan 생성, relocated image buffer 생성, Win32 process memory 배치, minimal execution trampoline 호출을 순서대로 담당한다.
 
@@ -337,8 +339,10 @@ The current practical Win32 loader executable target is `repiu`.
 
 Its entry point lives in `src/host/loader/main.cpp`, separate from analysis tools under `src/tools/`. Before
 Task 731 it was `src/host/win32/main.cpp`; being platform-neutral code that includes no Windows header, it moved
-to a location named by role. Its `"Win32 ..."` log prefixes were kept because scripts, guides and regression
-records parse them.
+to a location named by role. Task 732 dropped the `"Win32 ..."` prefix from its log lines: every line already
+carries the `[loader]` logger tag, so they read `[loader] minimal execution timed out: true`. Scripts and guides
+were updated in the same task; quotations in `tests/history/`, work logs and analysis documents record what the
+output said at the time and were left unchanged.
 
 This entry point currently owns target profile selection, original executable reading, DOS/4GW load result creation, relocated runtime image planning, relocated image buffer creation, Win32 process-memory placement, and minimal execution trampoline invocation.
 
@@ -906,7 +910,7 @@ execution.
 
 `AOT`는 여전히 정확한 이름입니다. `dynamic` backend에서도 게스트 실행 **전에**
 `BuildAotTranslationPlan` → `BuildAotCodeCacheImage` → `PlaceWin32AotCodeCache`가
-수행되어 `Win32 AOT cache base/bytes/entry`를 남깁니다. backend 이름이 `dynamic`인
+수행되어 `AOT cache base/bytes/entry`를 남깁니다. backend 이름이 `dynamic`인
 것은 실행 중에도 번역이 계속된다는 뜻이지, 정적 단계가 없다는 뜻이 아닙니다.
 
 Task 425는 backend를 `legacy`와 `dynamic` 둘로 줄였습니다. 옛 이름 `aot`,
@@ -922,7 +926,7 @@ runtime.
 
 `AOT` remains accurate. Even under `dynamic`, `BuildAotTranslationPlan`,
 `BuildAotCodeCacheImage`, and `PlaceWin32AotCodeCache` all complete **before** the
-guest starts and log `Win32 AOT cache base/bytes/entry`. The backend being called
+guest starts and log `AOT cache base/bytes/entry`. The backend being called
 `dynamic` means translation continues during execution, not that the static stage
 is absent.
 

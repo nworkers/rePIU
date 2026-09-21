@@ -98,15 +98,15 @@ foreach ($condition in $order)
     $swap = Get-LastMatch $text "name=_GRBUFFERSWAP@4 count=\s*(\d+)"
     $frames = if ($null -eq $swap) { 0 } else { [UInt64]$swap.Groups[1].Value }
     $generations = Get-LastMatch $text `
-        "Win32 AOT generation publishes/quarantines: (\d+)/(\d+)"
+        "AOT generation publishes/quarantines: (\d+)/(\d+)"
     $exceptions = Get-LastMatch $text `
-        ("Win32 exception census single-step/breakpoint/access-violation/" +
+        ("exception census single-step/breakpoint/access-violation/" +
          "other/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)")
     $ticks = Get-LastMatch $text `
-        ("Win32 timer tick delivery backlog-enabled/due/injected/coalesced/" +
+        ("timer tick delivery backlog-enabled/due/injected/coalesced/" +
          "dropped/deferred/max-backlog/remaining: \w+/(\d+)/(\d+)/(\d+)/(\d+)")
     $batch = Get-LastMatch $text `
-        ("Win32 port I/O delay loop enabled/attempts/batches/skipped/max: " +
+        ("port I/O delay loop enabled/attempts/batches/skipped/max: " +
          "(\w+)/(\d+)/(\d+)/(\d+)/(\d+)")
     $delayAddress = Get-LastMatch $text `
         "port I/O address #\d+ guest/count/cache/arena/mapped/reentry: 0x0301DB22/(\d+)/"

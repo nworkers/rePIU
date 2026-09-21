@@ -18125,3 +18125,35 @@ Ten sequential observations under Task 729's settings had zero teardown segfault
   one address (about 3.3%) alone does not readily explain a 1-in-6 rate.
 * The fault-handling paths that use the same 32-bit decision (`execution_trampoline.cpp` near line
   4851 and lines 6327-6357) were surveyed only.
+
+---
+
+## 2026-09-22 Tasks 731·732 — 로더 위치와 로그 접두어
+
+Task 731이 공용 로더를 `src/host/loader/main.cpp`로 옮겼고(R100), Task 732가 로그 줄의
+`Win32 ` 접두어를 제거했습니다. **이 절 이전의 인용은 모두 옛 형식**입니다. 예를 들어 위의
+`Win32 Glide LFB staging shadow census/...`는 이제 `[loader] Glide LFB staging shadow census/...`로
+찍힙니다. 스크립트와 가이드는 Task 732에서 함께 갱신했습니다.
+
+### 확인됨 — `test_all.ps1`의 pumpit1 단정은 이미 낡아 있다
+
+Task 732의 전후 비교에서 이름 변경 **이전** binary도 pumpit1 단정 99개 중 17개가 맞지 않았고, 6회 중
+4회 프로세스가 0xC0000005로 죽거나 멈췄습니다. 단정의 결말 문구, DOS 환경 접근, 첫 path trace, 마지막
+open 파일이 현재 게스트 동작과 다릅니다. 스위트는 존재하지 않는 `build\win32_x86_debug`를 가리켜
+실행되지 않았던 것으로 보입니다. Win32 pumpit1 legacy 실행의 간헐 crash·hang은 원인을 조사하지
+않았습니다.
+
+## English
+
+Task 731 moved the shared loader to `src/host/loader/main.cpp` (R100), and Task 732 removed the
+`Win32 ` prefix from its log lines. **Every quotation before this section is in the old form**: the
+`Win32 Glide LFB staging shadow census/...` above now prints as `[loader] Glide LFB staging shadow
+census/...`. Scripts and guides were updated in Task 732.
+
+### Confirmed — the pumpit1 assertions of `test_all.ps1` were already stale
+
+In Task 732's before-and-after comparison, the **pre-rename** binary also failed 17 of 99 pumpit1
+assertions, and in 4 of 6 runs the process died with 0xC0000005 or hung. The asserted ending wording,
+DOS environment access, first path traces and last opened file no longer match current guest
+behavior. The suite points at the nonexistent `build\win32_x86_debug`, which appears to be why it was
+not being run. The intermittent crash and hang of the Win32 pumpit1 legacy run were not investigated.

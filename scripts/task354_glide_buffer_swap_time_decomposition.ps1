@@ -158,19 +158,19 @@ function Read-ProfileRuns
             ConvertFrom-Json
 
         $summary = Get-LastMetricMatch $text `
-            "Win32 Glide buffer swap timing enabled/calls/success/failure/clamped: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide buffer swap timing enabled/calls/success/failure/clamped: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName swap summary"
         $cycles = Get-LastMetricMatch $text `
-            "Win32 Glide buffer swap cycles setup/present/accounting/finalize/total/max-present: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide buffer swap cycles setup/present/accounting/finalize/total/max-present: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName swap cycles"
         $requested = Get-LastMetricMatch $text `
-            "Win32 Glide buffer swap requested interval zero/one/other/min/max/last: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide buffer swap requested interval zero/one/other/min/max/last: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName requested intervals"
         $sdl = Get-LastMetricMatch $text `
-            "Win32 Glide buffer swap SDL interval queries/success/failure/value: (\d+)/(\d+)/(\d+)/(-?\d+)" `
+            "Glide buffer swap SDL interval queries/success/failure/value: (\d+)/(\d+)/(\d+)/(-?\d+)" `
             "$runName SDL interval"
         $ordinal = Get-LastMetricMatch $text `
-            "Win32 Glide ordinal timing: ordinal=85 name=(\S+) count=(\d+) gate=(\d+) max=(\d+) rendezvous=(\d+) queue=(\d+) wake=(\d+) work=(\d+) complete=(\d+) residual=(\d+) backend_total=(\d+) direct=(\d+) direct_work=(\d+)" `
+            "Glide ordinal timing: ordinal=85 name=(\S+) count=(\d+) gate=(\d+) max=(\d+) rendezvous=(\d+) queue=(\d+) wake=(\d+) work=(\d+) complete=(\d+) residual=(\d+) backend_total=(\d+) direct=(\d+) direct_work=(\d+)" `
             "$runName ordinal 85"
 
         $calls = Get-UInt64 $summary 2

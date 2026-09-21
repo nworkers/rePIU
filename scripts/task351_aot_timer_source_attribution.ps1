@@ -99,7 +99,7 @@ for ($run = 1; $run -le $Runs; ++$run)
 
     $profileMatches = [regex]::Matches(
         $text,
-        "Win32 AOT timer source profile enabled/entries/overflow/attributed-ticks: (true|false)/(\d+)/(\d+)/(\d+)")
+        "AOT timer source profile enabled/entries/overflow/attributed-ticks: (true|false)/(\d+)/(\d+)/(\d+)")
     if ($profileMatches.Count -eq 0)
     {
         throw "$runName did not report the timer-source profile"
@@ -119,7 +119,7 @@ for ($run = 1; $run -le $Runs; ++$run)
 
     $topMatches = [regex]::Matches(
         $text,
-        "Win32 AOT timer source top (\d+) guest/trap/injected/deferred/attributed-ticks/first-tick/last-tick: 0x([0-9A-Fa-f]{8})/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)")
+        "AOT timer source top (\d+) guest/trap/injected/deferred/attributed-ticks/first-tick/last-tick: 0x([0-9A-Fa-f]{8})/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)")
     $topTickSum = [uint64]0
     foreach ($top in $topMatches)
     {

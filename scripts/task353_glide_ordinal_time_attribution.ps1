@@ -158,25 +158,25 @@ function Read-ProfileRuns
             ConvertFrom-Json
 
         $summary = Get-LastMetricMatch $text `
-            "Win32 Glide ordinal timing enabled/entries/completed/overflow/clamped: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide ordinal timing enabled/entries/completed/overflow/clamped: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName ordinal summary"
         $cycles = Get-LastMetricMatch $text `
-            "Win32 Glide ordinal cycles gate/queue/wake/work/complete/residual/backend-total/direct-work: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide ordinal cycles gate/queue/wake/work/complete/residual/backend-total/direct-work: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName ordinal cycles"
         $backend = Get-LastMetricMatch $text `
-            "Win32 glide gate cycles queue/wake/work/complete/residual/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "glide gate cycles queue/wake/work/complete/residual/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName global backend cycles"
         $backendCounts = Get-LastMetricMatch $text `
-            "Win32 glide gate timing enabled/rendezvous/direct/clamped: (true|false)/(\d+)/(\d+)/(\d+)" `
+            "glide gate timing enabled/rendezvous/direct/clamped: (true|false)/(\d+)/(\d+)/(\d+)" `
             "$runName global backend counts"
         $backendDirect = Get-LastMetricMatch $text `
-            "Win32 glide gate direct cycles/max wake/work/total: (\d+)/(\d+)/(\d+)/(\d+)" `
+            "glide gate direct cycles/max wake/work/total: (\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName global direct work"
         $ordinalCounts = Get-LastMetricMatch $text `
-            "Win32 Glide ordinal backend rendezvous/direct: (\d+)/(\d+)" `
+            "Glide ordinal backend rendezvous/direct: (\d+)/(\d+)" `
             "$runName ordinal backend counts"
         $handled = Get-LastMetricMatch $text `
-            "Win32 Glide gate entries/handled/ESP: (\d+)/(\d+)/" `
+            "Glide gate entries/handled/ESP: (\d+)/(\d+)/" `
             "$runName Glide handled count"
 
         $entryCount = Get-UInt64 $summary 2
@@ -247,7 +247,7 @@ function Read-ProfileRuns
 
         $rowMatches = [regex]::Matches(
             $text,
-            "Win32 Glide ordinal timing: ordinal=(\d+) name=(\S+) count=(\d+) gate=(\d+) max=(\d+) rendezvous=(\d+) queue=(\d+) wake=(\d+) work=(\d+) complete=(\d+) residual=(\d+) backend_total=(\d+) direct=(\d+) direct_work=(\d+)",
+            "Glide ordinal timing: ordinal=(\d+) name=(\S+) count=(\d+) gate=(\d+) max=(\d+) rendezvous=(\d+) queue=(\d+) wake=(\d+) work=(\d+) complete=(\d+) residual=(\d+) backend_total=(\d+) direct=(\d+) direct_work=(\d+)",
             [System.Text.RegularExpressions.RegexOptions]::Multiline)
         if ($rowMatches.Count -ne $entryCount)
         {
