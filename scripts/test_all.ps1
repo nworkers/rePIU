@@ -196,7 +196,14 @@ try
         $piuOutput -match "minimal execution exception caught: false" -and
         $piuOutput -match "minimal execution timed out: true" -and
         $piuOutput -match "minimal execution thread exit code: 3" -and
-        $piuOutput -match "minimal execution message: minimal execution attempt timed out"
+        $piuOutput -match "minimal execution message: (timeout reached|minimal execution attempt timed out)"
+    # Task 733: since Task 507 a timed-out run reports how its guest thread was
+    # stopped ("timeout reached; ..."), and the old wording remains on one path.
+    # The three "DOS environment access" lines this block used to require were
+    # dropped: that observer sees only DS reads routed through the instruction
+    # emulator, and since the flat-selector folds (Tasks 711-717) the guest reads
+    # its environment natively. The environment block itself is still required
+    # below, and the startup DOS path traces that follow it still match.
     if ($piuOutput -notmatch "loader executable: build[\\/]runtime_mounts[\\/]pumpit1[\\/]PIU[\\/]PIU.EXE" -or
         $piuOutput -notmatch "DOS virtual filesystem root: .+build\\runtime_mounts\\pumpit1" -or
         $piuOutput -notmatch "DOS virtual filesystem current directory: \\PIU" -or
@@ -219,9 +226,6 @@ try
         $piuOutput -notmatch "DOS low memory valid: true" -or
         $piuOutput -notmatch "DOS low memory bytes: 65536" -or
         $piuOutput -notmatch "DOS environment block bytes: [1-9]" -or
-        $piuOutput -notmatch "DOS environment access observed: true" -or
-        $piuOutput -notmatch "last DOS environment entry: .+=<redacted>" -or
-        $piuOutput -notmatch "last DOS environment value bytes: [0-9]" -or
         $piuOutput -notmatch "handled HLE trap count: [1-9]" -or
         $piuOutput -notmatch "port I/O observation count: [0-9]+" -or
         $piuOutput -notmatch "DOS path trace stored count: [2-9]" -or

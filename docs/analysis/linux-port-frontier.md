@@ -18267,3 +18267,26 @@ Win32 build tree is `build/`.
    execution engine, and choosing a ROM set only prints a message; that has not been true since Task
    503d-17. `ReadbackFramebuffer` downsamples the drawable nearest-neighbor, so a non-integer-multiple
    drawable makes the present-then-readback round trip lossy (Task 728, code reading); not fixed.
+
+---
+
+## 2026-09-23 인계 갱신 — Task 733 완료
+
+인계 1번(`test_all.ps1` 정비) 중 Win32 pumpit1 크래시와 낡은 단정은 Task 733에서 끝났습니다. 원인은 종료
+회수가 guest thread를 멈춘 순간 커널이 이미 전달 중이던 예외였고, redirect guard로 고쳐 40회 연속 정상
+종료했습니다([작업 로그](../work-logs/20260922-733-win32-legacy-shutdown-crash-attribution.md)). 새로 남은 것:
+
+* `test_all.ps1`은 가장 새 Visual Studio로 빌드하는데, **VS 2026(toolset v145) binary는 `dos4gw_hello`
+  실행 시작에서 3/3 크래시**합니다. VS 2022(v143) binary는 정상입니다. 원인 미조사.
+* Task 732의 "없는 빌드 트리" 기록은 과장이었습니다. 그 트리는 스위트가 직접 만듭니다.
+
+2~6번은 그대로 남아 있습니다.
+
+## English — handoff update 2026-09-23, Task 733 done
+
+From handoff item 1, the Win32 pumpit1 crash and the stale assertions were finished in Task 733: the cause
+was an exception the kernel was already delivering when shutdown recovery suspended the guest thread, fixed
+by the redirect guard, with 40 consecutive clean runs. Newly remaining: `test_all.ps1` builds with the newest
+Visual Studio, and a **VS 2026 (toolset v145) binary crashes 3 of 3 at the start of `dos4gw_hello`**, while
+the VS 2022 (v143) binary is fine; cause not investigated. Task 732's "nonexistent tree" note overstated it:
+the suite creates that tree. Items 2-6 remain.

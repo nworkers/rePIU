@@ -3671,6 +3671,24 @@ cache are placed below 4 GiB by design, so the condition never blocks a legitima
 hosts are unchanged. The outcome is reported as `host_ip=`, `decision=` and `aliased=` on the
 `[repiu-shutdown]` line.
 
+Task 733부터 Win32에는 종료 회수 구간 동안만 **redirect guard**가 있습니다. Win32 회수는 guest thread를
+멈추고 `SetThreadContext`로 EIP·ESP를 바꾸는데, legacy backend에서는 멈춘 순간 커널이 이미 single-step
+예외를 전달하던 중일 수 있고 재작성은 그 예외를 취소하지 않습니다. guard는 엔진 VEH보다 먼저 호출되는
+VEH로, 회수 적용 뒤 guest thread에 도착한 예외 중 context EIP가 회수 진입점이거나 guest/cache 코드인 것에
+`RecoverToHost`를 다시 적용하고 실행을 재개합니다(`DecideShutdownRedirectGuard`). guest thread가 멈춘 뒤
+제거되며 `[repiu-shutdown] redirect-guard reapplied_entry=N reapplied_guest=M`을 남깁니다. 배경은
+[Win32 thread context 재작성과 전달 중인 예외](docs/kb/win32-thread-context-rewrite-and-in-flight-exceptions.md)에
+있습니다.
+
+From Task 733 Win32 has a **redirect guard** for the shutdown recovery window only. Win32 recovery suspends
+the guest thread and rewrites EIP and ESP with `SetThreadContext`; under the legacy backend the kernel may
+already be delivering a single-step exception at that moment, and the rewrite does not cancel it. The guard
+is a VEH called before the engine's: for exceptions reaching the guest thread after the redirect whose
+context EIP is the recovery entry or guest/cache code, it reapplies `RecoverToHost` and resumes
+(`DecideShutdownRedirectGuard`). It is removed after the guest thread stops and reports
+`[repiu-shutdown] redirect-guard reapplied_entry=N reapplied_guest=M`. Background:
+[Rewriting a Win32 thread context while an exception is in flight](docs/kb/win32-thread-context-rewrite-and-in-flight-exceptions.md).
+
 ---
 
 ## 롬셋별 설정 파일 / Per-ROM-set configuration files

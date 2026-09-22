@@ -150,3 +150,15 @@ regression baseline is a separate decision.
   before-and-after assertion comparison above.
 - Note: during the A/B, `Copy-Item` preserved the source file's modification time and MSBuild skipped
   the recompile. The timestamp was refreshed and the numbers above come from the rebuilt binary.
+
+---
+
+## 정정 (Task 733, 2026-09-23) / Correction
+
+위에서 `test_all.ps1`이 "이 머신에 없는 `build\win32_x86_debug`를 가리킨다"고 적었지만, 그 트리는
+스위트의 빌드 단계(`build_win32_x86.ps1`)가 직접 만듭니다. 경로는 스위트 안에서 일관됩니다. 낡은 단정과
+간헐 크래시는 Task 733에서 다뤘습니다.
+
+This log said `test_all.ps1` points at a tree that does not exist on this machine; in fact the suite's own
+build step (`build_win32_x86.ps1`) creates that tree, so the path is consistent within the suite. The stale
+assertions and the intermittent crash were handled in Task 733.
