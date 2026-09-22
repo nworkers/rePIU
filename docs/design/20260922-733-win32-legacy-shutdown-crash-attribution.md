@@ -78,3 +78,97 @@ address, EIP/ESP, and access target, then continues through the existing handler
 Build the Win32 x86 Debug loader, repeat the same traced run until a crash is observed, attribute
 the invalid recovery condition or stack state, then verify the fix repeatedly and repair the
 current `scripts/test_all.ps1` contract.
+
+---
+
+## 4단계 결과 — 귀속 (2026-09-23)
+
+### 관찰
+
+`REPIU_SHUTDOWN_RECOVERY_TRACE=1`, `REPIU_EXECUTION_BACKEND=legacy`, `REPIU_EXECUTION_TIMEOUT_MS=1000`으로
+pumpit1을 반복했습니다. 예외 trace는 첫 1개에서 redirect 뒤 **4개**까지 기록하도록 넓혔습니다. 크래시
+4회(묶음 b의 run06·run10, 묶음 c의 run06·run09)와 생존 실행을 비교했습니다.
+
+| 실행 | 회수 판정 시 EIP | redirect 뒤 첫 예외 | 그 뒤 | 결과 |
+|---|---|---|---|---|
+| c-run06 | guest `0x040F59AD` | single-step, context EIP=**회수 진입점** `0x10017DDC`, ESP=host `0x0CC6FE3C` | index 3: **guard page violation (0x80000001)**, ESP=`0x0CC6E000`, 쓰기 대상 `0x0CC6DFFC` | 0xC0000005 |
+| c-run09 | guest `0x050F4B0D` | 같음 (context EIP=`0x10017DDC`, ESP=host) | index 3: 같은 guard page violation | 0xC0000005 |
+| c-run05 | guest `0x040F5970` | single-step, context EIP=**원래 guest EIP 근처** `0x040F5972`, ESP=guest | index 2~4: guest 주소에서 연속 single-step | 생존, 그러나 redirect 소실 |
+| c-run08 | guest `0x050F5962` | 같음 (guest 주소에서 연속 single-step) | — | 생존, 그러나 redirect 소실 |
+
+### 결론 (확인됨)
+
+legacy backend는 guest를 한 명령씩 single-step으로 실행하므로, guest thread는 많은 시간을 single-step
+예외 전달 경로 안에서 보냅니다. **회수 콜백이 guest thread를 멈춘 순간 커널이 이미 single-step 예외를
+전달하는 중이었으면**, `SetThreadContext`로 바꾼 EIP/ESP가 그 예외를 취소하지 못합니다. 재개 뒤 예외가
+그대로 전달되고, 두 결말이 나옵니다.
+
+1. **예외가 redirect된 context로 전달됨 → 크래시.** 엔진 VEH가 host 스택(`active_call_state->host_esp`)
+   위에서 돕니다. 그 스택은 guard page까지 약 7.7KB뿐이라 예외 디스패치가 guard page를 넘고, 이어지는
+   접근이 0xC0000005로 끝납니다.
+2. **예외가 원래 guest context로 전달됨 → redirect 소실.** 엔진 VEH가 guest single-step을 계속합니다.
+   종료 로그는 `recovered=1`이라고 적지만 실제로는 회수되지 않았습니다. 크래시는 아니지만 거짓
+   보고이며 같은 결함입니다.
+
+TF는 원인이 아닙니다. `RecoverToHost`는 이미 EFLAGS의 TF를 지우고, 크래시한 실행의 관찰 EFLAGS에는
+TF가 꺼진 경우(`0x216`)도 있습니다. 예외는 **이미 커널이 전달 중이던 것**입니다.
+
+### 수정 방향 (구현 전, 사용자 확인 대상)
+
+Win32 종료 회수 구간에만, guest thread에서 발생하는 예외를 엔진 VEH보다 **먼저** 보는 작은 VEH를 둡니다.
+회수가 적용된 뒤 도착한 예외 중 context EIP가 (a) guest/cache 주소이거나 (b) 회수 진입점 그 자체인 것만
+골라, `RecoverToHost`를 다시 적용하고 `EXCEPTION_CONTINUE_EXECUTION`으로 돌려보냅니다.
+
+* (a)는 소실된 redirect를 되살립니다. guest 스택 위에서 실행되므로 스택 제약이 없습니다.
+* (b)는 엔진 VEH의 큰 frame을 host 스택에 올리지 않고 바로 회수 진입점으로 재개합니다.
+* 그 밖의 예외(회수 진입점이 실행을 시작한 뒤의 것 포함)는 그대로 통과시킵니다.
+* handler는 guest thread가 멈출 때까지 유지하고 그 뒤에 제거합니다.
+* Linux는 콜백이 guest thread 자신의 signal handler에서 돌아 이 경쟁이 없으므로 대상이 아닙니다.
+
+### 부수 관찰
+
+같은 반복에서 **실행의 약 45%(19회 중 9회)가 guest 시작 전에** `Failed to reserve an available relocated
+image base`로 끝났습니다. 후보 base `0x01000000`~`0x09000000`이 모두 점유되어 있었습니다.
+`test_all.ps1`은 supervisor 없이 `repiu.exe`를 직접 실행하므로 이 실패에도 노출됩니다. Task 500이
+자식 프로세스 재실행을 만든 이유(GPU 드라이버의 주소 공간 선점)와 같은 계열로 추정되며, 별도로
+다뤄야 합니다.
+
+## English — stage 4 result: attribution (2026-09-23)
+
+pumpit1 was repeated with `REPIU_SHUTDOWN_RECOVERY_TRACE=1`, `REPIU_EXECUTION_BACKEND=legacy` and
+`REPIU_EXECUTION_TIMEOUT_MS=1000`, with the exception trace widened from the first exception after the
+redirect to the first **four**. Four crashes (batch b run06 and run10, batch c run06 and run09) were
+compared with surviving runs.
+
+**Confirmed.** The legacy backend single-steps the guest one instruction at a time, so the guest thread
+spends much of its time inside single-step exception delivery. **If the recovery callback suspends the
+guest thread while the kernel is already delivering a single-step exception**, the EIP/ESP rewritten
+through `SetThreadContext` does not cancel it. After resume the exception is delivered anyway, with one
+of two outcomes:
+
+1. **Delivered with the redirected context: crash.** The engine VEH runs on the host stack
+   (`active_call_state->host_esp`), which has only about 7.7 KB above its guard page. Exception dispatch
+   crosses the guard page (a 0x80000001 at ESP `0x0CC6E000`, write target `0x0CC6DFFC` in c-run06 and
+   c-run09), and the following access ends the process with 0xC0000005.
+2. **Delivered with the original guest context: the redirect is lost.** The engine VEH keeps
+   single-stepping the guest (consecutive guest-address single-steps in c-run05 and c-run08). The
+   shutdown log says `recovered=1`, but the thread was not recovered. Not a crash, but a false report
+   from the same defect.
+
+TF is not the cause: `RecoverToHost` already clears it, and crashing runs include an observed EFLAGS
+with TF clear (`0x216`). The exception is one **the kernel was already delivering**.
+
+**Fix direction (not yet implemented; for user confirmation).** For the Win32 shutdown recovery window
+only, install a small VEH that sees guest-thread exceptions **before** the engine VEH. Of the exceptions
+arriving after a redirect was applied, take only those whose context EIP is (a) a guest/cache address or
+(b) exactly the recovery entry, reapply `RecoverToHost`, and return `EXCEPTION_CONTINUE_EXECUTION`. Case
+(a) restores a lost redirect and runs on the guest stack; case (b) resumes at the recovery entry without
+putting the engine VEH's large frame on the host stack. Everything else, including exceptions after the
+recovery entry has begun, passes through. The handler stays until the guest thread has stopped. Linux
+runs the callback in the guest thread's own signal handler, has no such race, and is out of scope.
+
+**Side observation.** In the same repetitions about **45% of runs (9 of 19) ended before the guest
+started**, with `Failed to reserve an available relocated image base`: every candidate base from
+`0x01000000` to `0x09000000` was occupied. `test_all.ps1` runs `repiu.exe` directly, without the
+supervisor, so it is exposed to this as well. It is inferred to be the same family as Task 500's reason
+for the child-process relaunch (a GPU driver claiming address space) and needs separate handling.

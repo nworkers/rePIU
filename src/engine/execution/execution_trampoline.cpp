@@ -6648,14 +6648,18 @@ struct GuestShutdownRecoveryRequest
 };
 
 #if defined(_WIN32)
-std::atomic<bool> g_shutdown_recovery_exception_trace_armed{false};
+// How many exceptions after the redirect are still to be recorded. The first
+// one alone showed a single step arriving at the recovery entry; the access
+// violation that ends the run comes after it, so several are kept.
+constexpr int kShutdownRecoveryExceptionTraceDepth = 4;
+std::atomic<int> g_shutdown_recovery_exception_trace_remaining{0};
 
 LONG CALLBACK ShutdownRecoveryExceptionTraceHandler(
     EXCEPTION_POINTERS* pointers)
 {
-    if (!g_shutdown_recovery_exception_trace_armed.exchange(
-            false, std::memory_order_acq_rel) ||
-        pointers == nullptr || pointers->ExceptionRecord == nullptr ||
+    const int remaining = g_shutdown_recovery_exception_trace_remaining.fetch_sub(
+        1, std::memory_order_acq_rel);
+    if (remaining <= 0 || pointers == nullptr || pointers->ExceptionRecord == nullptr ||
         pointers->ContextRecord == nullptr)
     {
         return EXCEPTION_CONTINUE_SEARCH;
@@ -6670,14 +6674,16 @@ LONG CALLBACK ShutdownRecoveryExceptionTraceHandler(
     char line[256] = {};
     const int length = std::snprintf(
         line, sizeof(line),
-        "[repiu-shutdown-recovery-exception] code=0x%08lX "
-        "address=0x%08X eip=0x%08X esp=0x%08X access=%llu "
+        "[repiu-shutdown-recovery-exception] index=%d code=0x%08lX "
+        "address=0x%08X eip=0x%08X esp=0x%08X eflags=0x%08X access=%llu "
         "target=0x%08llX thread=%lu\n",
+        kShutdownRecoveryExceptionTraceDepth - remaining + 1,
         record.ExceptionCode,
         static_cast<unsigned>(
             reinterpret_cast<std::uintptr_t>(record.ExceptionAddress)),
         static_cast<unsigned>(registers.Eip),
         static_cast<unsigned>(registers.Esp),
+        static_cast<unsigned>(registers.EFlags),
         static_cast<unsigned long long>(access_kind),
         static_cast<unsigned long long>(access_target),
         GetCurrentThreadId());
@@ -6798,8 +6804,8 @@ bool RecoverGuestThreadForShutdownCommon(
 #if defined(_WIN32)
     if (request->trace_enabled)
     {
-        g_shutdown_recovery_exception_trace_armed.store(
-            true, std::memory_order_release);
+        g_shutdown_recovery_exception_trace_remaining.store(
+            kShutdownRecoveryExceptionTraceDepth, std::memory_order_release);
     }
 #endif
     RecoverToHost(registers, request->context);
@@ -7893,8 +7899,8 @@ bool RunExecutionThread(
         PVOID shutdown_recovery_exception_handler = nullptr;
         if (recovery_request.trace_enabled)
         {
-            g_shutdown_recovery_exception_trace_armed.store(
-                false, std::memory_order_release);
+            g_shutdown_recovery_exception_trace_remaining.store(
+                0, std::memory_order_release);
             shutdown_recovery_exception_handler = AddVectoredExceptionHandler(
                 1, &ShutdownRecoveryExceptionTraceHandler);
         }
@@ -7964,8 +7970,8 @@ bool RunExecutionThread(
         }
 
 #if defined(_WIN32)
-        g_shutdown_recovery_exception_trace_armed.store(
-            false, std::memory_order_release);
+        g_shutdown_recovery_exception_trace_remaining.store(
+            0, std::memory_order_release);
         if (shutdown_recovery_exception_handler != nullptr)
         {
             RemoveVectoredExceptionHandler(
