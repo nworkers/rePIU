@@ -92,6 +92,45 @@ bool RunShutdownRecoveryPolicyProbe()
         DecideShutdownRecovery(narrow_unknown) ==
             ShutdownRecoveryDecision::kRecover;
 
+    // Task 733: the redirect guard's full table.
+    using engine::DecideShutdownRedirectGuard;
+    using engine::ShutdownRedirectGuardAction;
+    using engine::ShutdownRedirectGuardInput;
+    const auto guard = [](const bool applied, const bool guest_thread,
+                          const bool at_entry, const bool in_guest,
+                          const std::uint32_t entry_reapplies) {
+        ShutdownRedirectGuardInput input;
+        input.redirect_applied = applied;
+        input.on_guest_thread = guest_thread;
+        input.at_recovery_entry = at_entry;
+        input.in_guest_code = in_guest;
+        input.entry_reapplies = entry_reapplies;
+        return DecideShutdownRedirectGuard(input);
+    };
+    const std::uint32_t limit = engine::kShutdownRedirectGuardEntryLimit;
+    const bool redirect_guard =
+        // Nothing redirected yet, or another thread: never touched.
+        guard(false, true, true, false, 0U) == ShutdownRedirectGuardAction::kPass &&
+        guard(false, true, false, true, 0U) == ShutdownRedirectGuardAction::kPass &&
+        guard(true, false, true, false, 0U) == ShutdownRedirectGuardAction::kPass &&
+        guard(true, false, false, true, 0U) == ShutdownRedirectGuardAction::kPass &&
+        // The in-flight exception delivered with the redirected context.
+        guard(true, true, true, false, 0U) ==
+            ShutdownRedirectGuardAction::kReapplyAtEntry &&
+        guard(true, true, true, false, limit - 1U) ==
+            ShutdownRedirectGuardAction::kReapplyAtEntry &&
+        // Bounded: past the limit the engine sees it rather than a loop.
+        guard(true, true, true, false, limit) == ShutdownRedirectGuardAction::kPass &&
+        // The redirect was lost: an exception back in guest code reapplies it.
+        guard(true, true, false, true, 0U) ==
+            ShutdownRedirectGuardAction::kReapplyFromGuest &&
+        guard(true, true, false, true, limit) ==
+            ShutdownRedirectGuardAction::kReapplyFromGuest &&
+        // Host code that is neither: left to the engine.
+        guard(true, true, false, false, 0U) == ShutdownRedirectGuardAction::kPass &&
+        std::string_view(engine::ShutdownRedirectGuardActionName(
+            ShutdownRedirectGuardAction::kReapplyAtEntry)) == "reapply-at-entry";
+
     bool names = true;
     for (const ShutdownRecoveryDecision decision :
          {ShutdownRecoveryDecision::kRecover,
@@ -105,7 +144,7 @@ bool RunShutdownRecoveryPolicyProbe()
     }
 
     const bool all = recovers_guest && refuses_alias && refuses_host &&
-        boundary && refuses_unknown && narrow_host && names;
+        boundary && refuses_unknown && narrow_host && redirect_guard && names;
     std::cout << "shutdown_recovery_policy_wide_pointer="
               << (wide ? "true" : "false")
               << "\nshutdown_recovery_policy_recovers_guest="
@@ -120,6 +159,8 @@ bool RunShutdownRecoveryPolicyProbe()
               << (refuses_unknown ? "true" : "false")
               << "\nshutdown_recovery_policy_narrow_host="
               << (narrow_host ? "true" : "false")
+              << "\nshutdown_recovery_policy_redirect_guard="
+              << (redirect_guard ? "true" : "false")
               << "\nshutdown_recovery_policy_names="
               << (names ? "true" : "false")
               << "\nshutdown_recovery_policy_all="

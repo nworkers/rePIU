@@ -172,3 +172,61 @@ started**, with `Failed to reserve an available relocated image base`: every can
 `0x01000000` to `0x09000000` was occupied. `test_all.ps1` runs `repiu.exe` directly, without the
 supervisor, so it is exposed to this as well. It is inferred to be the same family as Task 500's reason
 for the child-process relaunch (a GPU driver claiming address space) and needs separate handling.
+
+---
+
+## 5단계 설계 확정 — redirect guard (2026-09-23, 사용자 승인)
+
+### 판정 (순수 함수)
+
+`include/repiu/engine/shutdown_recovery_policy.h`에 `DecideShutdownRedirectGuard`를 추가합니다.
+
+| 조건 | 결과 |
+|---|---|
+| redirect가 아직 적용되지 않음, 또는 guest thread가 아닌 예외 | 통과 |
+| context EIP가 회수 진입점이고 예외가 single-step | `kReapplyAtEntry` — 전달 중이던 예외가 redirect된 context로 도착한 경우 |
+| context EIP가 회수 진입점이지만 다른 예외 | 통과 — 회수 진입점 자체의 실제 fault를 가리지 않기 위해 |
+| context EIP가 guest/cache 주소 | `kReapplyFromGuest` — redirect가 사라진 경우 |
+| 그 밖 | 통과 |
+
+### 적용 (Win32 전용)
+
+* 종료 회수 시도 전에 guest thread id와 `ThreadContext`를 기록하고, 엔진 VEH보다 먼저 호출되는
+  VEH(`AddVectoredExceptionHandler(1, ...)`, 엔진 VEH 뒤에 등록)를 설치합니다. 진단 trace VEH는 그 뒤에
+  등록해 먼저 관찰합니다.
+* 회수 콜백이 `RecoverToHost`를 적용한 직후 `redirect_applied`를 켭니다.
+* guard는 판정 결과가 reapply면 `RecoverToHost`를 다시 적용하고 `EXCEPTION_CONTINUE_EXECUTION`을
+  돌려줍니다. 두 경우의 횟수를 셉니다.
+* guard는 `CloseHostThread`로 guest thread가 멈춘 뒤 제거하고, 그때 횟수를
+  `[repiu-shutdown] redirect-guard reapplied_entry=N reapplied_guest=M`으로 출력합니다. 종료 줄은 guest가
+  예외를 받기 전에 찍힐 수 있으므로 thread가 멈춘 뒤에 찍습니다.
+* 회수를 거절한 경로(immediate-exit)에서는 `redirect_applied`가 켜지지 않아 guard가 아무것도 하지
+  않습니다.
+
+### 검증
+
+* core probe의 `shutdown_recovery_policy` 그룹에 판정표 전체를 추가합니다.
+* Win32 pumpit1 legacy 반복: 크래시 0, `reapplied_entry`·`reapplied_guest`가 0이 아닌 실행이 나오면
+  guard가 실제로 개입한 증거입니다.
+
+## English — stage 5 design, the redirect guard (2026-09-23, approved by the user)
+
+`DecideShutdownRedirectGuard` in `shutdown_recovery_policy.h` passes when no redirect has been applied
+or the exception is not on the guest thread; returns `kReapplyAtEntry` for a single step whose context
+EIP is the recovery entry (an in-flight exception delivered with the redirected context); passes any
+other exception at the recovery entry, so a real fault there is not masked; returns
+`kReapplyFromGuest` when the context EIP is a guest or cache address (the redirect was lost); and
+passes everything else.
+
+On Win32 only, the shutdown block records the guest thread id and `ThreadContext`, and installs a VEH
+registered after the engine's so it is called first (the diagnostic trace VEH is registered after it
+and observes first). The recovery callback sets `redirect_applied` right after `RecoverToHost`. On a
+reapply decision the guard reapplies `RecoverToHost`, returns `EXCEPTION_CONTINUE_EXECUTION`, and
+counts the case. It is removed after `CloseHostThread` has stopped the guest thread, and the counts are
+printed then as `[repiu-shutdown] redirect-guard reapplied_entry=N reapplied_guest=M`, because the
+shutdown line itself can be printed before the guest receives the exception. On the refusing
+(immediate-exit) path `redirect_applied` is never set and the guard does nothing.
+
+Verification: the full decision table in the core probe's `shutdown_recovery_policy` group, and
+repeated Win32 pumpit1 legacy runs expecting zero crashes, with nonzero reapply counts as evidence the
+guard actually intervened.

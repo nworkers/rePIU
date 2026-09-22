@@ -30,6 +30,40 @@ ShutdownRecoveryDecision DecideShutdownRecovery(
     return ShutdownRecoveryDecision::kRecover;
 }
 
+ShutdownRedirectGuardAction DecideShutdownRedirectGuard(
+    const ShutdownRedirectGuardInput& input)
+{
+    if (!input.redirect_applied || !input.on_guest_thread)
+    {
+        return ShutdownRedirectGuardAction::kPass;
+    }
+    if (input.at_recovery_entry)
+    {
+        return input.entry_reapplies < kShutdownRedirectGuardEntryLimit
+            ? ShutdownRedirectGuardAction::kReapplyAtEntry
+            : ShutdownRedirectGuardAction::kPass;
+    }
+    if (input.in_guest_code)
+    {
+        return ShutdownRedirectGuardAction::kReapplyFromGuest;
+    }
+    return ShutdownRedirectGuardAction::kPass;
+}
+
+const char* ShutdownRedirectGuardActionName(const ShutdownRedirectGuardAction action)
+{
+    switch (action)
+    {
+        case ShutdownRedirectGuardAction::kPass:
+            return "pass";
+        case ShutdownRedirectGuardAction::kReapplyAtEntry:
+            return "reapply-at-entry";
+        case ShutdownRedirectGuardAction::kReapplyFromGuest:
+            return "reapply-from-guest";
+    }
+    return "unknown";
+}
+
 const char* ShutdownRecoveryDecisionName(const ShutdownRecoveryDecision decision)
 {
     switch (decision)

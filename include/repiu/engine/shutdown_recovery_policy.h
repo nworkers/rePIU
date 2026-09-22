@@ -52,4 +52,49 @@ ShutdownRecoveryDecision DecideShutdownRecovery(
 
 const char* ShutdownRecoveryDecisionName(ShutdownRecoveryDecision decision);
 
+// Task 733. What to do with an exception that reaches the guest thread after
+// the shutdown path redirected it.
+//
+// On Windows the redirect is a SetThreadContext on a suspended thread. The
+// legacy backend single-steps the guest, so the thread is often suspended
+// while the kernel is already delivering a single-step exception, and the
+// rewrite does not cancel it. After resume that exception arrives anyway --
+// either carrying the redirected context, when the engine's handler would then
+// run on the small host stack and overflow its guard page, or carrying the old
+// guest context, when the redirect is silently lost.
+enum class ShutdownRedirectGuardAction : std::uint8_t
+{
+    kPass = 0,
+    // The in-flight single step arrived at the recovery entry: resume there
+    // without running the engine's handler on the host stack.
+    kReapplyAtEntry,
+    // The exception arrived at guest code: the redirect was lost, apply it again.
+    kReapplyFromGuest,
+};
+
+// How many times an exception reported at the recovery entry is sent back to
+// it. The entry's first instruction reads a global through CS and cannot fault,
+// so an exception reported there is always one that was already in flight --
+// but a bound keeps a case nobody foresaw from looping instead of failing.
+inline constexpr std::uint32_t kShutdownRedirectGuardEntryLimit = 8U;
+
+struct ShutdownRedirectGuardInput
+{
+    bool redirect_applied = false;
+    bool on_guest_thread = false;
+    bool at_recovery_entry = false;
+    // Guest image or AOT cache.
+    bool in_guest_code = false;
+    // Reapplications at the entry already made in this shutdown.
+    std::uint32_t entry_reapplies = 0;
+};
+
+// Only the two shapes above are taken, whatever the exception code: the legacy
+// backend's in-flight exception is usually a single step, but emulated
+// instructions raise access violations and privileged-instruction faults too.
+ShutdownRedirectGuardAction DecideShutdownRedirectGuard(
+    const ShutdownRedirectGuardInput& input);
+
+const char* ShutdownRedirectGuardActionName(ShutdownRedirectGuardAction action);
+
 }  // namespace repiu::engine

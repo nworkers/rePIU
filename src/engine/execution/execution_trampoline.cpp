@@ -6697,6 +6697,67 @@ LONG CALLBACK ShutdownRecoveryExceptionTraceHandler(
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
+
+// Task 733. Completes a shutdown redirect that an in-flight exception would
+// otherwise undo. The decision is `DecideShutdownRedirectGuard`; see its
+// header for the race. Registered after the engine's own vectored handler so
+// that it is called before it -- in the case that crashed, the engine
+// handler's frame is what overflowed the host stack.
+struct ShutdownRedirectGuardState
+{
+    std::atomic<bool> redirect_applied{false};
+    std::atomic<std::uint32_t> guest_thread_id{0};
+    std::atomic<ThreadContext*> context{nullptr};
+    std::atomic<std::uint32_t> reapplied_at_entry{0};
+    std::atomic<std::uint32_t> reapplied_from_guest{0};
+};
+
+ShutdownRedirectGuardState g_shutdown_redirect_guard;
+
+LONG CALLBACK ShutdownRedirectGuardHandler(EXCEPTION_POINTERS* pointers)
+{
+    ThreadContext* const context =
+        g_shutdown_redirect_guard.context.load(std::memory_order_acquire);
+    if (context == nullptr || pointers == nullptr ||
+        pointers->ExceptionRecord == nullptr ||
+        pointers->ContextRecord == nullptr)
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    CONTEXT* const registers = pointers->ContextRecord;
+    const std::uint32_t eip = static_cast<std::uint32_t>(registers->Eip);
+    ShutdownRedirectGuardInput input;
+    input.redirect_applied =
+        g_shutdown_redirect_guard.redirect_applied.load(std::memory_order_acquire);
+    input.on_guest_thread = GetCurrentThreadId() ==
+        g_shutdown_redirect_guard.guest_thread_id.load(std::memory_order_acquire);
+    input.entry_reapplies =
+        g_shutdown_redirect_guard.reapplied_at_entry.load(std::memory_order_relaxed);
+    input.at_recovery_entry = eip == static_cast<std::uint32_t>(
+        reinterpret_cast<std::uintptr_t>(&RecoverGuestStackException));
+    input.in_guest_code = IsGuestInstructionPointer(context, eip) ||
+        IsAotCacheAddress(context, eip);
+    const ShutdownRedirectGuardAction action = DecideShutdownRedirectGuard(input);
+    if (action == ShutdownRedirectGuardAction::kPass)
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    // `RecoverToHost` is idempotent for the entry case -- the context already
+    // holds the recovery entry and host stack -- and restores the redirect for
+    // the guest case. Either way the trap flag leaves with it.
+    RecoverToHost(registers, context);
+    if (action == ShutdownRedirectGuardAction::kReapplyAtEntry)
+    {
+        g_shutdown_redirect_guard.reapplied_at_entry.fetch_add(
+            1U, std::memory_order_relaxed);
+    }
+    else
+    {
+        g_shutdown_redirect_guard.reapplied_from_guest.fetch_add(
+            1U, std::memory_order_relaxed);
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
 #endif
 
 // **This runs on a different thread on each host.** Windows freezes the guest
@@ -6809,6 +6870,12 @@ bool RecoverGuestThreadForShutdownCommon(
     }
 #endif
     RecoverToHost(registers, request->context);
+#if defined(_WIN32)
+    // Task 733: from here an exception the kernel was already delivering may
+    // still arrive; the guard completes the redirect when it does.
+    g_shutdown_redirect_guard.redirect_applied.store(
+        true, std::memory_order_release);
+#endif
 #if defined(_WIN32)
     if (request->trace_enabled)
     {
@@ -7896,6 +7963,20 @@ bool RunExecutionThread(
             shutdown_recovery_trace[0] != '\0' &&
             std::strcmp(shutdown_recovery_trace, "0") != 0;
 #if defined(_WIN32)
+        // Task 733: installed before the diagnostic trace handler, so the trace
+        // (registered later, called first) still sees what the guard handles.
+        g_shutdown_redirect_guard.redirect_applied.store(
+            false, std::memory_order_release);
+        g_shutdown_redirect_guard.reapplied_at_entry.store(
+            0U, std::memory_order_relaxed);
+        g_shutdown_redirect_guard.reapplied_from_guest.store(
+            0U, std::memory_order_relaxed);
+        g_shutdown_redirect_guard.guest_thread_id.store(
+            thread.id, std::memory_order_release);
+        g_shutdown_redirect_guard.context.store(
+            &context, std::memory_order_release);
+        PVOID shutdown_redirect_guard_handler =
+            AddVectoredExceptionHandler(1, &ShutdownRedirectGuardHandler);
         PVOID shutdown_recovery_exception_handler = nullptr;
         if (recovery_request.trace_enabled)
         {
@@ -8231,6 +8312,38 @@ bool RunExecutionThread(
         // stopped, so the join is once again the correct call rather than a
         // choice between two.
         repiu::platform::CloseHostThread(&thread);
+#if defined(_WIN32)
+        // Task 733: the guest thread has stopped, so no exception is left in
+        // flight for the guard to complete. The counts are printed here rather
+        // than on the shutdown line, which can be written before the guest
+        // receives the exception the guard handles.
+        g_shutdown_redirect_guard.context.store(nullptr, std::memory_order_release);
+        if (shutdown_redirect_guard_handler != nullptr)
+        {
+            RemoveVectoredExceptionHandler(shutdown_redirect_guard_handler);
+        }
+        {
+            char guard_line[128] = {};
+            const int guard_length = std::snprintf(
+                guard_line, sizeof(guard_line),
+                "[repiu-shutdown] redirect-guard reapplied_entry=%u "
+                "reapplied_guest=%u\n",
+                static_cast<unsigned>(
+                    g_shutdown_redirect_guard.reapplied_at_entry.load(
+                        std::memory_order_relaxed)),
+                static_cast<unsigned>(
+                    g_shutdown_redirect_guard.reapplied_from_guest.load(
+                        std::memory_order_relaxed)));
+            if (guard_length > 0)
+            {
+                repiu::platform::WriteHostErrorStream(
+                    guard_line,
+                    static_cast<std::size_t>(guard_length) < sizeof(guard_line)
+                        ? static_cast<std::size_t>(guard_length)
+                        : sizeof(guard_line) - 1U);
+            }
+        }
+#endif
         if (aot_placement != nullptr)
         {
             TraceAotGuestMap(*aot_placement, context.runtime_base, "final");
