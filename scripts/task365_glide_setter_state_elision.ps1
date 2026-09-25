@@ -114,7 +114,7 @@ function Get-Median
 }
 
 $censusLinePattern =
-    "Win32 Glide setter census: ordinal=(\d+) name=(\S+) calls=(\d+) " +
+    "Glide setter census: ordinal=(\d+) name=(\S+) calls=(\d+) " +
     "first=(\d+) same=(\d+) changed=(\d+) failure=(\d+) unsupported=(\d+) " +
     "key_overflow=(\d+) distinct=(\d+) distinct_overflow=(\d+) max_run=(\d+) " +
     "max_frame_calls=(\d+) max_frame_changes=(\d+) elided=(\d+) applied=(\d+)"
@@ -178,16 +178,16 @@ function Read-Runs
             ConvertFrom-Json
 
         $elision = Get-LastMetricMatch $text `
-            "Win32 Glide setter elision enabled/entries/elided/applied/voided/invalidations/ordinal-overflow/texture-generation: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide setter elision enabled/entries/elided/applied/voided/invalidations/ordinal-overflow/texture-generation: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName elision summary"
         $census = Get-LastMetricMatch $text `
-            "Win32 Glide setter census enabled/entries/calls/first/same/changed/failure/unsupported: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide setter census enabled/entries/calls/first/same/changed/failure/unsupported: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName census summary"
         $gate = Get-LastMetricMatch $text `
-            "Win32 Glide gate entries/handled/ESP: (\d+)/(\d+)/" `
+            "Glide gate entries/handled/ESP: (\d+)/(\d+)/" `
             "$runName gate counts"
         $ordinalSummary = Get-LastMetricMatch $text `
-            "Win32 Glide ordinal timing enabled/entries/completed/overflow/clamped: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide ordinal timing enabled/entries/completed/overflow/clamped: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName ordinal summary"
 
         $elisionEnabled = $elision.Groups[1].Value -eq "true"

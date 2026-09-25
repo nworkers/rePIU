@@ -835,6 +835,9 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                         census_sample.host_call_site,
                         census_sample.host_scan_failed);
                 }
+                WriteLinuxX64NativeSampleTraceLine(
+                    census_sample,
+                    static_cast<std::uint32_t>(current_tick - start_tick));
             }
             else
             {
@@ -1339,6 +1342,17 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         SnapshotGlideOrdinalTiming(context.glide_ordinal_timing);
     attempt->glide_buffer_swap_timing =
         context.glide_backend.glide_buffer_swap_timing();
+    attempt->glide_lfb_timing =
+        SnapshotGlideLfbTiming(context.glide_lfb_timing);
+    attempt->glide_lfb_write_footprint =
+        SnapshotGlideLfbWriteFootprint(context.glide_lfb_write_footprint);
+    attempt->glide_lfb_native_store_census =
+        SnapshotGlideLfbNativeStoreCensus(context.glide_lfb_native_store_census);
+    attempt->glide_lfb_staging_shadow =
+        SnapshotGlideLfbStagingShadow(context.glide_lfb_staging_shadow);
+    attempt->glide_lfb_lock_interval =
+        SnapshotGlideLfbLockIntervalCensus(
+            context.glide_lfb_lock_interval_census);
     attempt->glide_setter_census =
         SnapshotGlideSetterCensus(context.glide_setter_census);
     attempt->glide_setter_phase_timing =

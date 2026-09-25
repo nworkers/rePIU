@@ -56,7 +56,7 @@ guest 실행 중 특정 코드 주소에 처음 도달한 시점의 메모리 �
 4. loader 진단에서 결과를 확인합니다.
 
    ```text
-   Win32 execution probe dump captured/written/base/source/bytes: true/true/0x0525EC6C/0x04A88418/0x00100000
+   execution probe dump captured/written/base/source/bytes: true/true/0x0525EC6C/0x04A88418/0x00100000
    ```
 
 # Execution Probe Memory Range Extraction Procedure
@@ -118,5 +118,5 @@ address, for validation with host tools. The design is in
 4. Confirm the outcome in the loader diagnostics.
 
    ```text
-   Win32 execution probe dump captured/written/base/source/bytes: true/true/0x0525EC6C/0x04A88418/0x00100000
+   execution probe dump captured/written/base/source/bytes: true/true/0x0525EC6C/0x04A88418/0x00100000
    ```

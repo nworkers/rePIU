@@ -184,106 +184,110 @@ try
         -FilePath $Loader `
         -Arguments @("pumpit1")
     $piuStoppedAtExpectedException =
-        $piuOutput -match "Win32 minimal execution exception caught: true" -and
-        $piuOutput -match "Win32 minimal execution exception code: 0xC0000005" -and
-        $piuOutput -match "Win32 minimal execution exception address: 0x0[1-9](01E1[0-9A-F]{2}|0F5F[0-9A-F]{2}|0F7[AB][0-9A-F]{2})" -and
-        $piuOutput -match "Win32 minimal execution exception context captured: true" -and
-        $piuOutput -match "Win32 minimal execution exception EIP: 0x0[1-9](01E1[0-9A-F]{2}|0F5F[0-9A-F]{2}|0F7[AB][0-9A-F]{2})" -and
-        $piuOutput -match "Win32 minimal execution thread exit code: 2" -and
-        $piuOutput -match "Win32 minimal execution message: original entry raised a caught exception" -and
+        $piuOutput -match "minimal execution exception caught: true" -and
+        $piuOutput -match "minimal execution exception code: 0xC0000005" -and
+        $piuOutput -match "minimal execution exception address: 0x0[1-9](01E1[0-9A-F]{2}|0F5F[0-9A-F]{2}|0F7[AB][0-9A-F]{2})" -and
+        $piuOutput -match "minimal execution exception context captured: true" -and
+        $piuOutput -match "minimal execution exception EIP: 0x0[1-9](01E1[0-9A-F]{2}|0F5F[0-9A-F]{2}|0F7[AB][0-9A-F]{2})" -and
+        $piuOutput -match "minimal execution thread exit code: 2" -and
+        $piuOutput -match "minimal execution message: original entry raised a caught exception" -and
         $piuOutput -match "Privileged instruction opcode: 0x(03|38|83|8B|89|C7)"
     $piuTimedOutAfterProgress =
-        $piuOutput -match "Win32 minimal execution exception caught: false" -and
-        $piuOutput -match "Win32 minimal execution timed out: true" -and
-        $piuOutput -match "Win32 minimal execution thread exit code: 3" -and
-        $piuOutput -match "Win32 minimal execution message: minimal execution attempt timed out"
-    if ($piuOutput -notmatch "Win32 loader executable: build[\\/]runtime_mounts[\\/]pumpit1[\\/]PIU[\\/]PIU.EXE" -or
+        $piuOutput -match "minimal execution exception caught: false" -and
+        $piuOutput -match "minimal execution timed out: true" -and
+        $piuOutput -match "minimal execution thread exit code: 3" -and
+        $piuOutput -match "minimal execution message: (timeout reached|minimal execution attempt timed out)"
+    # Task 733: since Task 507 a timed-out run reports how its guest thread was
+    # stopped ("timeout reached; ..."), and the old wording remains on one path.
+    # The three "DOS environment access" lines this block used to require were
+    # dropped: that observer sees only DS reads routed through the instruction
+    # emulator, and since the flat-selector folds (Tasks 711-717) the guest reads
+    # its environment natively. The environment block itself is still required
+    # below, and the startup DOS path traces that follow it still match.
+    if ($piuOutput -notmatch "loader executable: build[\\/]runtime_mounts[\\/]pumpit1[\\/]PIU[\\/]PIU.EXE" -or
         $piuOutput -notmatch "DOS virtual filesystem root: .+build\\runtime_mounts\\pumpit1" -or
         $piuOutput -notmatch "DOS virtual filesystem current directory: \\PIU" -or
         $piuOutput -notmatch "Runtime memory arena reserve size: 0x0[1-9A-F][0-9A-F]{6}" -or
-        $piuOutput -notmatch "Win32 relocated image placed size: 0x0[1-9A-F][0-9A-F]{6}" -or
-        $piuOutput -notmatch "Win32 relocated selector binding count: 4" -or
-        $piuOutput -notmatch "Win32 relocated selector binding: selector=0x0024 object=2" -or
-        $piuOutput -notmatch "Win32 relocated selector binding: selector=0x002C object=3" -or
-        $piuOutput -notmatch "Win32 minimal execution returned: false" -or
+        $piuOutput -notmatch "relocated image placed size: 0x0[1-9A-F][0-9A-F]{6}" -or
+        $piuOutput -notmatch "relocated selector binding count: 4" -or
+        $piuOutput -notmatch "relocated selector binding: selector=0x0024 object=2" -or
+        $piuOutput -notmatch "relocated selector binding: selector=0x002C object=3" -or
+        $piuOutput -notmatch "minimal execution returned: false" -or
         -not ($piuStoppedAtExpectedException -or $piuTimedOutAfterProgress) -or
-        $piuOutput -notmatch "Win32 last single-step context captured: true" -or
-        $piuOutput -notmatch "Win32 diagnostic poll iterations: [1-9]" -or
-        $piuOutput -notmatch "Win32 diagnostic progress count: [1-9]" -or
-        $piuOutput -notmatch "Win32 exception dispatch entry count: [1-9]" -or
-        $piuOutput -notmatch "Win32 exception dispatch exit count: [1-9]" -or
-        $piuOutput -notmatch "Win32 exception dispatch outstanding count: [01]" -or
-        $piuOutput -notmatch "Win32 exception dispatch last EIP: 0x0[1-9][0-9A-F]{6}" -or
-        $piuOutput -notmatch "Win32 selector table valid: true" -or
-        $piuOutput -notmatch "Win32 selector descriptor count: [1-9]" -or
-        $piuOutput -notmatch "Win32 DOS low memory valid: true" -or
-        $piuOutput -notmatch "Win32 DOS low memory bytes: 65536" -or
-        $piuOutput -notmatch "Win32 DOS environment block bytes: [1-9]" -or
-        $piuOutput -notmatch "Win32 DOS environment access observed: true" -or
-        $piuOutput -notmatch "Win32 last DOS environment entry: .+=<redacted>" -or
-        $piuOutput -notmatch "Win32 last DOS environment value bytes: [0-9]" -or
-        $piuOutput -notmatch "Win32 handled HLE trap count: [1-9]" -or
-        $piuOutput -notmatch "Win32 port I/O observation count: [0-9]+" -or
-        $piuOutput -notmatch "Win32 DOS path trace stored count: [2-9]" -or
-        $piuOutput -notmatch "Win32 DOS path trace limit reached: false" -or
-        $piuOutput -notmatch "Win32 allocator probe observation count: [0-9]+" -or
-        $piuOutput -notmatch "Win32 allocator probe trace stored count: ([0-9]|1[0-6])" -or
-        $piuOutput -notmatch "Win32 allocator probe trace wrapped: (true|false)" -or
-        $piuOutput -notmatch "Win32 allocator control-flow observation count: [0-9]+" -or
-        $piuOutput -notmatch "Win32 allocator control-flow trace stored count: ([0-9]|[12][0-9]|3[0-2])" -or
-        $piuOutput -notmatch "Win32 allocator control-flow trace wrapped: (true|false)" -or
-        $piuOutput -notmatch "Win32 DOS path trace #1 service=chdir result=failure error=0x0003 drive=0x00 access=0x00 guest=\\datas\\bga virtual=\\DATAS\\BGA" -or
-        $piuOutput -notmatch "Win32 DOS path trace #2 service=open result=success error=0x0000 drive=0x00 access=0x00 guest=intro.ani virtual=\\PIU\\INTRO.ANI" -or
-        $piuOutput -notmatch "Win32 handled DOS interrupt count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt vector: 0x21" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x[0-9A-F]{2}" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x[0-9A-F]{4}" -or
-        $piuOutput -notmatch "Win32 handled DOS chdir count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last DOS chdir guest path: \\datas\\bga" -or
-        $piuOutput -notmatch "Win32 last DOS chdir result: failure" -or
-        $piuOutput -notmatch "Win32 handled DOS getcwd count: 0" -or
-        $piuOutput -notmatch "Win32 handled DOS get drive count: 0" -or
-        $piuOutput -notmatch "Win32 handled DOS open count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last DOS open guest path: (intro\.ani|stage\.cfg)" -or
-        $piuOutput -notmatch "Win32 last DOS open virtual path: \\PIU\\(INTRO\.ANI|STAGE\.CFG)" -or
-        $piuOutput -notmatch "Win32 last DOS open result: success" -or
-        $piuOutput -notmatch "Win32 last DOS open handle: 0x000[56]" -or
-        $piuOutput -notmatch "Win32 handled DOS read count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last DOS read handle: 0x000[56]" -or
-        $piuOutput -notmatch "Win32 last DOS read requested bytes: [0-9]+" -or
-        $piuOutput -notmatch "Win32 last DOS read actual bytes: [0-9]+" -or
-        $piuOutput -notmatch "Win32 last DOS read buffer: 0x0[1-9][0-9A-F]{6}" -or
-        $piuOutput -notmatch "Win32 last DOS read result: success" -or
-        $piuOutput -notmatch "Win32 handled DOS seek count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last DOS seek handle: 0x0005" -or
-        $piuOutput -notmatch "Win32 last DOS seek origin: 0x00" -or
-        $piuOutput -notmatch "Win32 last DOS seek offset: [0-9]+" -or
-        $piuOutput -notmatch "Win32 last DOS seek position: [0-9]+" -or
-        $piuOutput -notmatch "Win32 last DOS seek result: success" -or
-        $piuOutput -notmatch "Win32 handled DOS close count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last DOS close handle: 0x0005" -or
-        $piuOutput -notmatch "Win32 last DOS close result: success" -or
-        $piuOutput -notmatch "Win32 handled DOS resize count: [1-9]" -or
-        $piuOutput -notmatch "Win32 handled low-memory access count: [1-9]" -or
-        $piuOutput -notmatch "Win32 segment load trace stored count: [1-9]" -or
-        $piuOutput -notmatch "Win32 segment load trace wrapped: (true|false)" -or
-        $piuOutput -notmatch "Win32 handled segment memory load count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last handled segment memory load address: 0x[0-9A-F]+" -or
-        $piuOutput -notmatch "Win32 last handled segment memory load opcode: 0x[0-9A-F]+" -or
-        $piuOutput -notmatch "Win32 last segment memory load register: [A-Z]+" -or
-        $piuOutput -notmatch "Win32 last segment memory load selector: 0x[0-9A-F]+" -or
-        $piuOutput -notmatch "Win32 last segment memory load offset: 0x[0-9A-F]+" -or
-        $piuOutput -notmatch "Win32 last segment memory load width: [0-9]+" -or
-        $piuOutput -notmatch "Win32 last segment memory load value: 0x[0-9A-F]+" -or
-        $piuOutput -notmatch "Win32 handled memory store count: [0-9]+" -or
-        $piuOutput -notmatch "Win32 (last handled memory store address: 0x[0-9A-F]+|handled memory store count: 0)" -or
-        $piuOutput -notmatch "Win32 (last memory store opcode: 0x[0-9A-F]+|handled memory store count: 0)" -or
-        $piuOutput -notmatch "Win32 (last memory store source kind: .+|handled memory store count: 0)" -or
-        $piuOutput -notmatch "Win32 (last memory store applied: (true|false)|handled memory store count: 0)" -or
-        $piuOutput -notmatch "Win32 shadow memory write count: 0" -or
-        $piuOutput -notmatch "Win32 shadow memory read hit count: 0" -or
-        $piuOutput -notmatch "Win32 shadow memory byte count: 0" -or
-        $piuOutput -notmatch "Win32 shadow memory range valid: false" -or
+        $piuOutput -notmatch "last single-step context captured: true" -or
+        $piuOutput -notmatch "diagnostic poll iterations: [1-9]" -or
+        $piuOutput -notmatch "diagnostic progress count: [1-9]" -or
+        $piuOutput -notmatch "exception dispatch entry count: [1-9]" -or
+        $piuOutput -notmatch "exception dispatch exit count: [1-9]" -or
+        $piuOutput -notmatch "exception dispatch outstanding count: [01]" -or
+        $piuOutput -notmatch "exception dispatch last EIP: 0x0[1-9][0-9A-F]{6}" -or
+        $piuOutput -notmatch "selector table valid: true" -or
+        $piuOutput -notmatch "selector descriptor count: [1-9]" -or
+        $piuOutput -notmatch "DOS low memory valid: true" -or
+        $piuOutput -notmatch "DOS low memory bytes: 65536" -or
+        $piuOutput -notmatch "DOS environment block bytes: [1-9]" -or
+        $piuOutput -notmatch "handled HLE trap count: [1-9]" -or
+        $piuOutput -notmatch "port I/O observation count: [0-9]+" -or
+        $piuOutput -notmatch "DOS path trace stored count: [2-9]" -or
+        $piuOutput -notmatch "DOS path trace limit reached: false" -or
+        $piuOutput -notmatch "allocator probe observation count: [0-9]+" -or
+        $piuOutput -notmatch "allocator probe trace stored count: ([0-9]|1[0-6])" -or
+        $piuOutput -notmatch "allocator probe trace wrapped: (true|false)" -or
+        $piuOutput -notmatch "allocator control-flow observation count: [0-9]+" -or
+        $piuOutput -notmatch "allocator control-flow trace stored count: ([0-9]|[12][0-9]|3[0-2])" -or
+        $piuOutput -notmatch "allocator control-flow trace wrapped: (true|false)" -or
+        $piuOutput -notmatch "DOS path trace #1 service=chdir result=failure error=0x0003 drive=0x00 access=0x00 guest=\\datas\\bga virtual=\\DATAS\\BGA" -or
+        $piuOutput -notmatch "DOS path trace #2 service=open result=success error=0x0000 drive=0x00 access=0x00 guest=intro.ani virtual=\\PIU\\INTRO.ANI" -or
+        $piuOutput -notmatch "handled DOS interrupt count: [1-9]" -or
+        $piuOutput -notmatch "last handled DOS interrupt vector: 0x21" -or
+        $piuOutput -notmatch "last handled DOS interrupt AH: 0x[0-9A-F]{2}" -or
+        $piuOutput -notmatch "last handled DOS interrupt AX: 0x[0-9A-F]{4}" -or
+        $piuOutput -notmatch "handled DOS chdir count: [1-9]" -or
+        $piuOutput -notmatch "last DOS chdir guest path: \\datas\\bga" -or
+        $piuOutput -notmatch "last DOS chdir result: failure" -or
+        $piuOutput -notmatch "handled DOS getcwd count: 0" -or
+        $piuOutput -notmatch "handled DOS get drive count: 0" -or
+        $piuOutput -notmatch "handled DOS open count: [1-9]" -or
+        $piuOutput -notmatch "last DOS open guest path: (intro\.ani|stage\.cfg)" -or
+        $piuOutput -notmatch "last DOS open virtual path: \\PIU\\(INTRO\.ANI|STAGE\.CFG)" -or
+        $piuOutput -notmatch "last DOS open result: success" -or
+        $piuOutput -notmatch "last DOS open handle: 0x000[56]" -or
+        $piuOutput -notmatch "handled DOS read count: [1-9]" -or
+        $piuOutput -notmatch "last DOS read handle: 0x000[56]" -or
+        $piuOutput -notmatch "last DOS read requested bytes: [0-9]+" -or
+        $piuOutput -notmatch "last DOS read actual bytes: [0-9]+" -or
+        $piuOutput -notmatch "last DOS read buffer: 0x0[1-9][0-9A-F]{6}" -or
+        $piuOutput -notmatch "last DOS read result: success" -or
+        $piuOutput -notmatch "handled DOS seek count: [1-9]" -or
+        $piuOutput -notmatch "last DOS seek handle: 0x0005" -or
+        $piuOutput -notmatch "last DOS seek origin: 0x00" -or
+        $piuOutput -notmatch "last DOS seek offset: [0-9]+" -or
+        $piuOutput -notmatch "last DOS seek position: [0-9]+" -or
+        $piuOutput -notmatch "last DOS seek result: success" -or
+        $piuOutput -notmatch "handled DOS close count: [1-9]" -or
+        $piuOutput -notmatch "last DOS close handle: 0x0005" -or
+        $piuOutput -notmatch "last DOS close result: success" -or
+        $piuOutput -notmatch "handled DOS resize count: [1-9]" -or
+        $piuOutput -notmatch "handled low-memory access count: [1-9]" -or
+        $piuOutput -notmatch "segment load trace stored count: [1-9]" -or
+        $piuOutput -notmatch "segment load trace wrapped: (true|false)" -or
+        $piuOutput -notmatch "handled segment memory load count: [1-9]" -or
+        $piuOutput -notmatch "last handled segment memory load address: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "last handled segment memory load opcode: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "last segment memory load register: [A-Z]+" -or
+        $piuOutput -notmatch "last segment memory load selector: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "last segment memory load offset: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "last segment memory load width: [0-9]+" -or
+        $piuOutput -notmatch "last segment memory load value: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "handled memory store count: [0-9]+" -or
+        $piuOutput -notmatch "(last handled memory store address: 0x[0-9A-F]+|handled memory store count: 0)" -or
+        $piuOutput -notmatch "(last memory store opcode: 0x[0-9A-F]+|handled memory store count: 0)" -or
+        $piuOutput -notmatch "(last memory store source kind: .+|handled memory store count: 0)" -or
+        $piuOutput -notmatch "(last memory store applied: (true|false)|handled memory store count: 0)" -or
+        $piuOutput -notmatch "shadow memory write count: 0" -or
+        $piuOutput -notmatch "shadow memory read hit count: 0" -or
+        $piuOutput -notmatch "shadow memory byte count: 0" -or
+        $piuOutput -notmatch "shadow memory range valid: false" -or
         ($piuStoppedAtExpectedException -and
          $piuOutput -notmatch "Current execution blocker: unhandled or unclassified instruction/memory access at exception point"))
     {

@@ -216,14 +216,14 @@ try
         Set-Content -LiteralPath $combinedPath -Value $text -Encoding UTF8
 
         $timeoutMatch = Get-LastMetricMatch `
-            $text "Win32 minimal execution timed out: (true|false)" "timeout"
+            $text "minimal execution timed out: (true|false)" "timeout"
         if ($timeoutMatch.Groups[1].Value -ne "true")
         {
             throw "$runName did not reach the planned timeout"
         }
 
         $profileMatch = Get-LastMetricMatch `
-            $text "Win32 execution time profile enabled: (true|false)" `
+            $text "execution time profile enabled: (true|false)" `
             "execution time profile"
         if ($profileMatch.Groups[1].Value -ne "true")
         {
@@ -232,41 +232,41 @@ try
 
         $cyclesMatch = Get-LastMetricMatch `
             $text `
-            "Win32 execution time cycles guest-run/veh/glide-gate/port-io/dos: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "execution time cycles guest-run/veh/glide-gate/port-io/dos: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "execution time cycles"
         $timeCountMatch = Get-LastMetricMatch `
             $text `
-            "Win32 execution time count guest-run/veh/glide-gate/port-io/dos: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "execution time count guest-run/veh/glide-gate/port-io/dos: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "execution time counts"
         $insideMatch = Get-LastMetricMatch `
             $text `
-            "Win32 execution time inside-veh cycles glide-gate/port-io/dos: (\d+)/(\d+)/(\d+)" `
+            "execution time inside-veh cycles glide-gate/port-io/dos: (\d+)/(\d+)/(\d+)" `
             "inside-VEH service cycles"
         $derivedMatch = Get-LastMetricMatch `
             $text `
-            "Win32 execution time derived veh-exclusive/unaccounted: (\d+)/(\d+)" `
+            "execution time derived veh-exclusive/unaccounted: (\d+)/(\d+)" `
             "derived execution time"
         $censusMatch = Get-LastMetricMatch `
             $text `
-            "Win32 exception census single-step/breakpoint/access-violation/other/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "exception census single-step/breakpoint/access-violation/other/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "exception census"
         $dispatchMatch = Get-LastMetricMatch `
-            $text "Win32 exception dispatch entry count: (\d+)" `
+            $text "exception dispatch entry count: (\d+)" `
             "VEH entry count"
         $runBucketMatch = Get-LastMetricMatch `
             $text `
-            "Win32 single-step run buckets 1/2/3/4/5-8/9-16/17-32/33\+: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "single-step run buckets 1/2/3/4/5-8/9-16/17-32/33\+: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "single-step run buckets"
         $runSummaryMatch = Get-LastMetricMatch `
-            $text "Win32 single-step run count/max/mean: (\d+)/(\d+)/(\d+)" `
+            $text "single-step run count/max/mean: (\d+)/(\d+)/(\d+)" `
             "single-step run summary"
         $funnelMatch = Get-LastMetricMatch `
             $text `
-            "Win32 hle reentry funnel not-pending/segment-write/outside-arena/quarantined/span-unsafe/success/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "hle reentry funnel not-pending/segment-write/outside-arena/quarantined/span-unsafe/success/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "HLE reentry funnel"
         $timerMatch = Get-LastMetricMatch `
             $text `
-            "Win32 AOT timer safe-point trap/injected/deferred: (\d+)/(\d+)/(\d+)" `
+            "AOT timer safe-point trap/injected/deferred: (\d+)/(\d+)/(\d+)" `
             "timer safe-point counters"
         $pitMatch = Get-LastMetricMatch `
             $text `
@@ -274,26 +274,26 @@ try
             "PIT channel 0 configuration"
         $frameMatch = Get-LastMetricMatch `
             $text `
-            "Win32 Glide call trace: ordinal=\d+ name=_?GRBUFFERSWAP@4 count=(\d+)" `
+            "Glide call trace: ordinal=\d+ name=_?GRBUFFERSWAP@4 count=(\d+)" `
             "grBufferSwap count"
         $gateMatch = Get-LastMetricMatch `
-            $text "Win32 Glide gate entries/handled/ESP: (\d+)/(\d+)/" `
+            $text "Glide gate entries/handled/ESP: (\d+)/(\d+)/" `
             "Glide gate count"
         $getProcMatch = Get-LastMetricMatch `
-            $text "Win32 LINEXE get-proc count/name/result: (\d+)/" `
+            $text "LINEXE get-proc count/name/result: (\d+)/" `
             "LINEXE get-proc count"
         $malformedMatch = Get-LastMetricMatch `
-            $text "Win32 exception dispatch malformed count: (\d+)" `
+            $text "exception dispatch malformed count: (\d+)" `
             "malformed dispatch count"
         $fatalCountMatch = Get-LastMetricMatch `
-            $text "Win32 handled original fatal breakpoint count: (\d+)" `
+            $text "handled original fatal breakpoint count: (\d+)" `
             "fatal breakpoint count"
         $fatalHaltMatch = Get-LastMetricMatch `
-            $text "Win32 original fatal halt reached: (true|false)" `
+            $text "original fatal halt reached: (true|false)" `
             "fatal halt state"
         $glideIssuesMatch = Get-LastMetricMatch `
             $text `
-            "Win32 Glide implementation issues unimplemented/unsupported/backend/abi/unique/overflow: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide implementation issues unimplemented/unsupported/backend/abi/unique/overflow: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "Glide implementation issues"
 
         $guestRun = Get-UInt64Group $cyclesMatch 1

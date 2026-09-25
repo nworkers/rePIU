@@ -34,8 +34,8 @@ build\Release\repiu.exe pumpit3 > repiu_log.txt 2>&1
 로그에서:
 
 ```
-Win32 single-step hotspot enabled/total/distinct/overflow: true/<표본>/<주소 수>/0
-Win32 single-step hotspot dump written/entries/path: true/<항목 수>/build\single_step_hotspot.txt
+single-step hotspot enabled/total/distinct/overflow: true/<표본>/<주소 수>/0
+single-step hotspot dump written/entries/path: true/<항목 수>/build\single_step_hotspot.txt
 ```
 
 `overflow`가 0이 아니면 8,192개 표 용량을 넘긴 것이므로 census가 불완전합니다.
@@ -81,9 +81,9 @@ cmd /c "build\win32_x86_debug\Release\repiu.exe pumpit3 > run.txt 2>&1"
 읽는 줄:
 
 ```
-Win32 guest position census enabled/total/distinct/overflow/capture-failures/interval-ms:
-Win32 guest position origin arena/cache-mapped/cache-unmapped/host/sum-matches-total:
-Win32 guest position top #N address/count/share/arena/cache/cache-unmapped/host:
+guest position census enabled/total/distinct/overflow/capture-failures/interval-ms:
+guest position origin arena/cache-mapped/cache-unmapped/host/sum-matches-total:
+guest position top #N address/count/share/arena/cache/cache-unmapped/host:
 ```
 
 **두 검산을 먼저 봅니다.** `sum-matches-total`이 `true`가 아니거나 `overflow`가 0이
@@ -98,9 +98,9 @@ Win32 guest position top #N address/count/share/arena/cache/cache-unmapped/host:
 host 표본이 많으면 **Task 412가 더한 세 줄**을 이어서 읽습니다.
 
 ```
-Win32 guest position thread time valid/kernel-ms/user-ms/wall-ms/cpu-share:
-Win32 guest position host scan samples/sited/no-site/failed/distinct/overflow/parts-match:
-Win32 guest position host site #N address/count/share-of-sited/module/offset/symbol:
+guest position thread time valid/kernel-ms/user-ms/wall-ms/cpu-share:
+guest position host scan samples/sited/no-site/failed/distinct/overflow/parts-match:
+guest position host site #N address/count/share-of-sited/module/offset/symbol:
 ```
 
 | 관측 | 해석 |
@@ -126,7 +126,7 @@ dispatch가 1초간 조용해야 발화하므로 멈춘 실행에서는 나오�
 **census의 `total_cycles`를 비용 근거로 쓰지 마십시오.** 이 값은 single-step 핸들러
 scope만 재며, 실제 실행에서 wall clock의 몇 퍼센트에 불과합니다(Task 402 측정에서
 2.04%). "census의 95%"는 "비용의 95%"가 아닙니다. 비용 판정에는
-`REPIU_EXECUTION_TIME_PROFILE`의 `Win32 execution time cycles ... guest-run` 대비 버킷
+`REPIU_EXECUTION_TIME_PROFILE`의 `execution time cycles ... guest-run` 대비 버킷
 비중을 쓰십시오. Task 401이 이 구분을 놓쳐 잘못된 대상을 지목했고 Task 402가
 정정했습니다.
 
@@ -172,8 +172,8 @@ is used as the path; empty disables the dump.
 In the log:
 
 ```
-Win32 single-step hotspot enabled/total/distinct/overflow: true/<samples>/<addresses>/0
-Win32 single-step hotspot dump written/entries/path: true/<entries>/build\single_step_hotspot.txt
+single-step hotspot enabled/total/distinct/overflow: true/<samples>/<addresses>/0
+single-step hotspot dump written/entries/path: true/<entries>/build\single_step_hotspot.txt
 ```
 
 A non-zero `overflow` means the 8,192-entry table filled and the census is incomplete.
@@ -201,8 +201,8 @@ set `REPIU_GUEST_POSITION_CENSUS=1`, optionally `REPIU_GUEST_POSITION_CENSUS_MS`
 `scripts/task411_guest_position_census.ps1` repeats the runs, isolates the EEPROM per run,
 and classifies each run stalled or healthy.
 
-Read the three log lines `Win32 guest position census …`, `Win32 guest position origin …`,
-and `Win32 guest position top #N …`. **Check the two gates first**: if
+Read the three log lines `guest position census …`, `guest position origin …`,
+and `guest position top #N …`. **Check the two gates first**: if
 `sum-matches-total` is not `true`, or `overflow` is not zero, the table is not read as a
 distribution. Top addresses clustered in one function name the wait loop, and
 `repiu_aot_probe --dump` at `address - 0x02000000` settles its exit condition; a top made
@@ -233,7 +233,7 @@ without trapping is under-represented. Therefore:
 handler scope, which is a small fraction of wall clock (2.04% in the Task 402 measurement).
 "95% of the census" is not "95% of the cost". For cost, use
 `REPIU_EXECUTION_TIME_PROFILE` and compare buckets against
-`Win32 execution time cycles ... guest-run`. Task 401 missed this distinction and named the
+`execution time cycles ... guest-run`. Task 401 missed this distinction and named the
 wrong target; Task 402 corrected it.
 
 Check the `single_step` versus `heartbeat` ratio in the log first to know what fraction of

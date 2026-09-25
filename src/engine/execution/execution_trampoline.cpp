@@ -1,3 +1,4 @@
+#include "repiu/engine/shutdown_recovery_policy.h"
 #include "repiu/engine/execution_trampoline.h"
 #include "native_fast_path.h"
 #include "native_linear_span.h"
@@ -15,6 +16,7 @@
 #include "repiu/platform/linux_x64_guest_entry.h"
 #endif
 #include "repiu/runtime/execution_timeout.h"
+#include "repiu/runtime/timer_safe_point_injection.h"
 #include "repiu/runtime/aot_long_mode_compatibility.h"
 #include "repiu/platform/thunk_calling_convention.h"
 #include "repiu/hle/linexe_call_gate.h"
@@ -3549,6 +3551,7 @@ void CallGuestCacheEntryTimed(ThreadContext* context)
     repiu::platform::LinuxX64AotDispatchFrame frame;
     repiu::platform::InstallLinuxX64Dispatch(&frame, context,
                                              &LinuxX64EngineResolver);
+    InstallGlideGateDirectDispatchResolver();
     repiu::platform::LinuxX64GuestEntryState state;
     state.guest_esp = static_cast<std::uint64_t>(context->guest_initial_esp);
     void* const entry = reinterpret_cast<void*>(
@@ -4882,13 +4885,13 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
     // guest's own IRET runs natively and returns to the cache address directly,
     // so that host is left as it was.
     //
-    // Opt-in for now: with it on, a 30-second pumpit2a run injects at safe
-    // points and gets past the IRET, then dies at about 28 seconds on a
-    // transient int3 inside the cache that no handler claims. Off keeps the
-    // behavior every run has had -- safe-point ticks deferred and dropped --
-    // until that is understood.
+    // Task 718: on by default. It was opt-in while runs with it on died at
+    // about 28 seconds -- first on the CS-override boundary Task 716 removed,
+    // then on the ES fold Task 717 fixed. `=0` restores the old behavior, in
+    // which safe-point ticks are deferred and dropped.
     static const bool safe_point_injection =
-        std::getenv("REPIU_LINUX_X64_SAFE_POINT_INJECTION") != nullptr;
+        runtime::ResolveTimerSafePointInjection(
+            std::getenv("REPIU_LINUX_X64_SAFE_POINT_INJECTION"));
     if (safe_point_injection && context->aot_placement != nullptr &&
         IsAotCacheAddress(context, eip))
     {
@@ -6629,7 +6632,133 @@ struct GuestShutdownRecoveryRequest
     // acted, because "not in recoverable code" is only half an answer without
     // the address that says which code it was in.
     std::uint32_t last_eip = 0;
+    // Task 730: the full native address behind `last_eip`, and the decision
+    // taken on it. `last_eip` alone is the low half on an x64 host.
+    std::uintptr_t last_host_ip = 0;
+    ShutdownRecoveryDecision last_decision =
+        ShutdownRecoveryDecision::kOutsideGuestCode;
+    // Looks whose low half was in guest code but whose full address was a host
+    // address -- each one a thread the 32-bit check would have recovered from a
+    // host frame. Nonzero is direct evidence for the teardown segfault's cause.
+    std::uint32_t aliased_count = 0;
+    // Task 733: diagnostic-only state copied before the Windows guest resumes.
+    // Linux executes this callback in a signal handler and does not format it.
+    bool trace_enabled = false;
+    std::uint32_t attempt = 0;
 };
+
+#if defined(_WIN32)
+// How many exceptions after the redirect are still to be recorded. The first
+// one alone showed a single step arriving at the recovery entry; the access
+// violation that ends the run comes after it, so several are kept.
+constexpr int kShutdownRecoveryExceptionTraceDepth = 4;
+std::atomic<int> g_shutdown_recovery_exception_trace_remaining{0};
+
+LONG CALLBACK ShutdownRecoveryExceptionTraceHandler(
+    EXCEPTION_POINTERS* pointers)
+{
+    const int remaining = g_shutdown_recovery_exception_trace_remaining.fetch_sub(
+        1, std::memory_order_acq_rel);
+    if (remaining <= 0 || pointers == nullptr || pointers->ExceptionRecord == nullptr ||
+        pointers->ContextRecord == nullptr)
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const EXCEPTION_RECORD& record = *pointers->ExceptionRecord;
+    const CONTEXT& registers = *pointers->ContextRecord;
+    const ULONG_PTR access_kind = record.NumberParameters >= 1U
+        ? record.ExceptionInformation[0] : 0U;
+    const ULONG_PTR access_target = record.NumberParameters >= 2U
+        ? record.ExceptionInformation[1] : 0U;
+    char line[256] = {};
+    const int length = std::snprintf(
+        line, sizeof(line),
+        "[repiu-shutdown-recovery-exception] index=%d code=0x%08lX "
+        "address=0x%08X eip=0x%08X esp=0x%08X eflags=0x%08X access=%llu "
+        "target=0x%08llX thread=%lu\n",
+        kShutdownRecoveryExceptionTraceDepth - remaining + 1,
+        record.ExceptionCode,
+        static_cast<unsigned>(
+            reinterpret_cast<std::uintptr_t>(record.ExceptionAddress)),
+        static_cast<unsigned>(registers.Eip),
+        static_cast<unsigned>(registers.Esp),
+        static_cast<unsigned>(registers.EFlags),
+        static_cast<unsigned long long>(access_kind),
+        static_cast<unsigned long long>(access_target),
+        GetCurrentThreadId());
+    if (length > 0)
+    {
+        repiu::platform::WriteHostErrorStream(
+            line,
+            static_cast<std::size_t>(length) < sizeof(line)
+                ? static_cast<std::size_t>(length)
+                : sizeof(line) - 1U);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// Task 733. Completes a shutdown redirect that an in-flight exception would
+// otherwise undo. The decision is `DecideShutdownRedirectGuard`; see its
+// header for the race. Registered after the engine's own vectored handler so
+// that it is called before it -- in the case that crashed, the engine
+// handler's frame is what overflowed the host stack.
+struct ShutdownRedirectGuardState
+{
+    std::atomic<bool> redirect_applied{false};
+    std::atomic<std::uint32_t> guest_thread_id{0};
+    std::atomic<ThreadContext*> context{nullptr};
+    std::atomic<std::uint32_t> reapplied_at_entry{0};
+    std::atomic<std::uint32_t> reapplied_from_guest{0};
+};
+
+ShutdownRedirectGuardState g_shutdown_redirect_guard;
+
+LONG CALLBACK ShutdownRedirectGuardHandler(EXCEPTION_POINTERS* pointers)
+{
+    ThreadContext* const context =
+        g_shutdown_redirect_guard.context.load(std::memory_order_acquire);
+    if (context == nullptr || pointers == nullptr ||
+        pointers->ExceptionRecord == nullptr ||
+        pointers->ContextRecord == nullptr)
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    CONTEXT* const registers = pointers->ContextRecord;
+    const std::uint32_t eip = static_cast<std::uint32_t>(registers->Eip);
+    ShutdownRedirectGuardInput input;
+    input.redirect_applied =
+        g_shutdown_redirect_guard.redirect_applied.load(std::memory_order_acquire);
+    input.on_guest_thread = GetCurrentThreadId() ==
+        g_shutdown_redirect_guard.guest_thread_id.load(std::memory_order_acquire);
+    input.entry_reapplies =
+        g_shutdown_redirect_guard.reapplied_at_entry.load(std::memory_order_relaxed);
+    input.at_recovery_entry = eip == static_cast<std::uint32_t>(
+        reinterpret_cast<std::uintptr_t>(&RecoverGuestStackException));
+    input.in_guest_code = IsGuestInstructionPointer(context, eip) ||
+        IsAotCacheAddress(context, eip);
+    const ShutdownRedirectGuardAction action = DecideShutdownRedirectGuard(input);
+    if (action == ShutdownRedirectGuardAction::kPass)
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    // `RecoverToHost` is idempotent for the entry case -- the context already
+    // holds the recovery entry and host stack -- and restores the redirect for
+    // the guest case. Either way the trap flag leaves with it.
+    RecoverToHost(registers, context);
+    if (action == ShutdownRedirectGuardAction::kReapplyAtEntry)
+    {
+        g_shutdown_redirect_guard.reapplied_at_entry.fetch_add(
+            1U, std::memory_order_relaxed);
+    }
+    else
+    {
+        g_shutdown_redirect_guard.reapplied_from_guest.fetch_add(
+            1U, std::memory_order_relaxed);
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+#endif
 
 // **This runs on a different thread on each host.** Windows freezes the guest
 // thread and runs this on the caller's; Linux runs it on the guest thread
@@ -6659,8 +6788,58 @@ bool RecoverGuestThreadForShutdownCommon(
     // engine's own -- it would return through a frame that was never set up.
     const std::uint32_t eip = static_cast<std::uint32_t>(registers->Eip);
     request->last_eip = eip;
-    if (!IsGuestInstructionPointer(request->context, eip) &&
-        !IsAotCacheAddress(request->context, eip))
+    // Task 730: on an x64 host `eip` is only the low half of RIP, and a host
+    // library address can alias guest code in it. The full address decides.
+    ShutdownRecoveryPosition position;
+    position.low_half_in_guest_code =
+        IsGuestInstructionPointer(request->context, eip) ||
+        IsAotCacheAddress(request->context, eip);
+#if defined(__x86_64__) && !defined(_WIN32)
+    position.host_address_required = true;
+    position.host_address =
+        repiu::platform::ReadHostInstructionPointer(host_context);
+    position.host_address_known = host_context != nullptr;
+#else
+    position.host_address = static_cast<std::uintptr_t>(eip);
+    position.host_address_known = true;
+#endif
+    request->last_host_ip = position.host_address;
+    const ShutdownRecoveryDecision decision = DecideShutdownRecovery(position);
+    request->last_decision = decision;
+#if defined(_WIN32)
+    if (request->trace_enabled)
+    {
+        char line[320] = {};
+        const StackSwitchCallState* call_state =
+            request->context->active_call_state;
+        const int length = std::snprintf(
+            line, sizeof(line),
+            "[repiu-shutdown-recovery] attempt=%u phase=observed "
+            "decision=%s eip=0x%08X esp=0x%08X eflags=0x%08X "
+            "call_state=0x%08X call_host_esp=0x%08X stored_host_esp=0x%08X\n",
+            static_cast<unsigned>(request->attempt),
+            ShutdownRecoveryDecisionName(decision),
+            static_cast<unsigned>(registers->Eip),
+            static_cast<unsigned>(registers->Esp),
+            static_cast<unsigned>(registers->EFlags),
+            static_cast<unsigned>(reinterpret_cast<std::uintptr_t>(call_state)),
+            call_state != nullptr ? static_cast<unsigned>(call_state->host_esp) : 0U,
+            static_cast<unsigned>(request->context->host_esp));
+        if (length > 0)
+        {
+            repiu::platform::WriteHostErrorStream(
+                line,
+                static_cast<std::size_t>(length) < sizeof(line)
+                    ? static_cast<std::size_t>(length)
+                    : sizeof(line) - 1U);
+        }
+    }
+#endif
+    if (decision == ShutdownRecoveryDecision::kAliasedHostAddress)
+    {
+        ++request->aliased_count;
+    }
+    if (decision != ShutdownRecoveryDecision::kRecover)
     {
         return false;
     }
@@ -6683,7 +6862,41 @@ bool RecoverGuestThreadForShutdownCommon(
     registers->EFlags &= ~0x00000100U;
     registers->EFlags &= ~0x00000400U;
 #else
+#if defined(_WIN32)
+    if (request->trace_enabled)
+    {
+        g_shutdown_recovery_exception_trace_remaining.store(
+            kShutdownRecoveryExceptionTraceDepth, std::memory_order_release);
+    }
+#endif
     RecoverToHost(registers, request->context);
+#if defined(_WIN32)
+    // Task 733: from here an exception the kernel was already delivering may
+    // still arrive; the guard completes the redirect when it does.
+    g_shutdown_redirect_guard.redirect_applied.store(
+        true, std::memory_order_release);
+#endif
+#if defined(_WIN32)
+    if (request->trace_enabled)
+    {
+        char line[160] = {};
+        const int length = std::snprintf(
+            line, sizeof(line),
+            "[repiu-shutdown-recovery] attempt=%u phase=redirected "
+            "eip=0x%08X esp=0x%08X\n",
+            static_cast<unsigned>(request->attempt),
+            static_cast<unsigned>(registers->Eip),
+            static_cast<unsigned>(registers->Esp));
+        if (length > 0)
+        {
+            repiu::platform::WriteHostErrorStream(
+                line,
+                static_cast<std::size_t>(length) < sizeof(line)
+                    ? static_cast<std::size_t>(length)
+                    : sizeof(line) - 1U);
+        }
+    }
+#endif
 #endif
     request->recovered = true;
     return true;
@@ -7744,6 +7957,35 @@ bool RunExecutionThread(
         constexpr std::uint32_t kShutdownRecoveryRetryMilliseconds = 5U;
         GuestShutdownRecoveryRequest recovery_request;
         recovery_request.context = &context;
+        const char* shutdown_recovery_trace =
+            std::getenv("REPIU_SHUTDOWN_RECOVERY_TRACE");
+        recovery_request.trace_enabled = shutdown_recovery_trace != nullptr &&
+            shutdown_recovery_trace[0] != '\0' &&
+            std::strcmp(shutdown_recovery_trace, "0") != 0;
+#if defined(_WIN32)
+        // Task 733: installed before the diagnostic trace handler, so the trace
+        // (registered later, called first) still sees what the guard handles.
+        g_shutdown_redirect_guard.redirect_applied.store(
+            false, std::memory_order_release);
+        g_shutdown_redirect_guard.reapplied_at_entry.store(
+            0U, std::memory_order_relaxed);
+        g_shutdown_redirect_guard.reapplied_from_guest.store(
+            0U, std::memory_order_relaxed);
+        g_shutdown_redirect_guard.guest_thread_id.store(
+            thread.id, std::memory_order_release);
+        g_shutdown_redirect_guard.context.store(
+            &context, std::memory_order_release);
+        PVOID shutdown_redirect_guard_handler =
+            AddVectoredExceptionHandler(1, &ShutdownRedirectGuardHandler);
+        PVOID shutdown_recovery_exception_handler = nullptr;
+        if (recovery_request.trace_enabled)
+        {
+            g_shutdown_recovery_exception_trace_remaining.store(
+                0, std::memory_order_release);
+            shutdown_recovery_exception_handler = AddVectoredExceptionHandler(
+                1, &ShutdownRecoveryExceptionTraceHandler);
+        }
+#endif
         recovery_request.snapshot =
             host_exit_requested ? nullptr : &attempt->timeout_snapshot;
         repiu::platform::ThreadInterruptFailure interrupt_failure =
@@ -7753,6 +7995,7 @@ bool RunExecutionThread(
         while (recovery_attempts < kShutdownRecoveryAttempts)
         {
             ++recovery_attempts;
+            recovery_request.attempt = recovery_attempts;
             interrupt_answered = repiu::platform::InterruptHostThreadWithContext(
                 thread, &RecoverGuestThreadForShutdownWithContext,
                 &recovery_request, kShutdownInterruptTimeoutMilliseconds,
@@ -7806,6 +8049,16 @@ bool RunExecutionThread(
                 gracefully_interrupted = false;
             }
         }
+
+#if defined(_WIN32)
+        g_shutdown_recovery_exception_trace_remaining.store(
+            0, std::memory_order_release);
+        if (shutdown_recovery_exception_handler != nullptr)
+        {
+            RemoveVectoredExceptionHandler(
+                shutdown_recovery_exception_handler);
+        }
+#endif
 
         if (gracefully_interrupted && recovery_request.recovered)
         {
@@ -7894,12 +8147,13 @@ bool RunExecutionThread(
             //
             // Read without a lock on purpose -- both counters are written on the
             // host thread, which is the thread running this block.
-            char shutdown_line[320] = {};
+            char shutdown_line[448] = {};
             const int length = std::snprintf(
                 shutdown_line, sizeof(shutdown_line),
                 "[repiu-shutdown] reason=%s attempts=%u answered=%d "
                 "recovered=%d stopped=%d failure=%u eip=0x%08X gate=%d "
-                "frames=%llu span_ms=%llu\n",
+                "frames=%llu span_ms=%llu host_ip=0x%llX decision=%s "
+                "aliased=%u\n",
                 host_exit_requested ? "exit-requested" : "timeout",
                 static_cast<unsigned>(recovery_attempts),
                 interrupt_answered ? 1 : 0,
@@ -7911,7 +8165,10 @@ bool RunExecutionThread(
                 static_cast<unsigned long long>(
                     context.glide_backend.presented_frame_total()),
                 static_cast<unsigned long long>(
-                    context.glide_backend.presented_frame_span_milliseconds()));
+                    context.glide_backend.presented_frame_span_milliseconds()),
+                static_cast<unsigned long long>(recovery_request.last_host_ip),
+                ShutdownRecoveryDecisionName(recovery_request.last_decision),
+                static_cast<unsigned>(recovery_request.aliased_count));
             if (length > 0)
             {
                 repiu::platform::WriteHostErrorStream(
@@ -8055,6 +8312,38 @@ bool RunExecutionThread(
         // stopped, so the join is once again the correct call rather than a
         // choice between two.
         repiu::platform::CloseHostThread(&thread);
+#if defined(_WIN32)
+        // Task 733: the guest thread has stopped, so no exception is left in
+        // flight for the guard to complete. The counts are printed here rather
+        // than on the shutdown line, which can be written before the guest
+        // receives the exception the guard handles.
+        g_shutdown_redirect_guard.context.store(nullptr, std::memory_order_release);
+        if (shutdown_redirect_guard_handler != nullptr)
+        {
+            RemoveVectoredExceptionHandler(shutdown_redirect_guard_handler);
+        }
+        {
+            char guard_line[128] = {};
+            const int guard_length = std::snprintf(
+                guard_line, sizeof(guard_line),
+                "[repiu-shutdown] redirect-guard reapplied_entry=%u "
+                "reapplied_guest=%u\n",
+                static_cast<unsigned>(
+                    g_shutdown_redirect_guard.reapplied_at_entry.load(
+                        std::memory_order_relaxed)),
+                static_cast<unsigned>(
+                    g_shutdown_redirect_guard.reapplied_from_guest.load(
+                        std::memory_order_relaxed)));
+            if (guard_length > 0)
+            {
+                repiu::platform::WriteHostErrorStream(
+                    guard_line,
+                    static_cast<std::size_t>(guard_length) < sizeof(guard_line)
+                        ? static_cast<std::size_t>(guard_length)
+                        : sizeof(guard_line) - 1U);
+            }
+        }
+#endif
         if (aot_placement != nullptr)
         {
             TraceAotGuestMap(*aot_placement, context.runtime_base, "final");

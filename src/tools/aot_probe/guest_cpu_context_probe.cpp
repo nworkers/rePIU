@@ -42,6 +42,10 @@ constexpr std::uint32_t kFlags = 0x00000246U;
 // accidentally land.
 constexpr greg_t kHostStackPointerMarker =
     static_cast<greg_t>(UINT64_C(0x00007FFF12345678));
+// Task 722. The native RIP diagnostic must retain the host half above 4 GiB;
+// a guest EIP alone cannot identify an ASLR host wait site.
+constexpr greg_t kHostInstructionPointerMarker =
+    static_cast<greg_t>(UINT64_C(0x00007FFFABC00000));
 #endif
 constexpr std::uint32_t kContextFlags = 0x0001000FU;
 constexpr std::uint32_t kControlWord = 0x0000037FU;
@@ -139,6 +143,7 @@ bool ProbeUcontextRoundTrip()
 #if defined(__x86_64__)
     // Planted before the store, checked after it.
     host.uc_mcontext.gregs[REG_RSP] = kHostStackPointerMarker;
+    host.uc_mcontext.gregs[REG_RIP] = kHostInstructionPointerMarker;
 #endif
 
     GuestCpuContext written{};
@@ -191,6 +196,15 @@ bool ProbeUcontextRoundTrip()
     // every assertion above, and the kernel would resume the guest thread with
     // its stack pointer pointing into guest memory.
     if (host.uc_mcontext.gregs[REG_RSP] != kHostStackPointerMarker)
+    {
+        return false;
+    }
+    const std::uintptr_t expected_native_rip =
+        (static_cast<std::uintptr_t>(kHostInstructionPointerMarker) &
+         UINT64_C(0xFFFFFFFF00000000)) |
+        static_cast<std::uintptr_t>(kEip);
+    if (repiu::platform::ReadHostInstructionPointer(&host) !=
+        expected_native_rip)
     {
         return false;
     }

@@ -4,6 +4,7 @@
 
 #if !defined(_WIN32) && defined(__x86_64__)
 #include "repiu/platform/linux_x64_aot_dispatch.h"
+#include "repiu/engine/glide_lfb_native_store_census.h"
 #endif
 
 #include <Zydis.h>
@@ -825,6 +826,16 @@ bool EmitLinuxX64StackWriteTrace(
 
 bool LinuxX64NativeMemoryWriteTraceEnabled()
 {
+    static const bool legacy_enabled = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_MEMORY_WRITE_TRACE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return legacy_enabled || repiu::engine::GlideLfbNativeStoreCensusEnabled();
+}
+
+bool LinuxX64LegacyNativeMemoryWriteTraceEnabled()
+{
     static const bool enabled = [] {
         const char* const value =
             std::getenv("REPIU_LINUX_X64_MEMORY_WRITE_TRACE");
@@ -881,6 +892,9 @@ bool EmitLinuxX64NativeMemoryWriteTrace(
     {
         return false;
     }
+    const bool use_lfb_range_gate =
+        repiu::engine::GlideLfbNativeStoreCensusEnabled() &&
+        !LinuxX64LegacyNativeMemoryWriteTraceEnabled();
     const std::uintptr_t frame_pointer_address =
         repiu::platform::LinuxX64DispatchFramePointerAddress();
     const std::uintptr_t observer_address = reinterpret_cast<std::uintptr_t>(
@@ -891,6 +905,34 @@ bool EmitLinuxX64NativeMemoryWriteTrace(
     }
 
     const std::size_t start = bytes->size();
+    std::size_t lfb_gate_skip_displacement_offset = 0U;
+    if (use_lfb_range_gate)
+    {
+        const std::uintptr_t active_flag_address =
+            repiu::engine::GlideLfbNativeStoreCensusActiveFlagAddress();
+        if (active_flag_address == 0U)
+        {
+            return false;
+        }
+        // Preserve flags around the flag check. Inactive locks must avoid the
+        // observer call itself, not merely have it return immediately.
+        bytes->push_back(0x9CU);  // pushfq
+        bytes->insert(bytes->end(), {0x49U, 0xBBU});  // movabs r11, active flag
+        for (std::size_t index = 0U; index < 8U; ++index)
+        {
+            bytes->push_back(static_cast<std::uint8_t>(
+                (static_cast<std::uint64_t>(active_flag_address) >>
+                 (index * 8U)) & 0xFFU));
+        }
+        bytes->insert(bytes->end(), {0x41U, 0x80U, 0x3BU, 0x00U});
+                                                     // cmp byte ptr [r11], 0
+        bytes->insert(bytes->end(), {0x75U, 0x06U});  // jne restore-enabled
+        bytes->push_back(0x9DU);  // popfq, then skip the full observer
+        bytes->push_back(0xE9U);  // jmp rel32 .Lnative_write_trace_end
+        lfb_gate_skip_displacement_offset = bytes->size();
+        AppendImmediate32(bytes, 0U);
+        bytes->push_back(0x9DU);  // restore enabled path flags
+    }
     bytes->push_back(0x9CU);  // pushfq
     bytes->push_back(0x50U);  // push rax
     bytes->push_back(0x51U);  // push rcx
@@ -962,7 +1004,24 @@ bool EmitLinuxX64NativeMemoryWriteTrace(
         return false;
     }
     (*bytes)[skip_offset] = static_cast<std::uint8_t>(displacement);
-    *emitted_instructions = 35U;
+    if (lfb_gate_skip_displacement_offset != 0U)
+    {
+        const std::int64_t gate_displacement = static_cast<std::int64_t>(
+            bytes->size() - (lfb_gate_skip_displacement_offset + 4U));
+        if (gate_displacement > std::numeric_limits<std::int32_t>::max())
+        {
+            bytes->resize(start);
+            return false;
+        }
+        const std::uint32_t encoded = static_cast<std::uint32_t>(
+            static_cast<std::int32_t>(gate_displacement));
+        for (std::size_t index = 0U; index < 4U; ++index)
+        {
+            (*bytes)[lfb_gate_skip_displacement_offset + index] =
+                static_cast<std::uint8_t>((encoded >> (index * 8U)) & 0xFFU);
+        }
+    }
+    *emitted_instructions = use_lfb_range_gate ? 42U : 35U;
     return true;
 }
 #endif

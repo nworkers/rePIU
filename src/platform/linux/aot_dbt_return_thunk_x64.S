@@ -89,6 +89,16 @@ RepiuLinuxX64ReturnThunk:
 
     test r10, r10
     jz .Lreturn_thunk_unresolved
+    // Task 734. The guest flags go back last, because the TEST above is the
+    // final host instruction that writes them. A 32-bit RET or indirect
+    // CALL/JMP leaves EFLAGS untouched, and guest code relies on that: the
+    // Watcom `sin`/`cos` helper returns "argument reduced" in CF and the caller
+    // tests it with JAE. Resuming with TEST's CF=0 kept that caller retrying
+    // FSIN forever -- the pumpit2a song-select freeze. R11 is not a guest
+    // register, and the 32-bit load keeps RFLAGS' reserved upper half zero.
+    mov r11d, dword ptr [r11 + 36]
+    push r11
+    popfq
     jmp r10
 
 .Lreturn_thunk_unresolved:

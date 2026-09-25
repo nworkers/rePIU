@@ -556,8 +556,8 @@ try
             $runPassed =
                 -not $run.TimedOut -and
                 $run.ExitCode -eq 0 -and
-                $run.Output -match "Win32 minimal execution exception caught: false" -and
-                $run.Output -match "Win32 minimal execution returned: true" -and
+                $run.Output -match "minimal execution exception caught: false" -and
+                $run.Output -match "minimal execution returned: true" -and
                 $run.Output -notmatch "minimal execution attempt timed out"
             $runStatus = if ($runPassed)
                          { "pass" }

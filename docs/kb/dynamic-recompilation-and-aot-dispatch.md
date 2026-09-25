@@ -106,6 +106,32 @@ flowchart TD
 리버스 엔지니어링·번역 정확성 부담이 크다. rePIU는 정확성과 단순성을 위해 처리량을
 내주는 쪽을 택했고, 성능이 문제될 때 예외 왕복을 줄이는 방향으로 개선한다.
 
+## 6. 제어 이전은 EFLAGS를 바꾸지 않는다 (Control transfers leave EFLAGS alone)
+
+x86의 near `RET`, `CALL`, `JMP`는 "Flags Affected: None"이다. 원본 프로그램은 이것에 기댈 수
+있다. 예를 들어 Watcom C 런타임의 `sin`/`cos` helper는 결과를 CF로 반환하고 호출자는 `ret`
+직후 `jae`로 읽는다. 그래서 번역기가 이 명령들을 host 코드(resolver 호출, inline cache 비교,
+스택 조정)로 바꿀 때 그 경로 전체가 guest flags를 보존해야 한다.
+
+* 스택 포인터 조정은 `ADD`/`SUB` 대신 `LEA`를 쓴다(flags를 쓰지 않음).
+* host 함수 호출을 끼우면 `pushf`/`popf`(x64는 `pushfq`/`popfq`)로 감싸거나, 저장한 값을
+  **마지막 host 명령 뒤에** 복원한다. 복원 뒤에 `test`/`cmp` 하나만 있어도 결함이 된다.
+* 결함은 조용하다. 대부분의 코드는 `ret` 뒤에 flags를 새로 계산하므로, flags를 잃어도
+  드물게 쓰이는 경로에서만 무한 루프나 잘못된 분기로 드러난다. rePIU에서는 Linux x64 return
+  thunk가 `test r10, r10`의 CF=0을 남겨 pumpit2a가 곡 선택에서 `fsin`을 끝없이 재시도했다
+  ([Task 734](../work-logs/20260926-734-linux-x64-return-thunk-flags.md)).
+
+x86 near `RET`, `CALL` and `JMP` list "Flags Affected: None", and original programs may rely on it —
+the Watcom C runtime's `sin`/`cos` helper answers in CF, read by the caller's `jae` right after the
+`ret`. When a translator replaces these instructions with host code (a resolver call, an inline-cache
+compare, a stack adjustment), that whole path must preserve guest flags: adjust stack pointers with
+`LEA` rather than `ADD`/`SUB`; bracket host calls with `pushf`/`popf` (`pushfq`/`popfq` on x64) or
+restore the saved value **after the last host instruction** — a single `test`/`cmp` after the restore
+is already a defect. The defect is quiet, because most code recomputes flags after a `ret`, so lost
+flags surface only as an infinite loop or a wrong branch on rarely used paths. In rePIU the Linux x64
+return thunk left the CF=0 of `test r10, r10`, and pumpit2a retried `fsin` forever at song select
+([Task 734](../work-logs/20260926-734-linux-x64-return-thunk-flags.md)).
+
 ## 참조 (References)
 
 * Microsoft, Structured Exception Handling —
@@ -116,6 +142,9 @@ flowchart TD
   (block chaining과 TCG 기반 동적 번역) —
   https://www.usenix.org/legacy/event/usenix05/tech/freenix/full_papers/bellard/bellard.pdf
 * Intel SDM Vol. 3, §17.3 — EFLAGS.TF 단일스텝 디버깅 예외.
+* Intel SDM Vol. 2 — `RET`, `CALL`, `JMP`의 "Flags Affected: None"; `TEST`는 CF와 OF를 0으로
+  만든다 —
+  https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html
 
 ---
 

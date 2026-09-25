@@ -376,7 +376,8 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 | 경로 | 내용 |
 | --- | --- |
 | `include/repiu/`, `src/` | C++20 loader, runtime, HLE와 platform 구현 |
-| `src/host/win32/` | Win32 x86 loader application |
+| `src/host/loader/` | Win32 x86·Linux 공용 loader application / shared loader application |
+| `src/host/win32/`, `src/host/linux/` | 플랫폼 전용 entry point (supervisor, Linux launcher) / platform-only entry points |
 | `src/tools/exe_analyzer/` | 비실행 DOS/4GW LE 분석 도구 |
 | `samples/dos4gw_hello/` | 최소 DOS/4GW 검증 sample |
 | `scripts/` | setup, build와 regression entry points |

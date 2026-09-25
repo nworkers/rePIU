@@ -410,3 +410,19 @@ pumpit2a는 Glide 위에 OpenGL식 래퍼층을 갖고 있다. object 2 오프�
 | `0xAE120` | `glEnable`/`glDisable` | GL enum 비교 체인. `GL_TEXTURE_2D`(`0x0DE1`)는 `*(ctx[0x8F8])`가 0이 아니고 렌더 모드가 `GL_RENDER`(`0x1A00`)일 때 `scene[0xDEFC]`에 `2 << unit*4`를 세움 |
 | `0x3B520` | 재질 선택 | `scene[0xDEFC]&2 && !(&4) && materials[0][0x488]` → 텍스처 재질, 아니면 텍스처 없는 재질 |
 | `0x3ABCC` | 텍스처 상주 | `[tex+0xC4]`가 0이면 `grTexTextureMemRequired`/`grTexDownloadMipMapLevel` |
+
+## pumpit2a C 런타임의 `sin`/`cos`와 CF 반환 (확인됨, Task 734)
+
+주소는 object 2 기준 오프셋이다(Linux 실행 주소 `0x01010000`을 더한다).
+
+| object 2 오프셋 | 내용 |
+|---|---|
+| `0xE20AE` | `fcos`, `call 0xE20C2`, `jae 0xE20AE`(CF=0이면 재시도), `ret` |
+| `0xE20B8` | `fsin`, `call 0xE20C2`, `jae 0xE20B8`, `ret` |
+| `0xE20C2` | 범위 helper. `fstsw`로 읽은 AH에 `or 1`을 해 `sahf`하므로 CF=1, PF=C2. C2=0이면 그대로 반환(CF=1 = 끝). C2=1이면 `DS:0x96398`의 80-bit 2π로 `fprem` 루프를 돌려 환원하고 `clc`로 반환(CF=0 = 다시 계산) |
+
+helper는 결과를 **CF**로 돌려주고 호출자는 `ret` 직후 `jae`로 읽는다. 따라서 이 코드를 실행하는
+엔진은 `ret`에서 EFLAGS를 보존해야 한다. Linux x64 return thunk가 이를 보존하지 않아
+곡 선택에서 `fsin`을 무한 재시도한 사례가
+[Task 734 작업 로그](work-logs/20260926-734-linux-x64-return-thunk-flags.md)에 있다.
+`DS:0x96398`은 object 4 파일 오프셋 `0x1A4998`이고 정확한 2π(`0x4001 C90FDAA22168C235`)다.

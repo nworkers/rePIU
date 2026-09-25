@@ -416,3 +416,19 @@ pumpit2a carries an OpenGL-style wrapper over Glide. Object-2 offsets:
 | `0xAE120` | `glEnable`/`glDisable` | compare chain over GL enums; `GL_TEXTURE_2D` (`0x0DE1`) sets `2 << unit*4` in `scene[0xDEFC]` only when `*(ctx[0x8F8])` is nonzero and the render mode is `GL_RENDER` (`0x1A00`) |
 | `0x3B520` | material selection | `scene[0xDEFC]&2 && !(&4) && materials[0][0x488]` → textured material, else untextured |
 | `0x3ABCC` | texture residency | if `[tex+0xC4]` is zero, `grTexTextureMemRequired` / `grTexDownloadMipMapLevel` |
+
+## pumpit2a C runtime `sin`/`cos` and their CF return (confirmed, Task 734)
+
+Addresses are object-2 offsets (add the Linux execution address `0x01010000`).
+
+| Object-2 offset | Content |
+|---|---|
+| `0xE20AE` | `fcos`, `call 0xE20C2`, `jae 0xE20AE` (retry while CF=0), `ret` |
+| `0xE20B8` | `fsin`, `call 0xE20C2`, `jae 0xE20B8`, `ret` |
+| `0xE20C2` | Range helper. `sahf` on the `fstsw` AH with bit 0 forced on gives CF=1 and PF=C2. With C2=0 it returns as is (CF=1 = done); with C2=1 it reduces through an `fprem` loop against the 80-bit 2π at `DS:0x96398` and returns with `clc` (CF=0 = compute again) |
+
+The helper answers in **CF** and the caller reads it with `jae` right after the `ret`, so an engine
+running this code must preserve EFLAGS across `ret`. The case where the Linux x64 return thunk did not,
+and the song-select screen retried `fsin` forever, is in the
+[Task 734 work log](work-logs/20260926-734-linux-x64-return-thunk-flags.md). `DS:0x96398` is object-4
+file offset `0x1A4998` and holds the exact 2π (`0x4001 C90FDAA22168C235`).

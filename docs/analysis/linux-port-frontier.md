@@ -17167,3 +17167,1189 @@ SS rule now covers every segment register and the initial data selector. With
 injection on the guest now runs 90 seconds without faults, drawing 3,913 frames with
 the scenes changing throughout; Win32 figures are within noise. Next: turn injection
 on by default.
+
+---
+
+## 2026-09-19 Task 718 — safe point 틱 주입 기본값 on
+
+Linux x64 safe point 틱 주입을 기본값으로 켰다(`REPIU_LINUX_X64_SAFE_POINT_INJECTION=0`만
+off). 기본 설정으로 게임 시계가 흐르고, 180초 동안 폴트 없이 9,994프레임을 그렸다. 게임이
+주기마다 되돌리는 틱 카운터가 두 host에서 같은 자리에서 초기화되며, 간격은 Win32 77초,
+Linux 84초다. 다음은 장면별 시각 비교.
+
+## English
+
+Linux x64 safe-point tick injection is on by default (off only with
+`REPIU_LINUX_X64_SAFE_POINT_INJECTION=0`). With default settings the game clock
+runs, and a 180-second run drew 9,994 frames without faults. The tick counter the
+game winds back each cycle resets at the same point on both hosts, 77 seconds apart
+on Win32 and 84 on Linux. Next: per-scene timing compared.
+
+---
+
+## 2026-09-19 Task 719 — 장면별 시각: 차이는 로딩 정지와 Glide trap
+
+시간 기준 장면 표본(`REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS`)으로 두 host를 180초씩 비교했다.
+장면 순서와 평상시 swap 속도는 같고, Linux에만 swap이 1–3.6초 멈추는 로딩 구간이 다섯 곳
+있다(Win32는 한 곳 0.8초). Linux는 Glide 호출 242만 번을 전부 `ud2` trap으로 처리하고,
+Win32는 252만 번을 직접 디스패치로 처리한다. x64에는 직접 디스패치 thunk가 없다
+(`capable=false`). 다음은 Task 720, Linux x64 Glide gate 직접 디스패치.
+
+## English
+
+Time-based scene sampling (`REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS`) compared both hosts
+over 180 seconds. Scene order and ordinary swap rate match; only Linux has five
+loading stretches where swaps stop for 1–3.6 seconds (Win32 one, 0.8 s). Linux takes
+all 2.42 million Glide calls through a `ud2` trap, while Win32 dispatches 2.52 million
+directly; x64 has no direct-dispatch thunk (`capable=false`). Next: Task 720, direct
+Glide gate dispatch on Linux x64.
+
+---
+
+## 2026-09-19 Task 720 — Linux x64 Glide gate 직접 디스패치
+
+x64 thunk(`RepiuLinuxX64GlideGateThunk`)로 Glide gate를 trap 없이 호출한다. 180초 동안
+Glide 호출 348만 번이 모두 직접 디스패치로 성공했고 `ud2` boundary 242만 → 0, 예외 처리
+진입 255만 → 12만, swap 10,344 → 15,832. 그러나 로딩 정지(합계 약 8초)는 그대로여서
+Task 719의 "정지는 Glide trap 때문" 추정은 반증됐다. 정지 중 예외는 초당 약 700뿐이라
+게스트가 무언가를 기다리는 것으로 보인다. 다음은 그 대기의 정체.
+
+## English
+
+An x64 thunk (`RepiuLinuxX64GlideGateThunk`) calls the Glide gates without a trap. In
+180 seconds all 3.48 million Glide calls succeeded through direct dispatch; `ud2`
+boundaries fell from 2.42 million to 0, exception dispatches from 2.55 million to
+123,000, and swaps rose from 10,344 to 15,832. The loading stalls (about 8 s in total)
+did not change, refuting Task 719's inference that they come from Glide traps. With
+only about 700 exceptions per second during a stall, the guest appears to be waiting
+for something. Next: what it waits for.
+
+---
+
+## 2026-09-19 Task 721 — Linux x64 정지 위치 census opt-in
+
+### 확인됨
+
+Task 705의 read-only target-thread interrupt를 이용해 Linux x64에서도 wall-clock
+`GuestPositionCensus`를 켰습니다. `REPIU_LINUX_X64_NATIVE_SAMPLE=1`과
+`REPIU_GUEST_POSITION_CENSUS=1`이 함께 있어야 signal capture가 시작되며, 기본 실행은
+capture를 `stage=3`에서 즉시 거절해 signal을 보내지 않습니다. signal callback은 register를
+복사한 뒤 false를 반환하므로 Task 705의 no-write-back 계약을 지킵니다. Win32/i386의
+`process_vm_readv` host-stack scan은 Linux x64 signal handler에서 제외했습니다.
+
+35초 제한 `pumpit2a` 관찰(100ms census, 일반 native sampler off)은 345회 capture,
+200개 distinct 위치, overflow 0, capture failure 0으로 완료됐고 shutdown은 timeout
+immediate-exit 경로로 깨끗이 끝났습니다. Linux x64와 Win32 x86 core probe는 각각
+30/30 및 28/28이며 Win32 x86 전체 빌드도 성공했습니다.
+
+### 새 제한과 다음 frontier
+
+표본 대부분은 host로 분류되었습니다. 이는 실패가 아니라 `GuestCpuContext::Eip`가
+guest ABI의 32-bit 값이기 때문입니다. cache 안일 때는 guest EIP로 역매핑되지만, 64-bit
+host RIP는 하위 32-bit만 남아 module/symbol과 안정적으로 연결할 수 없습니다. 짧은
+opt-in 관찰에서 117개 중 host 112, cache-mapped 5였고, host stack scan은 의도대로
+0 site였습니다.
+
+따라서 Task 720의 로딩 정지에서 게스트가 무엇을 기다리는지는 아직 확정되지 않았습니다.
+다음 frontier는 signal callback에서 full host RIP와 monotonic sample time을 별도 관찰
+필드로 보존하고, 정지 구간 표본만 시간 순으로 덤프하는 것입니다. 이 정보는 guest ABI
+context와 섞지 않아야 합니다.
+
+## English
+
+### Confirmed
+
+Using Task 705's read-only target-thread interrupt, Linux x64 can now enable the
+wall-clock `GuestPositionCensus`. Signal capture starts only when both
+`REPIU_LINUX_X64_NATIVE_SAMPLE=1` and `REPIU_GUEST_POSITION_CENSUS=1` are set; a
+default run refuses capture at `stage=3` before sending a signal. The callback copies
+registers and returns false, retaining Task 705's no-write-back contract. The
+Win32/i386 `process_vm_readv` host-stack scan is excluded from the Linux x64 signal
+handler.
+
+A 35-second bounded `pumpit2a` observation (100ms census, normal native sampler off)
+completed with 345 captures, 200 distinct positions, zero overflow, and zero capture
+failures; shutdown followed the clean timeout immediate-exit path. Linux x64 and
+Win32 x86 core probes passed 30/30 and 28/28 respectively, and the full Win32 x86
+build succeeded.
+
+### New limitation and next frontier
+
+Most samples classify as host. This is not a capture failure: `GuestCpuContext::Eip`
+is a 32-bit guest-ABI value. Cache samples reverse-map to a guest EIP, but a 64-bit
+host RIP retains only its low 32 bits and cannot be reliably joined to a module or
+symbol. In a short opt-in observation, 112 of 117 samples were host and five were
+cache-mapped; host stack scanning intentionally reported zero sites.
+
+Task 720's loading wait is therefore still unconfirmed. The next frontier is to
+preserve full host RIP and monotonic sample time in separate observation fields inside
+the signal callback, then dump only the time-ordered stall samples. That information
+must not be mixed into the guest ABI context.
+
+---
+
+## 2026-09-19 Task 722 — Linux x64 full RIP 정지 trace
+
+### 확인됨
+
+Task 722는 Linux `ucontext_t`에서 `REG_RIP`를 `uintptr_t`로 읽는 read-only helper를
+추가하고, 이를 guest ABI의 `Eip`와 별개인 `NativePhaseSample::native_instruction_pointer`에
+보존했습니다. Linux x64의 opt-in capture만 context callback을 사용하며 callback은 계속
+false를 반환하므로 native context를 write-back하지 않습니다. core probe는 host RIP의 상위
+32-bit marker와 store 뒤의 guest EIP 하위 32-bit가 함께 유지되는 것을 확인합니다.
+
+`REPIU_LINUX_X64_NATIVE_SAMPLE_TRACE=1`은 성공 capture 뒤 poll thread에서만
+`elapsed_ms`, full RIP, guest EIP, mapping 여부를 출력합니다. 500ms census `pumpit2a`
+관찰은 49 capture, 41 distinct, overflow 0, failure 0으로 timeout immediate-exit까지
+완료했습니다. trace의 RIP는 0x20068B6A, 0x7F82A5E43E4F, 0x20120793처럼 전체 폭으로
+기록됐으며 elapsed time은 500ms부터 24,500ms까지 단조 증가했습니다.
+
+### 해석 — 아직 인과관계는 미확정
+
+Task 720에서 보인 첫 로딩 정지 창과 겹치는 6.5–9초 표본은 단일 guest busy loop가 아니었습니다.
+shared-library 범위 RIP, cache-mapped guest EIP `0x0103F139`, 그리고 executable 내부의
+`GlideOpenGlBackend::SpinForRendezvousHint` 및 LFB encode/fault-handler 인접 위치가
+혼재했습니다. `SpinForRendezvousHint`는 host-command rendezvous의 짧은 hint spin이므로,
+이 관찰은 renderer/host-command rendezvous와 LFB 처리 영역을 다음 조사 대상으로 좁히지만
+정지 원인을 증명하지는 않습니다.
+
+100ms trace 출력은 약 25초에서 `repiu-fault`를 노출했습니다. 동일한 100ms census에서
+trace를 끈 실행은 246 capture, 152 distinct, overflow 0, failure 0으로 약 17초 timeout
+immediate-exit까지 fault 없이 완료했고, 500ms trace도 완료했습니다. 그러므로 현재 증거는
+고빈도 diagnostic output이 timing을 교란해 잠재 문제를 드러낸다는 것이며, callback 회귀나
+일반 실행 회귀로 단정할 수 없습니다. 고빈도 trace는 원인 분석 전에는 제품 검증 수단으로
+사용하지 않습니다.
+
+### 검증
+
+- Linux x64 Debug `repiu_core_probe`: 30/30 passed
+- Win32 x86 Debug 전체 빌드 성공 및 `repiu_core_probe`: 28/28 passed
+- Linux x64 500ms trace `pumpit2a`: full RIP 및 monotonic elapsed time 확인, capture failure 0
+
+## English
+
+### Confirmed
+
+Task 722 adds a read-only helper that reads `REG_RIP` from Linux `ucontext_t` as a
+`uintptr_t`, retaining it in `NativePhaseSample::native_instruction_pointer` separately
+from guest-ABI `Eip`. Only Linux x64 opt-in capture uses the context callback, which
+still returns false and never writes native context back. The core probe verifies that
+the upper 32-bit host-RIP marker remains alongside the guest-EIP low 32 bits after a
+store.
+
+`REPIU_LINUX_X64_NATIVE_SAMPLE_TRACE=1` writes elapsed milliseconds, full RIP, guest
+EIP, and mapping status only on the poll thread after a successful capture. A 500ms
+`pumpit2a` census completed through timeout immediate-exit with 49 captures, 41
+distinct positions, zero overflow, and zero failures. The trace retained full-width
+RIPs such as 0x20068B6A, 0x7F82A5E43E4F, and 0x20120793; elapsed time increased
+monotonically from 500ms through 24,500ms.
+
+### Interpretation — causality still unresolved
+
+Samples overlapping Task 720's first loading-stall window, from 6.5 to 9 seconds,
+were not one guest busy loop. They mix shared-library-range RIPs, cache-mapped guest
+EIP `0x0103F139`, and executable locations adjacent to
+`GlideOpenGlBackend::SpinForRendezvousHint`, LFB encoding, and fault handling.
+`SpinForRendezvousHint` is a short host-command rendezvous hint spin, so the evidence
+narrows the next investigation to renderer/host-command rendezvous and LFB work; it
+does not prove the stall's cause.
+
+A 100ms trace output run exposed `repiu-fault` at about 25 seconds. The equivalent
+100ms census with trace disabled completed fault-free through roughly 17-second timeout
+immediate-exit (246 captures, 152 distinct, zero overflow, zero failures), and the
+500ms trace completed too. Current evidence therefore says high-rate diagnostic output
+perturbs timing and exposes a latent problem; it does not establish a callback or
+normal-execution regression. Do not use high-rate trace as product verification before
+the cause is understood.
+
+### Verification
+
+- Linux x64 Debug `repiu_core_probe`: 30/30 passed.
+- Full Win32 x86 Debug build and `repiu_core_probe`: 28/28 passed.
+- Linux x64 500ms traced `pumpit2a`: full RIP, monotonic elapsed time, zero capture failures.
+
+---
+
+## 2026-09-19 Task 723 — Linux x64 Glide host-work ordinal 분해
+
+### 확인됨
+
+Task 722 뒤의 Linux x64 `pumpit2a` 30초 관찰에서 기존
+`REPIU_EXECUTION_TIME_PROFILE=1` 및 `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1` 계측을
+사용해 host command 작업을 ordinal별로 분해했습니다. 39개 ordinal, 161,867개 완료 gate의
+backend total은 29,245,612,348 cycles, 실제 host work는 25,768,579,029 cycles였습니다.
+전체 gate의 wake는 2,258,755,174 cycles로, 이 관찰에서도 rendezvous wake가 지배항이
+아니라는 기존 결론을 확인합니다.
+
+`grBufferSwap`은 host work 16,206,075,482 cycles(62.9%), backend total
+16,827,287,865 cycles(57.5%)로 첫째입니다. `grLfbLock`은 host work
+6,272,964,560 cycles(24.3%), backend total 6,352,359,460 cycles(21.7%)로 둘째입니다.
+두 호출은 host work의 87.2%를 차지합니다. `grLfbUnlock`은 440,437,599 cycles(1.7%)여서
+LFB staging copy의 비용은 lock 쪽, 즉 lock 시의 read/encode 또는 host-side 준비에
+집중되어 있습니다.
+
+### 미확정 및 다음 frontier
+
+이는 30초 전체 집계이므로 특정 수초 정지의 직접 원인을 증명하지 않습니다. 다만 다음
+계측/최적화 후보는 일반 rendezvous spin이 아니라 `BufferSwapOnHostThread`의 present 경로와
+`grLfbLock`의 staging read/encode 경로입니다. `REPIU_GLIDE_SWAP_TIME_PROFILE=1`을 함께 켠
+추가 관찰은 초기 loader 출력 뒤 제한 시간보다 오래 진행되어 중단했고, 완결 summary가 없으므로
+그 실행의 수치는 사용하지 않았습니다. 이 profile 조합의 종료 지연도 별도 재현 대상으로 남습니다.
+
+## English
+
+### Confirmed
+
+After Task 722, a 30-second Linux x64 `pumpit2a` run used the existing
+`REPIU_EXECUTION_TIME_PROFILE=1` and `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`
+instrumentation to split host-command work by ordinal. Across 39 ordinals and 161,867
+completed gates, backend total was 29,245,612,348 cycles and actual host work was
+25,768,579,029 cycles. Wake consumed 2,258,755,174 cycles, confirming that rendezvous
+wake is not dominant in this observation either.
+
+`grBufferSwap` is first with 16,206,075,482 host-work cycles (62.9%) and
+16,827,287,865 backend-total cycles (57.5%). `grLfbLock` is second with
+6,272,964,560 host-work cycles (24.3%) and 6,352,359,460 backend-total cycles (21.7%).
+Together they account for 87.2% of host work. `grLfbUnlock` costs only 440,437,599
+cycles (1.7%), so LFB staging-copy cost is concentrated on lock-side read/encode or
+host-side preparation.
+
+### Unresolved and next frontier
+
+This is a 30-second aggregate and does not prove the direct cause of a particular
+multi-second stall. It does make `BufferSwapOnHostThread`'s present path and
+`grLfbLock`'s staging read/encode path the next instrumentation/optimization targets,
+not general rendezvous spinning. A further observation also enabling
+`REPIU_GLIDE_SWAP_TIME_PROFILE=1` exceeded its bounded observation time after initial
+loader output and was interrupted; because it has no complete summary, none of its
+numbers are used. Its exit delay remains a separate reproduction target.
+
+---
+
+## 2026-09-19 Task 724 — Linux x64 LFB lock 단계 timing
+
+### 확인됨
+
+Task 724는 기본 OFF `REPIU_GLIDE_LFB_TIME_PROFILE=1|on|true` 계측을 추가해
+`grLfbLock` staging seed의 `ReadbackFramebuffer`와 `EncodeRgba8ToGlideLfb565`를
+별도로 기록합니다. 계측은 성공/실패, 누적/최대 cycles, 역행 counter clamp만 관찰하며
+OpenGL 호출 순서, staging memory, guest ABI 또는 lock 반환값을 바꾸지 않습니다.
+
+30초 Linux x64 `pumpit2a` run은 LFB lock 304회 모두 readback 및 encode에 성공했고 clamp와
+실패는 0이었습니다. seed 총 10,454,401,712 cycles 중 readback은 6,496,580,582 cycles
+(62.1%), encode는 3,957,821,130 cycles(37.9%)였습니다. 최대 단일 lock은 readback
+34,962,404, encode 17,475,576, total 47,920,248 cycles였습니다.
+
+### 결론과 다음 frontier
+
+`grLfbLock`의 큰 비용은 CPU 565 packing보다 GPU→CPU framebuffer readback에 더 많이
+집중됩니다. 따라서 다음 작업은 full framebuffer readback을 피할 수 있는 정확한 dirty/ownership
+조건을 원본 Glide 의미와 비교해 증명하는 것입니다. write lock이 부분 쓰기를 할 수 있으므로
+증거 없이 zero-fill, 오래된 staging 재사용, 또는 readback 생략을 적용하면 이미 그려진 픽셀이
+사라질 수 있습니다.
+
+Linux x64 core probe 30/30과 Win32 x86 전체 빌드/core probe 28/28이 통과했습니다.
+
+## English
+
+### Confirmed
+
+Task 724 adds default-off `REPIU_GLIDE_LFB_TIME_PROFILE=1|on|true` instrumentation that
+records `ReadbackFramebuffer` and `EncodeRgba8ToGlideLfb565` separately in the
+`grLfbLock` staging seed. It observes only success/failure, aggregate/maximum cycles,
+and backward-counter clamps; it does not alter OpenGL call order, staging memory, guest
+ABI, or lock return values.
+
+A 30-second Linux x64 `pumpit2a` run completed all 304 LFB locks with successful
+readback and encoding, zero failures, and zero clamps. Of 10,454,401,712 seed cycles,
+readback consumed 6,496,580,582 (62.1%) and encoding 3,957,821,130 (37.9%). The maximum
+single lock used 34,962,404 readback, 17,475,576 encode, and 47,920,248 total cycles.
+
+### Conclusion and next frontier
+
+`grLfbLock` cost is more concentrated in GPU-to-CPU framebuffer readback than CPU 565
+packing. The next task is to prove precise dirty/ownership conditions under original
+Glide semantics that can avoid a full framebuffer readback. Because a write lock can be
+partial, zero-filling, reusing stale staging, or skipping readback without proof can
+erase already rendered pixels.
+
+Linux x64 core probe passed 30/30; full Win32 x86 build and core probe passed 28/28.
+
+---
+
+## 2026-09-20 Task 725 — Linux x64 LFB write footprint census
+
+### 확인됨
+
+Task 725는 기본 OFF `REPIU_GLIDE_LFB_WRITE_CENSUS=1|on|true`를 추가했습니다. 성공한
+write `grLfbLock`이 guest에 `lfbPtr`을 반환하기 직전, seeded RGB565 staging surface를 private
+host baseline으로 복사합니다. 대응 `grLfbUnlock`은 기존 decode/present 전에 baseline과 pixel 단위로
+비교하여 unchanged, partial extent, full extent, every-pixel-changed와 changed pixel 수를 집계합니다.
+profile OFF에서는 baseline 할당, 복사, 비교를 하지 않으며 guest ABI, staging surface, decode/present
+호출 순서 및 반환값을 변경하지 않습니다.
+
+30초 Linux x64 `pumpit2a` bounded run은 304 write lock을 비교했습니다. 19 lock은 byte-difference가
+없고, 285 lock은 partial extent였으며 full extent와 all-pixels-changed는 모두 0이었습니다. 누적
+changed pixel은 21,659,082, 한 lock 최대 changed pixel은 115,200(640×480의 37.5%), 최대 bounding box는
+306,081 pixels(화면의 약 99.6%)였습니다. 같은 값을 다시 쓰는 guest store는 baseline과 같으므로 이
+census에 나타나지 않습니다.
+
+### 결론과 다음 frontier
+
+관찰된 byte 변화는 대다수 lock이 full-surface overwrite가 아님을 보이지만, 거의 전체 화면을 가로지르는
+bounding box와 동일값 재기록의 비가시성 때문에 이를 full readback 생략 근거로 사용하면 안 됩니다.
+다음 frontier는 guest store 자체를 보존적으로 추적하거나, 원본 호출부의 write 범위·preceding draw
+소유권을 검증하여 어떤 lock에서 이전 framebuffer pixel이 필요 없는지 증명하는 것입니다.
+
+### 검증 상태
+
+Linux x64 Debug `repiu`와 core probe는 재빌드됐고 core probe는 30/30 통과했습니다. bounded run은
+timeout immediate-exit와 fault 없음으로 summary를 남겼습니다. Win32 x86 Debug 전체 build와 전용
+`repiu_aot_probe --glide-lfb-write-footprint`는 통과했습니다. 전체 build 뒤 Win32 core probe는 기존
+`mode16_push_writes=false` synthetic group 하나로 28개 중 1개 실패했습니다. LFB profile의 결정적
+probe와 Linux core는 통과했지만, 이 Win32 core failure는 별도 재현·수정 대상으로 남깁니다.
+
+## English
+
+### Confirmed
+
+Task 725 adds default-off `REPIU_GLIDE_LFB_WRITE_CENSUS=1|on|true`. Immediately before a
+successful write `grLfbLock` returns its `lfbPtr`, it copies the seeded RGB565 staging
+surface into a private host baseline. The matching `grLfbUnlock` compares it per pixel
+before the existing decode/present path and aggregates unchanged, partial-extent,
+full-extent, every-pixel-changed, and changed-pixel results. When disabled it neither
+allocates nor copies nor compares a baseline, and it changes no guest ABI, staging surface,
+decode/present order, or return value.
+
+A 30-second Linux x64 bounded `pumpit2a` run compared 304 write locks. Nineteen locks had
+no byte difference and 285 had partial extent; full extent and all-pixels-changed were both
+zero. Total changed pixels were 21,659,082; a single lock changed at most 115,200 pixels
+(37.5% of 640×480), while the maximum bounding box covered 306,081 pixels (about 99.6% of
+the screen). A guest store that rewrites an identical value remains invisible to this census.
+
+### Conclusion and next frontier
+
+The observed byte changes show that most locks are not full-surface overwrites, but a
+near-full-screen bounding box and invisible identical rewrites mean this is not evidence to
+skip full readback. The next frontier is conservatively tracking guest stores, or proving
+the write range and preceding-draw ownership of original call sites, to establish when a
+lock cannot need previous framebuffer pixels.
+
+### Verification status
+
+Linux x64 Debug `repiu` and core probe were rebuilt; the core probe passed 30/30. The
+bounded run reached timeout immediate-exit without a fault and emitted its summary. The full
+Win32 x86 Debug build and dedicated `repiu_aot_probe --glide-lfb-write-footprint` passed.
+After the full build, the Win32 core probe failed one of 28 groups: the pre-existing
+`mode16_push_writes=false` synthetic group. The LFB deterministic probe and Linux core pass,
+but the Win32 core failure remains a separate reproduction and repair target.
+
+---
+
+## 2026-09-20 Task 726 — Linux x64 LFB native-store census
+
+### 확인됨
+
+Task 726은 기본 OFF인 `REPIU_LINUX_X64_LFB_STORE_CENSUS=1|on|true`를 추가했습니다.
+write `grLfbLock`이 guest에 staging `lfbPtr`를 공개할 때에만 Linux x64 AOT의 native
+write observer를 활성화하고, unlock 직전에 비활성화합니다. 따라서 lock 밖의 모든 AOT
+store는 observer 호출 자체를 건너뜁니다. profile은 decode된 명시적 store의 staging-range
+교집합 store 수·byte 수·최대 겹침 byte 수와 lock lifecycle만 합산하며, guest memory,
+guest ABI, 기존 decode/present 순서와 반환값을 바꾸지 않습니다.
+
+30초 bounded `pumpit2a` run은 28회 write lock을 열고 27회를 정상 unlock했습니다. 마지막
+lock은 timeout teardown 중 열려 있어 완료 수가 하나 작습니다. 활성 구간에서 observer와
+decoded store는 모두 17,975,875건이고, LFB와 겹친 store는 2,073,600건, 겹친 byte는
+8,294,400이며 한 store의 최대 겹침은 4 byte였습니다. run은 timeout clean teardown까지
+도달했고 `repiu-fault`는 발생하지 않았습니다.
+
+### 미확정 및 다음 frontier
+
+이 수치는 명시적으로 decode되는 AOT memory-store만 포함합니다. string/implicit store,
+decode 실패, boundary/HLE 또는 비-AOT write는 빠지므로 모든 guest write의 총량이나 실제
+변경된 pixel 수를 뜻하지 않습니다. 동일 값을 다시 쓰는 store까지 포함한다는 점에서
+Task 725 byte-difference census를 보완하지만, 이것만으로 readback 생략 조건을 증명하지는
+못합니다. 다음 단계는 observed store call-site와 draw ownership을 연결해 이전 framebuffer
+pixel이 필요 없는 lock 조건을 원본 ABI 의미와 함께 증명하는 것입니다.
+
+### 검증 상태
+
+Linux x64 Debug `repiu`와 core probe를 clean rebuild했고 core probe는 30/30 통과했습니다.
+Win32 x86 Debug 전체 build도 오류 없이 완료했고 전용 native-store census probe는 통과했습니다.
+다만 Win32 core probe는 기존 `mode16_push_writes=false` synthetic group 하나로 28개 중 1개가
+실패했습니다. 이는 Linux x64 전용 observer의 실행 경로와 무관하며 별도 재현·수정 대상으로
+계속 남깁니다.
+
+## English
+
+### Confirmed
+
+Task 726 adds default-off `REPIU_LINUX_X64_LFB_STORE_CENSUS=1|on|true`. It activates the
+Linux x64 native AOT write observer only after a write `grLfbLock` exposes its staging
+`lfbPtr`, and deactivates it immediately before unlock. Therefore AOT stores outside a
+lock skip the observer call itself. The profile aggregates only lifecycle data and the
+store count, byte count, and maximum overlap for decoded explicit stores intersecting the
+staging range; it changes neither guest memory nor guest ABI nor the existing decode/present
+order or return values.
+
+A 30-second bounded `pumpit2a` run opened 28 write locks and normally unlocked 27. The
+final lock remained open during timeout teardown, hence one fewer completed lock. In the
+active ranges, observer and decoded-store counts were both 17,975,875; 2,073,600 stores
+overlapped LFB for 8,294,400 bytes, with a maximum overlap of 4 bytes per store. The run
+reached clean timeout teardown without a `repiu-fault`.
+
+### Unresolved and next frontier
+
+This counts only explicitly decoded AOT memory stores. String/implicit stores, decode
+failures, and boundary/HLE or non-AOT writes are excluded, so it is neither the total guest
+write count nor a changed-pixel count. It complements Task 725's byte-difference census by
+also observing same-value stores, but does not prove that framebuffer readback can be
+skipped. The next step is connecting observed store call sites to draw ownership, then
+proving under original ABI semantics which locks cannot require preceding framebuffer pixels.
+
+### Verification status
+
+Linux x64 Debug `repiu` and core probe were clean-rebuilt; the core probe passed 30/30.
+The full Win32 x86 Debug build also completed without errors, and the dedicated native-store
+census probe passed. However, the Win32 core probe failed one of 28 groups, the existing
+`mode16_push_writes=false` synthetic group. It remains a separate reproduction and repair
+target, unrelated to the Linux x64-only observer execution path.
+
+---
+
+## 2026-09-20 Task 727 — Linux x64 LFB native-store source census
+
+### 확인됨
+
+`REPIU_LINUX_X64_LFB_STORE_SOURCE_CENSUS=1|on|true`는 aggregate census 설정 없이도 필요한
+native observer와 write-LFB range gate를 활성화합니다. source 표본은 `ThreadContext` 밖의
+고정 64-entry 표에 저장되며, decoded explicit AOT store가 LFB 범위와 양수로 겹친 횟수가
+4,096의 배수일 때만 guest EIP, 겹친 byte 수, EIP별 최대 byte 수를 갱신합니다. 같은 EIP는
+누적하고 표가 가득 찬 뒤의 새 EIP는 overflow aggregate로 기록합니다. 종료 시에는 count 내림차순,
+동률 EIP 오름차순의 상위 8개만 정렬해 보고합니다.
+
+### 미확정
+
+source-only bounded Linux 실행은 Glide 초기화와 write `grLfbLock` 진입까지 확인했지만, 이
+터미널의 외부 종료 경로는 final shutdown report를 남기지 않았습니다. 따라서 실제 게임에서의
+top-EIP 순위와 overflow 수치는 아직 확인된 증거가 아닙니다. 다음 관찰은 final report를 보존하는
+supervised 종료 경로로 수행해야 하며, EIP를 원본 함수나 draw ownership으로 해석해서는 안 됩니다.
+
+## English
+
+### Confirmed
+
+`REPIU_LINUX_X64_LFB_STORE_SOURCE_CENSUS=1|on|true` enables the prerequisite native observer
+and write-LFB range gate without also setting aggregate census. Samples live in a fixed
+64-entry table outside `ThreadContext`. A guest EIP, overlap-byte count, and EIP-local maximum
+are updated only when a decoded explicit AOT store makes the positive LFB-overlap count a
+multiple of 4,096. Equal EIPs accumulate; a new EIP after the table fills contributes to an
+overflow aggregate. Shutdown ranks only the top eight by descending count and then ascending
+EIP.
+
+### Unresolved
+
+A source-only bounded Linux run reached Glide initialization and write `grLfbLock`, but the
+terminal's external-stop route did not emit a final shutdown report. It is therefore not
+evidence for an in-game top-EIP ranking or overflow total. A future observation must use a
+supervised termination path that preserves the final report, and must not interpret an EIP as
+an original function or draw owner.
+
+---
+
+## 2026-09-22 Task 728 — LFB staging shadow 재사용과 손실 있는 readback 왕복
+
+### 확인됨 — readback은 무손실 복사가 아니다
+
+`GlideOpenGlBackend::ReadbackFramebuffer`는 논리 framebuffer를 그대로 읽지 않습니다. window
+drawable 전체를 `glReadPixels`로 읽은 뒤 nearest-neighbor로 논리 해상도(640×480)로 축소합니다.
+짝이 되는 `PresentLfbSurface`는 `GL_NEAREST` 텍스처로 drawable 크기에 맞춰 다시 확대합니다.
+drawable이 논리 해상도의 정수배가 아니면 이 왕복은 **원래 pixel을 복원하지 못합니다**. 예를
+들어 drawable 폭 1000, 논리 폭 640에서 논리 x=5는 present 뒤 readback하면 x=4의 값이 됩니다.
+
+이는 코드 판독으로 확인한 사실이며, 게임 관찰로 측정한 값이 아닙니다. 결과적으로 write
+`grLfbLock`의 seed는 "직전에 그린 것의 정확한 사본"이 아니라 window 크기에 따라 달라지는
+재표본입니다. Tasks 724~727이 seed 비용을 다루면서 전제한 "seed가 framebuffer를 정확히
+가져온다"는 가정은 정수배 drawable에서만 성립합니다.
+
+### 구현됨 — staging shadow
+
+Task 728은 Task 725·726·727의 질문을 뒤집었습니다. "어떤 lock이 이전 pixel을 필요로 하지
+않는가"를 census로 추정하는 대신, **host가 그 pixel을 이미 정확히 들고 있는 조건**을
+상태로 추적합니다. `grLfbUnlock`이 staging surface 전체를 present하므로 성공한 unlock 직후의
+surface는 framebuffer와 같고, 그 다음 lock은 GPU에 되물을 필요가 없습니다.
+
+`GlideLfbStagingShadowState`는 buffer, color format, width, height와 함께 그 사실을 들고,
+`GlideOrdinalPreservesLfbStagingShadow`가 false인 모든 gate에서 소멸합니다. 이 술어는
+기본값이 무효화인 allowlist이므로 미분류 gate와 이후 추가되는 gate는 자동으로 기존 seed
+경로를 씁니다. flip된 present, 실패한 present, 해상도·format·buffer 불일치도 모두 무효화입니다.
+
+`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true`는 동작을 바꾸지 않고 재사용 가능했던 lock을
+계수하고, `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`는 실제로 readback과 encode를 건너뜁니다.
+둘 다 기본 OFF입니다.
+
+### 측정됨 — 재사용은 한 번도 일어나지 않았고, 범인은 전부 `grBufferSwap`
+
+WSL Ubuntu-24.04에서 30초 bounded `pumpit2a` census 관찰을 수행했습니다
+(`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000
+REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1`). 결과는 **재사용 가능 lock 0건**입니다.
+
+| 항목 | 값 |
+|---|---:|
+| write lock | 304 |
+| 재사용 가능 | **0** |
+| seed 수행 | 304 |
+| unlock validate 성공 | 304 |
+| 무효화 — swap gate | **304** |
+| 무효화 — draw / clear / region / other | 0 / 0 / 0 / 0 |
+| 무효화 — flipped-present / present-failed / surface-mismatch | 0 / 0 / 0 |
+
+즉 shadow는 **매번 정상적으로 성립했다가**(validate 304) **예외 없이 `grBufferSwap` 하나에만
+깨졌습니다**(swap-gate 304). 게스트의 LFB 경로는 `lock → write → unlock → grBufferSwap →
+lock`이며, unlock과 다음 lock 사이에 draw, clear, region write, 그 밖의 어떤 gate도 끼어들지
+않습니다. Task 728의 가설 — "두 lock 사이의 state setter만 견디면 재사용이 가능하다" — 는
+**측정으로 반증됐습니다.** 문제는 state setter가 아니라 프레임 경계 그 자체였습니다.
+
+### 이 반증이 드러낸 새 사실 — seed는 swap 뒤의 back buffer를 읽는다
+
+swap은 실제 `SDL_GL_SwapWindow`입니다(`glide_opengl_backend.cpp`). OpenGL 사양에서 swap 뒤
+back buffer의 내용은 **정의되지 않습니다**. 따라서 304번의 write-lock seed는 모두 사양상
+내용이 정의되지 않은 buffer를 읽고 있으며, Task 724가 잰 readback 6,496,580,582 cycles는
+그 정의되지 않은 내용을 가져오는 데 쓰였습니다.
+
+이 드라이버에서는 실제로 무언가가 보존됩니다. 같은 관찰의 `grLfbLock seed #2`가
+`framebuffer non-black=101340`을 보고했으므로 swap 직후 back buffer가 비어 있지는 않습니다.
+그러나 이는 드라이버 동작이지 보장이 아닙니다.
+
+원래 3dfx 하드웨어에서 buffer swap은 page flip이므로, swap 뒤 back buffer는 **두 swap 전
+프레임**을 담습니다. 그러므로 shadow를 buffer마다 하나씩 쌍으로 두고 swap에서 교환하면
+lock N은 lock N-2의 내용을 재사용할 수 있고, 이는 지금보다 빠를 뿐 아니라 원본 하드웨어
+의미에 **더 가깝습니다**. 이것이 이 측정이 가리키는 다음 설계이며, 아직 구현하지 않았습니다.
+화면 의미를 바꾸는 변경이므로 별도 설계와 확인이 필요합니다.
+
+Task 727이 남긴 top-EIP 관찰은 여전히 미완입니다. 관찰은 `REPIU_EXECUTION_TIMEOUT_MS`
+예산 만료 또는 SIGTERM으로 끝내야 final report가 남습니다(`docs/guides/linux-shutdown-check.md`).
+
+### 검증 상태
+
+Win32 x86 Debug 전체 빌드가 성공했고 `repiu_aot_probe --glide-lfb-staging-shadow`의 10개 그룹이
+모두 통과했습니다. 인접 probe(`--glide-lfb-timing`, `--glide-lfb-write-footprint`,
+`--glide-lfb-native-store-census`)도 통과했습니다. Win32 core probe는 28개 중 실패 0이었고,
+Tasks 725~727이 기록한 `mode16_push_writes=false` 실패는 이 빌드에서 재현되지 않았습니다.
+그 그룹을 고친 변경은 없으므로 이는 해결의 증거가 아니라 재현되지 않았다는 기록입니다.
+Linux x64 Debug 빌드는 WSL Ubuntu-24.04에서 성공했고 Linux core probe는 30/30 통과했으며,
+위 census 관찰은 timeout 종료까지 fault 없이 완주해 final report를 남겼습니다. VM
+(`192.168.198.132`)은 더 이상 사용하지 않고 WSL을 사용합니다.
+
+## English
+
+### Confirmed — readback is not a lossless copy
+
+`GlideOpenGlBackend::ReadbackFramebuffer` does not read the logical framebuffer directly. It
+reads the whole window drawable with `glReadPixels` and nearest-neighbor downsamples it to the
+logical resolution (640x480). Its counterpart `PresentLfbSurface` upscales through a
+`GL_NEAREST` texture back to drawable size. When the drawable is not an integer multiple of the
+logical resolution, the round trip **does not restore the original pixel**: with a 1000-pixel
+drawable width and a 640-pixel logical width, logical x=5 comes back as the value of x=4.
+
+This is established by reading the code, not measured from a run. It means the seed of a write
+`grLfbLock` is not an exact copy of what was just drawn but a resample that depends on window
+size. The assumption underlying Tasks 724 through 727, that the seed fetches the framebuffer
+exactly, holds only for integer-multiple drawables.
+
+### Implemented — the staging shadow
+
+Task 728 inverts the question asked by Tasks 725, 726 and 727. Instead of using a census to
+infer which locks do not need the previous pixels, it tracks as state **when the host already
+holds those pixels exactly**. Because `grLfbUnlock` presents the entire staging surface, right
+after a successful unlock the surface equals the framebuffer, and the next lock need not ask the
+GPU for it back.
+
+`GlideLfbStagingShadowState` holds that fact together with buffer, color format, width and
+height, and loses it at every gate for which `GlideOrdinalPreservesLfbStagingShadow` is false.
+That predicate is an allowlist whose default is to invalidate, so unclassified gates and gates
+added later fall back to the existing seed path. A flipped present, a failed present, and any
+resolution, format or buffer mismatch all invalidate as well.
+
+`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true` counts reusable locks without changing
+behavior; `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true` actually skips the readback and the encode.
+Both are off by default.
+
+### Measured — reuse never fired once, and `grBufferSwap` accounts for all of it
+
+A 30-second bounded `pumpit2a` census observation ran on WSL Ubuntu-24.04
+(`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000
+REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1`). The result is **zero reusable locks**.
+
+| Item | Value |
+|---|---:|
+| Write locks | 304 |
+| Reusable | **0** |
+| Seeds performed | 304 |
+| Unlock validations | 304 |
+| Invalidation, swap gate | **304** |
+| Invalidation, draw / clear / region / other | 0 / 0 / 0 / 0 |
+| Invalidation, flipped-present / present-failed / surface-mismatch | 0 / 0 / 0 |
+
+The shadow was therefore **established correctly every single time** (304 validations) and
+**broken by exactly one thing, `grBufferSwap`** (304 swap-gate invalidations). The guest LFB
+path is `lock -> write -> unlock -> grBufferSwap -> lock`, with no draw, clear, region write or
+any other gate between an unlock and the next lock. Task 728's hypothesis -- that surviving the
+state setters between two locks is enough to make reuse possible -- is **refuted by
+measurement.** The obstacle was never the state setters; it is the frame boundary itself.
+
+### What the refutation exposed — the seed reads a post-swap back buffer
+
+The swap is a real `SDL_GL_SwapWindow` (`glide_opengl_backend.cpp`). In the OpenGL
+specification, back buffer contents after a swap are **undefined**. All 304 write-lock seeds
+therefore read a buffer whose contents the specification does not define, and the
+6,496,580,582 readback cycles Task 724 measured were spent fetching exactly that.
+
+On this driver something is in fact preserved: the same observation's `grLfbLock seed #2`
+reported `framebuffer non-black=101340`, so the back buffer right after a swap is not blank.
+That is driver behavior, not a guarantee.
+
+On original 3dfx hardware a buffer swap is a page flip, so the post-swap back buffer holds the
+frame from **two swaps earlier**. Keeping one shadow per buffer and exchanging them at the swap
+would therefore let lock N reuse the content of lock N-2, which would be not only faster than
+today but **closer to original hardware semantics** than reading an undefined GL buffer. That is
+the design this measurement points to; it is not implemented. Because it changes what reaches
+the screen, it needs its own design and confirmation.
+
+Task 727's top-EIP observation remains outstanding. Observations must be ended through
+`REPIU_EXECUTION_TIMEOUT_MS` budget expiry or SIGTERM for the final report to survive
+(`docs/guides/linux-shutdown-check.md`).
+
+### Verification status
+
+The full Win32 x86 Debug build succeeded and all nine groups of
+`repiu_aot_probe --glide-lfb-staging-shadow` passed, as did the neighboring
+`--glide-lfb-timing`, `--glide-lfb-write-footprint` and `--glide-lfb-native-store-census`
+probes. The Win32 core probe reported zero failures of 28; the `mode16_push_writes=false`
+failure recorded by Tasks 725 through 727 did not reproduce in this build. Nothing in this task
+changed that group, so this records a non-reproduction rather than evidence of a fix. The Linux
+x64 Debug build succeeded on WSL Ubuntu-24.04 and the Linux core probe passed 30/30. The VM
+(`192.168.198.132`) is no longer used; WSL is.
+
+---
+
+## 2026-09-22 Task 729 — lock 구간은 swap 하나뿐이다, 그리고 buffer별 shadow 쌍
+
+### 확인됨 — ordinal 분포
+
+30초 `pumpit2a`(WSL Ubuntu-24.04, `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`)의 호출 수입니다.
+
+| gate | 호출 수 |
+|---|---:|
+| `grBufferSwap` | 2,290 |
+| `grBufferClear` | 1,989 |
+| `grDrawTriangle` | 30,804 |
+| `grLfbLock` / `grLfbUnlock` | 304 / 304 |
+| `grRenderBuffer` | **1** |
+
+`grRenderBuffer`는 초기화 때 1회뿐이므로 **render target은 실행 내내 back buffer로 고정**입니다.
+
+### 확인됨 — unlock과 다음 lock 사이에는 swap 하나만 있다
+
+`REPIU_GLIDE_LFB_LOCK_INTERVAL_CENSUS=1`로 write unlock부터 다음 write lock까지의 구간을
+분류했습니다.
+
+| 구간 | 수 |
+|---|---:|
+| **clean (swap만)** | **303** |
+| cleared / drawn / region | 0 / 0 / 0 |
+| first-lock (직전 unlock 없음) | 1 |
+| 구간당 swap 수 | **최소 1, 최대 1** (303개 전부 정확히 1) |
+
+즉 304개 lock은 **하나의 연속된 LFB 전용 구간**을 이루며, 패턴은 정확히
+`lock → write → unlock → grBufferSwap → lock`입니다. clear 1,989회와 draw 30,804회는 이 구간
+밖에서만 일어납니다. Task 728이 본 "swap 304건"은 프레임 버퍼가 바뀐 것이 아니라 **다음 lock이
+가리키는 buffer가 바뀐 것**이었습니다.
+
+### 구현됨 — buffer별 shadow 쌍
+
+`GlideLfbStagingShadowState`를 buffer마다 host 소유 565 복사본을 두는 구조로 바꿨습니다.
+`grBufferSwap`은 두 복사본을 교환합니다(page flip). draw·clear는 render target의 복사본만,
+region과 미분류 gate는 둘 다 무효화합니다.
+
+| 측정 (30초) | Task 728 단일 shadow | Task 729 쌍 |
+|---|---:|---:|
+| 재사용 가능 lock | 0 / 304 | **302 / 304** |
+| apply 모드 seed(readback+encode) | 304 | **2** |
+| apply 모드 LFB readback cycles | 약 65억 (Task 724) | **46,943,841** |
+| 무효화 | swap 304 | clear 2 |
+
+apply 모드에서 seed가 304회에서 2회로 줄어 **99.3% 감소**했습니다.
+
+### 확인됨 — 화면 동일성(부분)
+
+* apply 모드와 기준 실행의 첫 8개 `grLfbUnlock` staging 내용이 **바이트 수까지 동일**합니다
+  (219918, 219918, 219918, 219966, 221646, 222516, 223380, 224106 / 614400).
+* 1초 간격 장면 표본 23개에서 장면 순서, 검은 구간 위치, 정지 화면(`non_black=30264
+  avg=190,155,93` 3회, `292133` 대 `292133`)이 일치합니다.
+* 애니메이션 구간의 표본은 차이가 있습니다. 벽시계 표본 시점과 애니메이션 위상의 흔들림으로
+  **추정**되지만, OFF 대 OFF 기준선을 재지 않았으므로 **확정하지 않습니다.**
+
+### 미확정 — apply 모드 teardown segfault 1건
+
+apply 모드 3회 중 1회(`REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000` 병용)가 `elapsed_ms=30010`,
+즉 예산 만료 직후에 `[repiu-fault] signal=0xb rip=0x7efebb7bb210 rsp=0x7efebb7bb1f8`로
+끝났습니다. 관찰된 사실은 다음과 같습니다.
+
+* `[repiu-shutdown]` 마커가 **하나도 없습니다.** 종료 시퀀스가 시작되기 전, 예산 만료 인터럽트
+  구간에서 죽었습니다. 정상 실행 3회는 모두 `probe-dump → final-report → immediate-exit`를
+  남겼습니다.
+* `rip`가 `rsp`보다 0x18 큽니다. guest thread가 **자기 스택 안의 주소로 점프**했습니다.
+* 같은 설정의 OFF 실행 1회, 장면 표본 없는 apply 실행 1회, census 실행 1회는 정상 종료했습니다.
+
+이 코드는 gate dispatch, lock seed, unlock present에서만 동작하고 teardown 경로에는 없습니다.
+Task 722가 "고빈도 진단 출력이 timing을 교란해 잠재 문제를 드러낸다"고 기록한 teardown fault와
+같은 계열로 **보이지만**, 표본 1건으로는 인과를 판단할 수 없습니다. 원인이 확정될 때까지
+**두 기본값을 켜서는 안 됩니다.**
+
+### 다음
+
+1. teardown segfault의 귀속: 같은 설정으로 OFF·ON을 여러 번 반복해 발생률을 비교합니다.
+2. OFF 대 OFF 장면 표본 기준선으로 애니메이션 구간의 run-to-run 변동을 교정합니다.
+3. 둘이 해소되면 apply 모드 기본값을 검토합니다.
+
+## English
+
+### Confirmed — ordinal distribution
+
+Call counts in a 30-second `pumpit2a` run on WSL Ubuntu-24.04
+(`REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`): `grBufferSwap` 2,290, `grBufferClear` 1,989,
+`grDrawTriangle` 30,804, `grLfbLock`/`grLfbUnlock` 304/304, and `grRenderBuffer` **1**. Because
+`grRenderBuffer` runs once at startup, **the render target is the back buffer for the whole run.**
+
+### Confirmed — only one swap separates an unlock from the next lock
+
+`REPIU_GLIDE_LFB_LOCK_INTERVAL_CENSUS=1` classified each span from a write unlock to the next
+write lock: **303 clean (swaps only)**, 0 cleared, 0 drawn, 0 region, and 1 first-lock. Swaps per
+interval were **minimum 1, maximum 1** -- every one of the 303 held exactly one.
+
+The 304 locks therefore form **one contiguous LFB-only stretch** whose pattern is exactly
+`lock -> write -> unlock -> grBufferSwap -> lock`; the 1,989 clears and 30,804 draws happen only
+outside it. The "304 swaps" Task 728 saw were not the framebuffer changing but **the buffer the
+next lock names changing**.
+
+### Implemented — a per-buffer shadow pair
+
+`GlideLfbStagingShadowState` now keeps one host-owned 565 copy per buffer. `grBufferSwap`
+exchanges them (the page flip). Draws and clears invalidate only the render target's copy; region
+gates and unclassified gates invalidate both.
+
+| Measurement (30 s) | Task 728 single shadow | Task 729 pair |
+|---|---:|---:|
+| Reusable locks | 0 / 304 | **302 / 304** |
+| Apply-mode seeds (readback + encode) | 304 | **2** |
+| Apply-mode LFB readback cycles | about 6.5 billion (Task 724) | **46,943,841** |
+| Invalidations | swap 304 | clear 2 |
+
+Apply mode cut seeds from 304 to 2, a **99.3% reduction**.
+
+### Confirmed — screen equality (partial)
+
+* The first eight `grLfbUnlock` staging contents are **identical down to the byte count** between
+  apply mode and the baseline run (219918, 219918, 219918, 219966, 221646, 222516, 223380,
+  224106 of 614400).
+* Across 23 one-second scene samples, scene order, black-gap positions and still screens
+  (`non_black=30264 avg=190,155,93` three times; `292133` against `292133`) match.
+* Samples in animated stretches differ. That is **inferred** to be jitter between wall-clock
+  sample times and animation phase, but no OFF-against-OFF baseline was measured, so it is **not
+  established.**
+
+### Unresolved — one apply-mode teardown segfault
+
+One of three apply-mode runs (with `REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000`) ended at
+`elapsed_ms=30010`, just after budget expiry, with `[repiu-fault] signal=0xb
+rip=0x7efebb7bb210 rsp=0x7efebb7bb1f8`. Observed facts:
+
+* There are **no `[repiu-shutdown]` markers at all**: it died in the budget-expiry interrupt
+  window, before the shutdown sequence began. All three healthy runs left
+  `probe-dump -> final-report -> immediate-exit`.
+* `rip` is 0x18 above `rsp`: the guest thread **jumped to an address inside its own stack**.
+* An OFF run with the same settings, an apply run without scene sampling, and a census run all
+  ended cleanly.
+
+This code acts only at gate dispatch, lock seed and unlock present, none of which is on the
+teardown path. It **looks** like the same family as the teardown fault Task 722 recorded, where
+high-rate diagnostic output perturbed timing and exposed a latent problem -- but one sample cannot
+establish cause. **Neither default should be turned on until it is attributed.**
+
+### Next
+
+1. Attribute the teardown segfault by repeating OFF and ON under identical settings and comparing
+   rates.
+2. Calibrate run-to-run variation in animated stretches with an OFF-against-OFF scene baseline.
+3. Once both are settled, consider the apply-mode default.
+
+---
+
+## 2026-09-22 Task 729 후속 — teardown segfault는 shadow와 무관하다
+
+### 확인됨 — 같은 설정에서 OFF도 똑같이 죽는다
+
+크래시가 난 설정(`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000
+REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000`)으로 reuse OFF·ON을 번갈아 5회씩 **순차로** 실행했습니다.
+
+| 실행 | OFF | ON |
+|---|---|---|
+| 1 | 정상 | 정상 |
+| 2 | 정상 | 정상 |
+| 3 | **segfault (rc=139)** | 정상 |
+| 4 | 정상 | 정상 |
+| 5 | 정상 | 정상 |
+
+앞선 실행까지 합치면 이 설정에서 OFF 1/6, ON 1/6입니다. 두 크래시의 모양은 같습니다.
+
+| | ON 크래시 | OFF 크래시 |
+|---|---|---|
+| rip − rsp | +0x18 | +0x18 |
+| entry_rsp − rsp | 0x2AC0 | 0x2AB0 |
+| 시점 | 예산 만료(30010ms) | 예산 만료(30000ms) |
+| `[repiu-shutdown]` 마커 | 0 | 0 |
+
+**따라서 이 teardown segfault는 Task 729의 shadow 쌍과 무관한 기존 결함입니다.** ON 5회는 모두
+302/304 재사용과 seed 2회를 재현했습니다.
+
+### 확인됨 — 이 결함은 Task 728 이전부터 있었다
+
+저장된 이전 로그 4건(`task722-trace`, `task726-...-rerun`, `task727-linux-source-off`,
+`task727-...-final`)도 모두 `elapsed_ms`가 예산과 같은 순간에 `[repiu-shutdown]` 마커 없이 SIGSEGV로
+끝났습니다. rip 값은 `0x1201e7f`, `0x201e7f` 등으로 다르지만 죽은 구간은 같습니다.
+
+**정정:** Task 727은 "외부 종료 경로가 final report를 남기지 않았다"고 기록했지만,
+`task727-linux-lfb-store-site-census-final.log`는 실제로 이 fault로 끝났습니다. final report가 없었던
+원인은 외부 종료가 아니라 이 teardown segfault입니다.
+
+### 추정 — 원인 후보: x64 회수 판정이 RIP 하위 32비트만 본다
+
+예산 만료 뒤 host는 guest thread에 시그널을 최대 40회 보내 회수를 시도합니다
+(`execution_trampoline.cpp`, `RecoverGuestThreadForShutdownCommon`). 회수 가능 여부는
+`registers->Eip`, 즉 **64비트 RIP의 하위 32비트**가 guest 이미지(`0x01000000`부터 약 140MB) 또는 AOT
+cache(`0x20000000`) 범위인지로 판정합니다. guest thread가 호스트 라이브러리(`0x7f..`) 안에 있을 때 그
+하위 32비트가 우연히 이 범위에 들면, 호스트 프레임을 cache 탈출 trampoline
+(`RepiuLinuxX64GuestExit`)으로 회수하게 되고, 그 trampoline은 cache 프레임 배치를 가정하고 되돌아가므로
+쓰레기 주소로 점프합니다.
+
+이 가설은 다음과 맞습니다: rip가 rsp 근처(스택 안)라는 점, 예산 만료 인터럽트 구간이라는 점,
+ASLR 때문에 실행마다 날 수도 안 날 수도 있다는 점(범위는 32비트 공간의 약 3.3%).
+**아직 검증하지 않았습니다.** 전체 RIP를 읽는 `ReadHostInstructionPointer`가 이미 있으므로, 판정에
+"전체 RIP의 상위 32비트가 0"을 더하면 이 경로는 닫힙니다. guest 이미지와 cache는 설계상 4 GiB 아래에
+놓이므로 이 조건은 올바른 회수를 막지 않습니다.
+
+## English
+
+### Confirmed — OFF crashes the same way under the same settings
+
+Reuse OFF and ON were run alternately and **sequentially**, five times each, under the settings of
+the crash (`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000
+REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000`). OFF run 3 segfaulted (rc=139); the other nine ended
+cleanly. Including the earlier runs, this setting crashed 1 of 6 OFF and 1 of 6 ON. Both crashes
+share the signature: rip at rsp+0x18, entry_rsp−rsp of 0x2AC0 and 0x2AB0, death at budget expiry
+(30010 and 30000 ms), and no `[repiu-shutdown]` markers.
+
+**This teardown segfault is therefore a pre-existing defect unrelated to Task 729's shadow pair.**
+All five ON runs reproduced 302 of 304 reuses and two seeds.
+
+### Confirmed — the defect predates Task 728
+
+Four saved earlier logs (`task722-trace`, `task726-...-rerun`, `task727-linux-source-off`,
+`task727-...-final`) also ended in SIGSEGV exactly when `elapsed_ms` reached the budget, with no
+`[repiu-shutdown]` markers. Their rip values differ (`0x1201e7f`, `0x201e7f`) but the window is the
+same.
+
+**Correction:** Task 727 recorded that "the external stop route did not emit a final report", but
+`task727-linux-lfb-store-site-census-final.log` actually ended in this fault. The missing report
+came from this teardown segfault, not from an external stop.
+
+### Inferred — candidate cause: the x64 recovery check reads only RIP's low 32 bits
+
+After budget expiry the host signals the guest thread up to 40 times to recover it
+(`execution_trampoline.cpp`, `RecoverGuestThreadForShutdownCommon`). Recoverability is judged on
+`registers->Eip` -- **the low 32 bits of a 64-bit RIP** -- falling in the guest image (from
+`0x01000000`, about 140 MB) or the AOT cache (`0x20000000`). If the guest thread is inside a host
+library (`0x7f..`) whose low 32 bits happen to land in those ranges, the host frame is "recovered"
+through the cache-exit trampoline (`RepiuLinuxX64GuestExit`), which unwinds assuming a cache frame
+layout and jumps to garbage.
+
+The hypothesis fits: rip near rsp (inside the stack), the budget-expiry interrupt window, and
+occurring on some runs but not others because of ASLR (the ranges are about 3.3% of the 32-bit
+space). **It has not been verified.** `ReadHostInstructionPointer` already reads the full RIP, so
+adding "the full RIP's upper 32 bits are zero" to the check would close this path; the guest image
+and cache are placed below 4 GiB by design, so the condition cannot block a legitimate recovery.
+
+---
+
+## 2026-09-22 Task 730 — x64 종료 회수 판정에 전체 RIP
+
+### 확인됨
+
+x64 종료 회수 판정이 RIP 하위 32비트만 보던 결함을 `DecideShutdownRecovery`로 닫았습니다.
+상위 32비트가 0이 아니면 guest 코드일 수 없으므로 회수하지 않습니다. x64 core probe의
+`shutdown_recovery_policy` 그룹이 alias 거절과 4 GiB 경계를 결정적으로 검증합니다. 정당한 회수는
+유지됩니다: 관찰 중 1회가 guest 코드(`0x01030E9C`)에서 `decision=recover`로 회수되어 clean teardown
+전 단계와 summary를 남겼습니다.
+
+Task 729 설정의 순차 10회 관찰에서 teardown segfault는 0회였습니다(수정 전 2/12).
+
+### 미확정
+
+* 관찰된 segfault의 원인이 이 alias였는지는 **확정되지 않았습니다.** 원래 발생률(약 1/6)이어도
+  10회 무사할 확률이 약 16%이고, 10회 모두 `aliased=0`이었습니다.
+* 거절된 9회의 마지막 host 주소 하위 12비트가 모두 `0xE4F`였습니다. guest thread는 같은 호스트
+  함수의 같은 명령에서 자주 멈춰 있습니다. 이 한 주소의 alias 확률(약 3.3%)만으로는 1/6이라는
+  발생률을 설명하기 어렵습니다.
+* 같은 32비트 판정을 쓰는 경로(`execution_trampoline.cpp`의 `InjectPendingInterrupts`와
+  `DispatchGuestFault`)는 조사만 했습니다.
+
+## English
+
+### Confirmed
+
+`DecideShutdownRecovery` closes the defect where the x64 shutdown recovery decision read only the
+low 32 bits of RIP: an address with nonzero upper bits cannot be guest code and is not recovered. The
+x64 core probe's `shutdown_recovery_policy` group verifies alias refusal and the 4 GiB boundary
+deterministically. Legitimate recovery survives: one observation recovered from guest code
+(`0x01030E9C`) with `decision=recover` and left the full clean teardown and its summary.
+
+Ten sequential observations under Task 729's settings had zero teardown segfaults (2 of 12 before).
+
+### Unresolved
+
+* Whether the observed segfault was caused by this alias is **not established**: at the original
+  rate of about 1 in 6, ten clean runs occur about 16% of the time, and all ten reported `aliased=0`.
+* In the nine refusing runs, the last host address ended in `0xE4F` every time; the guest thread
+  is usually parked at the same instruction of the same host function. The alias probability of that
+  one address (about 3.3%) alone does not readily explain a 1-in-6 rate.
+* The paths that use the same 32-bit decision (`InjectPendingInterrupts` and `DispatchGuestFault`
+  in `execution_trampoline.cpp`) were surveyed only.
+
+---
+
+## 2026-09-22 Tasks 731·732 — 로더 위치와 로그 접두어
+
+Task 731이 공용 로더를 `src/host/loader/main.cpp`로 옮겼고(R100), Task 732가 로그 줄의
+`Win32 ` 접두어를 제거했습니다. **이 절 이전의 인용은 모두 옛 형식**입니다. 예를 들어 위의
+`Win32 Glide LFB staging shadow census/...`는 이제 `[loader] Glide LFB staging shadow census/...`로
+찍힙니다. 스크립트와 가이드는 Task 732에서 함께 갱신했습니다.
+
+### 확인됨 — `test_all.ps1`의 pumpit1 단정은 이미 낡아 있다
+
+Task 732의 전후 비교에서 이름 변경 **이전** binary도 pumpit1 단정 99개 중 17개가 맞지 않았고, 6회 중
+4회 프로세스가 0xC0000005로 죽거나 멈췄습니다. 단정의 결말 문구, DOS 환경 접근, 첫 path trace, 마지막
+open 파일이 현재 게스트 동작과 다릅니다. 스위트는 존재하지 않는 `build\win32_x86_debug`를 가리켜
+실행되지 않았던 것으로 보입니다. Win32 pumpit1 legacy 실행의 간헐 crash·hang은 원인을 조사하지
+않았습니다.
+
+## English
+
+Task 731 moved the shared loader to `src/host/loader/main.cpp` (R100), and Task 732 removed the
+`Win32 ` prefix from its log lines. **Every quotation before this section is in the old form**: the
+`Win32 Glide LFB staging shadow census/...` above now prints as `[loader] Glide LFB staging shadow
+census/...`. Scripts and guides were updated in Task 732.
+
+### Confirmed — the pumpit1 assertions of `test_all.ps1` were already stale
+
+In Task 732's before-and-after comparison, the **pre-rename** binary also failed 17 of 99 pumpit1
+assertions, and in 4 of 6 runs the process died with 0xC0000005 or hung. The asserted ending wording,
+DOS environment access, first path traces and last opened file no longer match current guest
+behavior. The suite points at the nonexistent `build\win32_x86_debug`, which appears to be why it was
+not being run. The intermittent crash and hang of the Win32 pumpit1 legacy run were not investigated.
+
+---
+
+## 2026-09-22 다음 세션 인계 — 남은 과제 (Tasks 728~732 이후)
+
+브랜치 `work/20260919-718-default-safe-point-injection`, main 대비 커밋 18개. **main 머지·push는 하지
+않았습니다.** Linux 검증은 WSL Ubuntu-24.04(`build/linux_x64_debug`), Win32 빌드 트리는 `build/`입니다.
+
+```mermaid
+flowchart TD
+    A["1. test_all.ps1 정비<br/>(회귀 기준 부재)"] --> B["2. Task 730 인과 확정<br/>30회+ 관찰"]
+    B --> C["3. 같은 32비트 판정<br/>InjectPendingInterrupts / DispatchGuestFault"]
+    D["4. LFB shadow 쌍 기본값 판단<br/>장면 기준선 + vsync OFF 성능"] --> E["5. grBufferSwap 62.9% 분해"]
+    F["6. Linux 런처 문구 정리"]
+```
+
+### 1. `test_all.ps1` 정비 — 우선순위 가장 높음
+
+지금은 회귀를 막아 주지 못합니다(Task 732에서 발견).
+
+* `$Loader`가 이 머신에 없는 `build\win32_x86_debug\Debug\repiu.exe`를 가리킵니다. 스크립트 안의
+  빌드 단계(`scripts\build_win32_x86.bat`)가 어느 트리를 만드는지부터 확인해야 합니다.
+* pumpit1 단정 99개 중 **17개가 현재 동작과 불일치**(이름 변경 전 binary로도 동일): 결말 문구(Task 507
+  이후 `timeout reached; guest thread was not in recoverable code` 등), `DOS environment access observed`
+  (현재 `false`), DOS path trace #1·#2, 마지막 open 파일(현재 `spr.res`), 예외 결말 집합과
+  `Current execution blocker ...`.
+* Win32 pumpit1 legacy 실행(`REPIU_EXECUTION_BACKEND=legacy`, `REPIU_EXECUTION_TIMEOUT_MS=1000`)이
+  **간헐적으로 0xC0000005 crash 또는 hang**합니다(이름 변경 전 binary 6회 중 4회). 원인은 조사하지
+  않았습니다.
+* 실행마다 결말(immediate-exit 또는 clean teardown)이 달라 불일치 수도 달라집니다(13~17). 새 단정은
+  어느 결말에서도 성립해야 합니다.
+* Task 732에서 쓴 방법: binary 경로만 바꾸고 빌드 단계를 뺀 사본으로 단정만 평가하면, 99개 단정을
+  줄 단위로 어느 것이 맞지 않는지 볼 수 있습니다.
+
+### 2. Task 730의 인과 확정
+
+x64 종료 회수 판정은 전체 RIP로 고쳤지만, 관찰된 teardown segfault가 그 alias 때문이었는지는
+미확정입니다(수정 후 10회 무사, 그러나 `aliased=0`). Task 729 설정
+(`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000 REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000`)으로
+**30회 이상 순차 실행**하면 원래 발생률이 유지될 때 모두 무사할 확률이 1% 미만입니다. `[repiu-shutdown]`
+줄의 `aliased=`를 함께 기록합니다. 거절된 실행의 마지막 host 주소가 늘 `...E4F`로 끝난다는 점
+(같은 host 함수)이 1/6 발생률과 맞지 않는 부분도 설명해야 합니다.
+
+### 3. 같은 32비트 판정의 다른 경로
+
+`execution_trampoline.cpp`의 `InjectPendingInterrupts`(guest/cache 안일 때만 인터럽트 주입)와
+`DispatchGuestFault`(cache 주소면 복구 경로 선택)가 `win32_context->Eip`, 즉 x64에서 하위 32비트로
+판정합니다. `DecideShutdownRecovery`와 같은 방식으로 전체 주소를 쓰도록 할지 검토합니다.
+
+### 4. LFB shadow 쌍(Task 729)의 기본값 판단
+
+`REPIU_GLIDE_LFB_STAGING_REUSE`는 기본 OFF입니다. seed는 304→2(99.3%)로 줄었지만, LFB 구간 프레임
+속도는 27.7→28.0 fps로 사실상 같았습니다. 이 구간은 연산량이 아니라 게임의 프레임 조절에 묶여
+있는 것으로 추정됩니다. 기본값을 켜기 전에:
+
+* OFF 대 OFF 장면 표본 기준선(애니메이션 구간의 실행 간 변동 교정).
+* vsync OFF, 진단 출력 없이 여러 번 번갈아 성능 측정.
+
+### 5. `grBufferSwap` 비용 분해
+
+Task 723 기준 host work의 62.9%인데 아직 분해되지 않았습니다. 기존
+`REPIU_GLIDE_SWAP_TIME_PROFILE=1`(setup/present/accounting/finalize)을 WSL에서 먼저 돌려 봅니다.
+vsync 대기가 CPU 비용처럼 보일 수 있으니 vsync 상태를 함께 기록합니다.
+
+### 6. 기타
+
+* `src/host/linux/main.cpp`(Linux 런처)의 머리 주석은 "Linux에는 아직 실행 엔진이 없다"고 적혀 있고,
+  롬셋을 골라도 메시지만 찍고 시작하지 않습니다. Task 503d-17 이후 사실과 맞지 않습니다.
+* `ReadbackFramebuffer`는 drawable을 nearest-neighbor로 축소하므로, drawable이 정수배가 아니면
+  present→readback 왕복이 손실됩니다(Task 728, 코드 판독). 고치지 않았습니다.
+
+## English — handoff for the next session (after Tasks 728-732)
+
+Branch `work/20260919-718-default-safe-point-injection`, 18 commits ahead of main. **Not merged to
+main and not pushed.** Linux verification runs on WSL Ubuntu-24.04 (`build/linux_x64_debug`); the
+Win32 build tree is `build/`.
+
+1. **Repair `test_all.ps1` (highest priority; it currently protects nothing).** `$Loader` points at the
+   nonexistent `build\win32_x86_debug\Debug\repiu.exe` (check which tree its build step,
+   `scripts\build_win32_x86.bat`, produces). 17 of 99 pumpit1 assertions no longer match current
+   behavior, identically on the pre-rename binary: the ending wording (since Task 507), `DOS environment
+   access observed` (now `false`), DOS path traces #1 and #2, the last opened file (now `spr.res`), and
+   the exception-ending set with `Current execution blocker ...`. The Win32 pumpit1 legacy run
+   (`REPIU_EXECUTION_BACKEND=legacy`, `REPIU_EXECUTION_TIMEOUT_MS=1000`) intermittently crashes with
+   0xC0000005 or hangs (4 of 6 runs on the pre-rename binary), cause not investigated. The ending varies
+   by run (immediate-exit or clean teardown) and so does the mismatch count (13-17); new assertions must
+   hold for either. Method used in Task 732: a copy with only the binary path changed and the build steps
+   removed, evaluating the assertions line by line.
+2. **Settle Task 730's causation.** The x64 shutdown recovery decision now uses the full RIP, but
+   whether the observed teardown segfault came from that alias is unestablished (ten clean runs after
+   the fix, but `aliased=0`). Thirty or more sequential runs under Task 729's settings
+   (`REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=30000 REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=1000`)
+   put the chance of all passing at the original rate below 1%; record `aliased=` from the
+   `[repiu-shutdown]` line. Also explain why the last host address always ends in `...E4F` (one host
+   function), which does not fit a 1-in-6 rate.
+3. **The same 32-bit decision elsewhere.** `InjectPendingInterrupts` (inject only inside guest code or
+   the cache) and `DispatchGuestFault` (choose the recovery path for a cache address) in
+   `execution_trampoline.cpp` decide on `win32_context->Eip`, the low 32 bits on x64. Consider moving
+   them to the full address the way `DecideShutdownRecovery` does.
+4. **Decide the LFB shadow pair's default (Task 729).** `REPIU_GLIDE_LFB_STAGING_REUSE` is off by
+   default. Seeds fell from 304 to 2 (99.3%), but the LFB stretch ran at 27.7 against 28.0 fps -- in
+   effect unchanged, inferred to be paced by the game rather than by work. Before turning it on: an
+   OFF-against-OFF scene baseline, and alternating performance runs with vsync off and no diagnostics.
+5. **Decompose `grBufferSwap`.** 62.9% of host work at Task 723 and still undecomposed. Run the existing
+   `REPIU_GLIDE_SWAP_TIME_PROFILE=1` (setup/present/accounting/finalize) on WSL first, recording the
+   vsync state, since vsync waiting can look like CPU cost.
+6. **Other.** The header comment of `src/host/linux/main.cpp` (the Linux launcher) says Linux has no
+   execution engine, and choosing a ROM set only prints a message; that has not been true since Task
+   503d-17. `ReadbackFramebuffer` downsamples the drawable nearest-neighbor, so a non-integer-multiple
+   drawable makes the present-then-readback round trip lossy (Task 728, code reading); not fixed.
+
+---
+
+## 2026-09-23 인계 갱신 — Task 733 완료
+
+인계 1번(`test_all.ps1` 정비) 중 Win32 pumpit1 크래시와 낡은 단정은 Task 733에서 끝났습니다. 원인은 종료
+회수가 guest thread를 멈춘 순간 커널이 이미 전달 중이던 예외였고, redirect guard로 고쳐 40회 연속 정상
+종료했습니다([작업 로그](../work-logs/20260922-733-win32-legacy-shutdown-crash-attribution.md)). 새로 남은 것:
+
+* `test_all.ps1`은 가장 새 Visual Studio로 빌드하는데, **VS 2026(toolset v145) binary는 `dos4gw_hello`
+  실행 시작에서 3/3 크래시**합니다. VS 2022(v143) binary는 정상입니다. 원인 미조사.
+* Task 732의 "없는 빌드 트리" 기록은 과장이었습니다. 그 트리는 스위트가 직접 만듭니다.
+
+2~6번은 그대로 남아 있습니다.
+
+## English — handoff update 2026-09-23, Task 733 done
+
+From handoff item 1, the Win32 pumpit1 crash and the stale assertions were finished in Task 733: the cause
+was an exception the kernel was already delivering when shutdown recovery suspended the guest thread, fixed
+by the redirect guard, with 40 consecutive clean runs. Newly remaining: `test_all.ps1` builds with the newest
+Visual Studio, and a **VS 2026 (toolset v145) binary crashes 3 of 3 at the start of `dos4gw_hello`**, while
+the VS 2022 (v143) binary is fine; cause not investigated. Task 732's "nonexistent tree" note overstated it:
+the suite creates that tree. Items 2-6 remain.
+
+---
+
+## 2026-09-26 Task 734 — pumpit2a 곡 선택 정지: return thunk가 guest EFLAGS를 잃었다
+
+[작업 로그](../work-logs/20260926-734-linux-x64-return-thunk-flags.md) ·
+[설계](../design/20260926-734-linux-x64-return-thunk-flags.md)
+
+### 확인됨
+
+* 정지 위치는 Watcom C 런타임 `sin`의 `fsin` 재시도 루프(guest `0x010F20B8`~`0x010F20BF`)다.
+  사용자 실행 4회와 자동 재현 3회 모두 회수 지점이 같은 번역 블록이었고,
+  `REPIU_AOT_CACHE_MAP_TRACE`가 `0x010F20BA`로 되돌렸다.
+* 원인은 `RepiuLinuxX64ReturnThunk`가 복귀할 때 guest EFLAGS를 복원하지 않은 것이다. 마지막
+  host 명령 `test r10, r10`이 CF=0을 남겨, CF=1("끝")을 반환한 helper의 호출자가 `jae`로
+  `fsin`을 끝없이 재시도했다. thunk가 frame의 `eflags`를 `popfq`로 복원한 뒤 같은 입력으로
+  곡 선택을 지나 선택곡 재생(LBA 152330)과 step 파일 로드(`STEP/TM_HD_1.STF`)까지 진행한다.
+* 이 결함은 Linux x64 long-mode 경로에만 있었다. 32-bit bridge와 Glide gate thunk는 flags를
+  복원하고, emitter의 return slot은 flags를 쓰지 않는다.
+* 이 게임은 모든 포트 I/O(JAMMA 입력 포함)를 240 Hz 타이머 ISR 안에서 한다. 입력 읽기는 메인
+  루프가 돈다는 증거가 아니다. 메인 루프의 생존은 `REPIU_GLIDE_FRAME_RATE_LOG`로 본다.
+* CD 트랙 3·4의 LBA 계산(PGTYPE V pregap 포함)은 맞다. 보고한 시작 뒤 +22·+4 frame에서
+  가청 오디오가 시작한다.
+* WSLg에서 `SDL_VIDEO_DRIVER=x11`과 XTest 합성 키로 대화형 상태(곡 선택)를 자동 재현할 수 있다.
+
+### 미확정
+
+* 사용자가 들은 "미리듣기 무음"은 이 머신에서 재현되지 않았다. WSLg sink monitor에는 수정 전후
+  모두 CD 재생 구간에 RMS 약 10,000의 연속 출력이 있다. monitor 이후 경로는 측정하지 않았다.
+* 이 결함이 `ret`/간접 이전 뒤에 flags를 읽는 다른 guest 코드에도 영향을 줬을 것이다. 이전에
+  Linux x64에서 본 다른 이상 동작이 이 수정으로 달라지는지는 확인하지 않았다.
+* 20 ms 간격 guest position census는 이번 WSLg x11 실행에서 표본을 얻지 못했다(capture 실패
+  4,180). 50 ms에서는 사용자 실행에서 성공했다.
+
+## English
+
+### Confirmed
+
+* The freeze sits in the `fsin` retry loop of the Watcom C runtime's `sin` (guest `0x010F20B8` to
+  `0x010F20BF`). The recovery point was in the same translated block in all four user runs and three
+  automated reproductions, and `REPIU_AOT_CACHE_MAP_TRACE` mapped it back to `0x010F20BA`.
+* The cause is that `RepiuLinuxX64ReturnThunk` did not restore guest EFLAGS on its way back. Its last
+  host instruction, `test r10, r10`, left CF=0, so the caller of a helper that returned CF=1 ("done")
+  retried `fsin` through `jae` forever. With the thunk restoring the frame's `eflags` through `popfq`,
+  the same input goes past song select to playing the chosen song (LBA 152330) and loading its step
+  file (`STEP/TM_HD_1.STF`).
+* The defect was specific to the Linux x64 long-mode path: the 32-bit bridges and the Glide gate thunk
+  restore flags, and the emitter's return slot writes none.
+* This game does all port I/O, JAMMA input included, inside the 240 Hz timer ISR, so input reads are
+  not evidence of a running main loop; `REPIU_GLIDE_FRAME_RATE_LOG` is.
+* The LBA arithmetic for CD tracks 3 and 4 (with PGTYPE V pregaps) is right: audible audio starts 22
+  and 4 frames after the reported starts.
+* On WSLg, interactive states such as song select can be reproduced automatically with
+  `SDL_VIDEO_DRIVER=x11` and XTest synthetic keys.
+
+### Unresolved
+
+* The user's "silent preview" did not reproduce here: the WSLg sink monitor shows continuous output at
+  RMS about 10,000 during CD play both before and after the fix. Nothing after the monitor was measured.
+* The defect must also have affected other guest code that reads flags after a `ret` or indirect
+  transfer. Whether earlier Linux x64 anomalies change with this fix has not been checked.
+* A 20 ms guest position census got no samples in these WSLg x11 runs (4,180 capture failures); 50 ms
+  worked in the user's runs.

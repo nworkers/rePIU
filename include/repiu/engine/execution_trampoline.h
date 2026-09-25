@@ -12,6 +12,11 @@
 #include "repiu/engine/execution_time_profile.h"
 #include "repiu/engine/aot_worker_timing.h"
 #include "repiu/engine/glide_buffer_swap_timing.h"
+#include "repiu/engine/glide_lfb_timing.h"
+#include "repiu/engine/glide_lfb_write_footprint.h"
+#include "repiu/engine/glide_lfb_native_store_census.h"
+#include "repiu/engine/glide_lfb_lock_interval_census.h"
+#include "repiu/engine/glide_lfb_staging_shadow.h"
 #include "repiu/engine/glide_gate_timing.h"
 #include "repiu/engine/aot_return_stage_profile.h"
 #include "repiu/engine/glide_ordinal_timing.h"
@@ -713,6 +718,17 @@ struct MinimalExecutionAttempt
     GlideOrdinalTimingSnapshot glide_ordinal_timing;
     // Task 354: guest grBufferSwap host work split around SDL presentation.
     GlideBufferSwapTimingSnapshot glide_buffer_swap_timing;
+    // Task 724: grLfbLock staging seed split into readback and 565 encoding.
+    GlideLfbTimingSnapshot glide_lfb_timing;
+    // Task 725: byte-difference footprint of a write lock's staging bytes.
+    GlideLfbWriteFootprintSnapshot glide_lfb_write_footprint;
+    // Task 726: decoded explicit AOT stores overlapping a write-lock range.
+    GlideLfbNativeStoreCensusSnapshot glide_lfb_native_store_census;
+    // Task 728: whether the staging surface already held the frame buffer at
+    // each write lock, and why the shadow was lost when it did not.
+    GlideLfbStagingShadowSnapshot glide_lfb_staging_shadow;
+    // Task 729: how the window before each write lock was filled.
+    GlideLfbLockIntervalCensusSnapshot glide_lfb_lock_interval;
     // Task 364: repeated-versus-changing state-setter arguments, and the
     // OpenGL interval of the two leading setters split by phase.
     GlideSetterCensusSnapshot glide_setter_census;

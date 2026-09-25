@@ -79,6 +79,7 @@ DOS/4G binaries as native x86 while providing DOS, DPMI, and hardware boundaries
 * `GlideSignatureCatalog`: 실제 관찰된 API의 stack byte count와 void/EAX/x87 반환 kind를 중앙에서 관리하며 asset `@N`과 교차 검증한다.
 * `GlideLogicalState`는 lazy OpenGL texture object와 독립적으로 8 MiB virtual TMU 범위(`0..0x007FFFF8`)와 LFB pixel-format 상태를 보존한다.
 * `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`): LFB staging surface, `GrLfbInfo_t` 직렬화, color-format 인식 565↔RGBA8 변환을 담당하는 플랫폼 공용 계층이다. `grLfbLock`은 게스트가 네이티브 명령으로 직접 기록할 실제 주소를 건네므로, HLE 경계가 함수가 아니라 **메모리 표면**이 되는 유일한 Glide 경로다. staging buffer는 아레나가 아닌 호스트 소유 할당이며(게스트는 flat DS로 네이티브 실행), 64비트 host에서는 `GrLfbInfo_t::lfbPtr`이 32비트이므로 `GlideLfbGuestStorage`(Task 708)가 공용 `ReserveLowAddressMemory` 사다리로 4 GiB 아래에 두고 surface에 설치한다. surface 자체는 저장소를 배치하지 않고 받기만 해 `repiu::hle`가 플랫폼을 이름 부르지 않게 한다. 모든 lock에서 현재 framebuffer로 seeding해 write lock이 기존 화면을 지우지 않게 한다. ARGB/RGBA lock은 RGB565, ABGR/BGRA lock은 BGR565로 encode/decode하며 `grSstWinOpen`의 color format을 기본값으로, `grLfbWriteColorFormat` 상태를 write lock override로 사용한다.
+* Task 726의 Linux x64 전용 `GlideLfbNativeStoreCensus`는 `REPIU_LINUX_X64_LFB_STORE_CENSUS=1|on|true`일 때 write lock이 노출한 staging 주소 범위에서만 native AOT write observer를 활성화합니다. 명시적으로 decode된 AOT store의 겹침 store 수와 byte 수를 관찰할 뿐, guest memory, lock/unlock 순서, decode/present를 바꾸지 않습니다. string/implicit store, decode 실패, 비-AOT 경로는 포함하지 않으므로 결과는 전체 guest write가 아닌 보수적 하한입니다.
 * `GlideLfbRegion` (`include/repiu/hle/glide_lfb_region.h`, `src/hle/glide_lfb_region.cpp`): lock 없이 사각형을 옮기는 `grLfbWriteRegion`/`grLfbReadRegion`의 플랫폼 공용 계층이다. `GrLfbSrcFmt_t` 표(565=`0x00`, 555, 1555, 888, 8888), stride 규칙(0이면 `width * bpp`), 사각형 클립, 565 staging surface와의 픽셀 변환을 담당한다. `GrLfbSrcFmt_t`는 픽셀 크기만 정하고 채널 순서는 `grLfbWriteColorFormat`(기본값은 `grSstWinOpen`의 cFormat)이 정하므로, 변환은 source 색 형식으로 풀어 목적지 색 형식으로 싼다. region의 `y`는 origin 상대가 아니라 프레임 버퍼 native 행 번호이므로 lock과 달리 뒤집지 않는다. 두 gate는 staging surface를 프레임 버퍼 shadow로 공유하며, region이 아닌 gate 진입 전에 한 번만 present한다. 행마다 present하면 seeding되지 않은 화면을 덮어써 그림을 파괴하고 프레임당 전체 화면 왕복이 행 수만큼 발생한다.
 * Glide 텍스처 크기 규약(`GrLOD_t`는 열거값이며 `GR_LOD_256`=0)은 `docs/kb/glide-texture-lod-and-formats.md`에서 관리한다. `grTexTextureMemRequired`의 반환값은 게스트가 자기 TMU 배치를 결정하는 입력이므로 정확성이 게스트 동작에 직접 전파된다.
 * `Win32X87Context` (`include/repiu/engine/x87_context.h`, `src/engine/x87_context.cpp`): SEH `CONTEXT`의 x87 TOP/tag/80-bit register를 갱신하여 guest float 반환을 독립적으로 처리한다.
@@ -109,7 +110,9 @@ Directories added now:
 * `src/engine/`: executable memory policy and the execution backends (platform-neutral)
 * `src/target/`: static target profile registration implementation
 * `src/tools/exe_analyzer/`: non-executing console analysis tool
-* `src/host/win32/`: Win32 loader application entry point. This is the practical loader path that selects a target, loads the DOS/4GW executable, builds a relocated image, places it in Win32 process memory, and performs the current minimal execution attempt.
+* `src/host/loader/`: the loader application entry point, shared by the Win32 x86 and Linux hosts (moved from `src/host/win32/` in Task 731). This is the practical loader path that selects a target, loads the DOS/4GW executable, builds a relocated image, places it in process memory, and performs the current minimal execution attempt.
+* `src/host/win32/`: Win32-only entry points (the supervisor).
+* `src/host/linux/`: the Linux launcher entry point.
 
 Planned major modules:
 
@@ -171,6 +174,7 @@ Planned major modules:
 * `GlideSignatureCatalog` centrally records observed API stack-byte counts and void/EAX/x87 return kinds, cross-checked against asset `@N` metadata.
 * `GlideLogicalState` exposes an 8 MiB virtual TMU range (`0..0x007FFFF8`) independently of lazy OpenGL texture objects and retains LFB pixel-format state.
 * `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`) is the platform-neutral LFB layer: staging surface, `GrLfbInfo_t` serialization, and color-format-aware 565↔RGBA8 conversion. `grLfbLock` hands the guest a real address it writes with native instructions, making this the one Glide path whose HLE boundary is a **memory surface** rather than a function. The staging buffer is a host-owned allocation rather than an arena carve (the guest executes natively under a flat DS). Because `GrLfbInfo_t::lfbPtr` is 32 bits, `GlideLfbGuestStorage` (Task 708) places it below 4 GiB on a 64-bit host through the shared `ReserveLowAddressMemory` ladder and installs it into the surface; the surface accepts storage but places none, which keeps `repiu::hle` from naming an operating system. It is seeded from the current framebuffer on every lock so a write lock never erases existing content. ARGB/RGBA locks encode and decode RGB565, while ABGR/BGRA locks use BGR565; `grSstWinOpen` supplies the default and `grLfbWriteColorFormat` overrides write-lock state.
+* Linux x64-only `GlideLfbNativeStoreCensus` from Task 726 activates the native AOT write observer only while a write lock exposes its staging-address range, when `REPIU_LINUX_X64_LFB_STORE_CENSUS=1|on|true`. It observes overlapping store and byte counts for explicitly decoded AOT stores only; it changes neither guest memory nor lock/unlock ordering nor decode/present. String/implicit stores, decode failures, and non-AOT paths are excluded, so the result is a conservative lower bound rather than all guest writes.
 * `GlideLfbRegion` (`include/repiu/hle/glide_lfb_region.h`, `src/hle/glide_lfb_region.cpp`) is the platform-neutral layer for the lock-free rectangle transfers `grLfbWriteRegion` and `grLfbReadRegion`: the `GrLfbSrcFmt_t` table (565 = `0x00`, 555, 1555, 888, 8888), the stride rule (0 means `width * bpp`), rectangle clipping, and conversion against the 565 staging surface. `GrLfbSrcFmt_t` fixes only the pixel size; the channel order comes from `grLfbWriteColorFormat` (defaulting to `grSstWinOpen`'s cFormat), so conversion unpacks in the source format and packs in the destination one. Region `y` is a native frame buffer row rather than an origin-relative one, so unlike a lock it never flips. Both gates share the staging surface as a frame buffer shadow presented once before the next non-region gate; presenting per row would blit an unseeded screen over the picture and cost one full-screen round trip per scanline.
 * Glide texture sizing rules (`GrLOD_t` is an enumeration with `GR_LOD_256` = 0) are maintained in `docs/kb/glide-texture-lod-and-formats.md`. `grTexTextureMemRequired`'s return value is an input to the guest's own TMU layout, so its accuracy propagates directly into guest behavior.
 * `Win32X87Context` (`include/repiu/engine/x87_context.h`, `src/engine/x87_context.cpp`) independently updates x87 TOP, tags, and 80-bit registers in an SEH `CONTEXT` for guest float returns.
@@ -319,7 +323,11 @@ decode/upload time.
 
 현재 실제 Win32 로더 executable target은 `repiu`이다.
 
-진입점은 `src/host/win32/main.cpp`에 두며, `src/tools/` 아래의 분석 도구와 구분한다.
+진입점은 `src/host/loader/main.cpp`에 두며, `src/tools/` 아래의 분석 도구와 구분한다. Task 731 이전에는
+`src/host/win32/main.cpp`였으나, Windows 헤더를 쓰지 않는 플랫폼 공용 코드이므로 역할 이름의 위치로 옮겼다.
+로그 줄의 `"Win32 ..."` 접두어는 Task 732에서 제거했다. 모든 줄이 이미 `[loader]` 로거 태그를 달고 있으므로
+`[loader] minimal execution timed out: true`처럼 읽힌다. 스크립트와 가이드도 같은 작업에서 갱신했고,
+`tests/history/`와 작업 로그·분석 문서의 과거 인용은 당시 출력의 기록이므로 바꾸지 않았다.
 
 이 진입점은 현재 target profile 선택, 원본 executable 읽기, DOS/4GW load result 생성, relocated runtime image plan 생성, relocated image buffer 생성, Win32 process memory 배치, minimal execution trampoline 호출을 순서대로 담당한다.
 
@@ -329,7 +337,12 @@ decode/upload time.
 
 The current practical Win32 loader executable target is `repiu`.
 
-Its entry point lives in `src/host/win32/main.cpp`, separate from analysis tools under `src/tools/`.
+Its entry point lives in `src/host/loader/main.cpp`, separate from analysis tools under `src/tools/`. Before
+Task 731 it was `src/host/win32/main.cpp`; being platform-neutral code that includes no Windows header, it moved
+to a location named by role. Task 732 dropped the `"Win32 ..."` prefix from its log lines: every line already
+carries the `[loader]` logger tag, so they read `[loader] minimal execution timed out: true`. Scripts and guides
+were updated in the same task; quotations in `tests/history/`, work logs and analysis documents record what the
+output said at the time and were left unchanged.
 
 This entry point currently owns target profile selection, original executable reading, DOS/4GW load result creation, relocated runtime image planning, relocated image buffer creation, Win32 process-memory placement, and minimal execution trampoline invocation.
 
@@ -409,6 +422,64 @@ not stored back into native registers. Only callbacks that edit registers, such
 as successful recovery, return true. This prevents a Linux x64 host-code R15
 pointer from being truncated by guest-ESP R15D zero-extension while preserving
 the existing signal-delivery and answered-interrupt contract.
+
+Task 721부터 Linux x64의 wall-clock guest-position census는
+`REPIU_LINUX_X64_NATIVE_SAMPLE=1`일 때만 target-thread interrupt를 사용합니다. 이
+callback은 guest ABI의 32-bit register snapshot만 복사하고 false를 반환하므로 native
+context는 write-back하지 않습니다. Win32/i386의 host stack scan은 Linux signal handler에서
+제외됩니다. Linux x64 host RIP는 guest ABI 폭을 넘으므로 현재 census의 host 항목은 위치
+분포의 보조 증거일 뿐 symbolizable native call site가 아닙니다.
+
+Starting with Task 721, the Linux x64 wall-clock guest-position census uses a
+target-thread interrupt only when `REPIU_LINUX_X64_NATIVE_SAMPLE=1`. Its callback
+copies only the guest ABI's 32-bit register snapshot and returns false, so native
+context is never written back. The Win32/i386 host stack scan is excluded from the
+Linux signal handler. Since a Linux x64 host RIP exceeds the guest ABI width, the
+current census host entries are supporting distribution evidence, not symbolizable
+native call sites.
+
+Task 722부터 Linux x64 opt-in census는 signal `ucontext_t`의 full native RIP를
+`NativePhaseSample::native_instruction_pointer`에 별도로 보존합니다. 이는 고정 32-bit
+guest ABI를 바꾸지 않으며 read-only callback의 no-write-back 계약도 유지합니다.
+`REPIU_LINUX_X64_NATIVE_SAMPLE_TRACE=1`일 때만 poll thread가 capture 뒤에 경과 시간,
+full RIP, guest EIP 및 cache mapping 여부를 한 줄로 기록합니다. formatting과 I/O는 signal
+handler 밖에서만 수행하므로 trace는 진단용이며 기본 실행 및 Win32 x86 동작은 바꾸지 않습니다.
+
+Starting with Task 722, the Linux x64 opt-in census retains the signal `ucontext_t`'s
+full native RIP separately in `NativePhaseSample::native_instruction_pointer`. This
+does not alter the fixed 32-bit guest ABI and preserves the read-only callback's
+no-write-back contract. Only with `REPIU_LINUX_X64_NATIVE_SAMPLE_TRACE=1` does the
+poll thread write one post-capture line with elapsed time, full RIP, guest EIP, and
+cache-mapping status. Formatting and I/O remain outside the signal handler, so the
+trace is diagnostic only and leaves default execution and Win32 x86 unchanged.
+
+Task 724부터 `grLfbLock`의 staging seed는 `GlideLfbTimingProfile`로 readback과
+RGBA8→565 encode를 분리 관찰할 수 있습니다. `REPIU_GLIDE_LFB_TIME_PROFILE=1|on|true`일
+때만 gate handler가 cycle counter를 읽으며, profile은 OpenGL 호출 순서·guest memory·lock
+반환값을 바꾸지 않습니다. 종료 뒤 `MinimalExecutionAttempt` snapshot과 final report가
+성공·실패 수, 각 단계 누적/최대 cycles 및 역행 counter clamp 수를 보고합니다.
+
+Starting with Task 724, `GlideLfbTimingProfile` can separately observe readback and
+RGBA8-to-565 encoding in the `grLfbLock` staging seed. Only with
+`REPIU_GLIDE_LFB_TIME_PROFILE=1|on|true` does the gate handler read cycle counters;
+the profile does not alter OpenGL call order, guest memory, or lock return values.
+After shutdown, the `MinimalExecutionAttempt` snapshot and final report expose success
+and failure counts, phase aggregate/maximum cycles, and backward-counter clamps.
+
+Task 725는 별도 opt-in `GlideLfbWriteFootprintProfile`을 추가합니다.
+`REPIU_GLIDE_LFB_WRITE_CENSUS=1|on|true`일 때 성공한 write lock은 seeded RGB565 staging
+bytes를 private host storage에 복사하고, 대응 unlock은 기존 decode/present 전에 pixel을
+비교합니다. report는 unchanged, partial-extent, full-extent, every-pixel-changed lock과
+누적/최대 changed·bounding-box pixel을 구분합니다. 이는 byte-difference 관찰일 뿐이므로
+guest가 같은 값을 다시 쓴 경우는 보이지 않으며, 이 결과만으로 필수 readback을 생략할 수 없습니다.
+
+Task 725 adds a separate, opt-in `GlideLfbWriteFootprintProfile`. With
+`REPIU_GLIDE_LFB_WRITE_CENSUS=1|on|true`, a successful write lock copies its seeded
+RGB565 staging bytes into private host storage and its matching unlock compares pixels
+before the existing decode/present path. The report distinguishes unchanged, partial-
+extent, full-extent, and every-pixel-changed locks, plus aggregate and maximum changed/
+bounding-box pixels. This is byte-difference evidence only: an identical guest rewrite
+is invisible, so it cannot by itself justify skipping the required readback.
 
 Linux x64 native-write telemetry는 Linux SysV x64 dispatch frame ABI에 종속되므로
 공용 `repiu_exe` source 목록이 아니라 `UNIX AND NOT EMSCRIPTEN`이며 host pointer가
@@ -839,7 +910,7 @@ execution.
 
 `AOT`는 여전히 정확한 이름입니다. `dynamic` backend에서도 게스트 실행 **전에**
 `BuildAotTranslationPlan` → `BuildAotCodeCacheImage` → `PlaceWin32AotCodeCache`가
-수행되어 `Win32 AOT cache base/bytes/entry`를 남깁니다. backend 이름이 `dynamic`인
+수행되어 `AOT cache base/bytes/entry`를 남깁니다. backend 이름이 `dynamic`인
 것은 실행 중에도 번역이 계속된다는 뜻이지, 정적 단계가 없다는 뜻이 아닙니다.
 
 Task 425는 backend를 `legacy`와 `dynamic` 둘로 줄였습니다. 옛 이름 `aot`,
@@ -855,7 +926,7 @@ runtime.
 
 `AOT` remains accurate. Even under `dynamic`, `BuildAotTranslationPlan`,
 `BuildAotCodeCacheImage`, and `PlaceWin32AotCodeCache` all complete **before** the
-guest starts and log `Win32 AOT cache base/bytes/entry`. The backend being called
+guest starts and log `AOT cache base/bytes/entry`. The backend being called
 `dynamic` means translation continues during execution, not that the static stage
 is absent.
 
@@ -1467,7 +1538,7 @@ Windows에서 `_putenv_s`여야 합니다. 이 계층은 읽기를 두 군데(`s
 `GetEnvironmentStringsA`)에서 하므로, 둘 다 갱신하는 함수만 답이 됩니다.
 
 Task 503d-17부터 **Linux에서 `repiu` 로더가 링크됩니다.** 진입점은 Windows와 같은
-`src/host/win32/main.cpp`이고, 자식 프로세스 재실행은 `repiu::platform::RunChildProcessAndWait`로
+`src/host/win32/main.cpp`(Task 731부터 `src/host/loader/main.cpp`)이고, 자식 프로세스 재실행은 `repiu::platform::RunChildProcessAndWait`로
 갈라집니다 — Windows는 `CreateProcessA`, Linux는 `posix_spawn`입니다. Task 500이 이 재실행을
 만든 이유(GPU 드라이버의 주소 공간 선점)가 Linux에도 해당하는지는 **아직 측정하지
 않았습니다.** 무한 대기 표기도 중립 상수로 옮겼고, Windows 대기 옆의 `static_assert`가
@@ -1605,7 +1676,7 @@ it is the last resort behind a graceful path (suspend, `RecoverToHost`, resume) 
 performs there, which makes the graceful path the only one.
 
 Since Task 503d-17 the `repiu` loader **links on Linux**. Its entry point is the same
-`src/host/win32/main.cpp` the Windows host uses, and the child-process relaunch divides at
+`src/host/win32/main.cpp` the Windows host uses (`src/host/loader/main.cpp` since Task 731), and the child-process relaunch divides at
 `repiu::platform::RunChildProcessAndWait` — `CreateProcessA` on Windows, `posix_spawn` on Linux.
 Whether Task 500's reason for that relaunch, a GPU driver claiming the address space the guest needs,
 also applies to Linux is **not yet measured**. The unlimited-wait spelling moved to a neutral constant
@@ -2135,6 +2206,11 @@ direct 옆의 **세 번째 경로**입니다.
   `INT3`을 놓습니다. return continuation은 공용 `ResolveAotTransferTarget`으로
   기존 cache를 찾거나 dynamic append를 요청하며, append가 coverage 검증에서 거절되면
   같은 fail-closed INT3 계약을 유지합니다.
+* Task 562의 thunk는 guest `ret`과 간접 call/jump를 모두 받으므로, 그 명령들처럼
+  **guest EFLAGS를 그대로 넘겨야 합니다.** 진입 시 frame의 `eflags`에 저장한 값을
+  `jmp` 직전에 `popfq`로 복원합니다(Task 734). 복원이 없던 동안에는 resolver 뒤의
+  `test r10, r10`이 CF=0을 남겨, CF로 결과를 돌려주는 Watcom `sin`/`cos` helper의
+  호출자가 `fsin`을 끝없이 재시도했습니다(pumpit2a 곡 선택 정지).
 * fault 경로에서 `GuestCpuContext::Esp`는 `R15`에 연결되고 host `RSP`는 기록되지
   않습니다(Task 577). `Eip`는 `RIP`의 하위 32비트이며, 엔진이 그것을 cache 주소로
   취급해 address map으로 변환할 때 cache가 4 GiB 아래에 있으므로 잘림이 없습니다.
@@ -2166,6 +2242,12 @@ the stack switch and the direct call.
   continuations, finding an existing cache entry or requesting a dynamic append.
   A coverage-rejected append still answers zero, making Task 562's thunk plant
   the same fail-closed `INT3`.
+* Task 562's thunk takes every guest `ret` and indirect call/jump, so like those
+  instructions it **must hand guest EFLAGS through unchanged**. The value saved
+  into the frame's `eflags` on entry is restored with `popfq` right before the
+  `jmp` (Task 734). Without that restore, the `test r10, r10` after the resolver
+  left CF=0, and the caller of the Watcom `sin`/`cos` helper, which answers in CF,
+  retried `fsin` forever (the pumpit2a song-select freeze).
 * In the fault path `GuestCpuContext::Esp` binds to `R15` and host `RSP` is never
   written (Task 577). `Eip` is the low 32 bits of `RIP`; when the engine treats
   it as a cache address and translates it through the address map, the cache
@@ -3498,6 +3580,125 @@ keystrokes; key-up only updates modifier state. Focus loss releases pressed modi
 retaining lock toggles. `AH=01h/11h` peeks without consuming and reports presence through ZF,
 `AH=00h/10h` consumes that head, and `AH=02h/12h` returns current shift flags. No executable or
 game logic is modified.
+
+---
+
+## Linux x64 LFB native-store source census
+
+Linux x64에서는 `REPIU_LINUX_X64_LFB_STORE_SOURCE_CENSUS=1|on|true`가 독립적으로
+native write observer와 write-LFB active-range gate를 활성화합니다. guest EIP별 표본은
+`ThreadContext` 밖의 고정 64-entry 상태에 보관하며, positive overlap 4,096건마다 하나만
+기록합니다. 종료 snapshot은 동률 EIP를 오름차순으로 정렬한 상위 8개를 보고합니다.
+
+On Linux x64, `REPIU_LINUX_X64_LFB_STORE_SOURCE_CENSUS=1|on|true` independently enables
+the native write observer and the write-LFB active-range gate. Per-guest-EIP samples live in
+fixed 64-entry state outside `ThreadContext` and record one of every 4,096 positive overlaps.
+The shutdown snapshot reports the top eight, breaking equal counts by ascending EIP.
+
+---
+
+## LFB staging shadow / LFB staging shadow
+
+Tasks 728·729는 write `grLfbLock`이 매번 수행하던 full framebuffer readback과 565 encode를,
+host가 그 buffer의 내용을 이미 들고 있을 때 건너뛰게 합니다. `GlideLfbStagingShadowState`는
+**color buffer마다 하나씩**(front=0, back=1) host 소유 565 복사본을 둡니다.
+
+* 성공한 write unlock(`flip_v=false`)은 staging surface를 `buffers[lock_buffer]`에 복사합니다.
+* **`grBufferSwap`은 두 복사본을 교환합니다.** Glide의 buffer swap은 page flip이므로 swap 뒤
+  back buffer는 직전 front buffer의 내용을 담습니다. 이것이 핵심입니다.
+* draw·clear는 현재 render target(`grRenderBuffer`로 추적, 기본 back)의 복사본만 무효화합니다.
+* region gate와 미분류 gate는 두 복사본을 모두 무효화합니다. 무효화 술어는 **기본값이
+  무효화**인 allowlist입니다.
+* lock은 복사본이 valid하고 format·해상도가 맞으면 readback 대신 memcpy합니다. 복사본은
+  staging surface 자체가 아니므로 lock이 surface를 guest에 넘겨도 살아남습니다.
+
+Task 728의 단일 shadow(staging surface 자체)는 측정에서 재사용 0건이었습니다. 무효화 304건이
+전부 swap이었기 때문입니다. Task 729는 unlock과 다음 lock 사이 구간을 재어 303/303이 **정확히
+swap 1회뿐**임을 확인했고, 그래서 swap을 손실이 아니라 교환으로 모델링했습니다.
+
+`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true`는 계수만, `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`는
+실제 적용입니다. **둘 다 기본 OFF입니다.** apply 모드에서 관찰된 teardown segfault는 같은 설정의 OFF
+실행에서도 같은 모양으로 재현되어 이 기능과 무관한 기존 결함으로 확인됐습니다(Task 729 후속).
+기본값 전환은 OFF 대 OFF 장면 기준선과 성능 측정 뒤에 검토합니다. 별도로
+`REPIU_GLIDE_LFB_LOCK_INTERVAL_CENSUS=1|on|true`는 unlock과 다음 lock 사이 구간을 swap만 있음 /
+clear / draw / region으로 분류합니다.
+
+`ReadbackFramebuffer`는 window drawable을 읽어 논리 해상도로 nearest-neighbor 축소하고
+`PresentLfbSurface`는 다시 확대하므로, drawable이 정수배가 아니면 present → readback 왕복은
+원래 pixel을 복원하지 못합니다. 또 OpenGL은 swap 뒤 back buffer 내용을 정의하지 않습니다.
+복사본 재사용은 이 두 불확실성을 원본 하드웨어의 page flip 의미로 대체합니다.
+
+Tasks 728 and 729 let a write `grLfbLock` skip the full framebuffer readback and 565 encode it
+used to run every time, when the host already holds that buffer's contents.
+`GlideLfbStagingShadowState` keeps **one host-owned 565 copy per color buffer** (front 0, back 1).
+
+* A successful write unlock (`flip_v=false`) copies the staging surface into
+  `buffers[lock_buffer]`.
+* **`grBufferSwap` exchanges the two copies.** A Glide buffer swap is a page flip, so the
+  post-swap back buffer holds what the front buffer held. This is the crux.
+* Draws and clears invalidate only the copy of the current render target, tracked from
+  `grRenderBuffer` and defaulting to back.
+* Region gates and unclassified gates invalidate both copies. The predicate is an allowlist whose
+  **default is to invalidate**.
+* A lock memcpys from a valid copy of matching format and resolution instead of reading back.
+  The copy is not the staging surface itself, so it survives the lock handing that surface to
+  the guest.
+
+Task 728's single shadow, which was the staging surface itself, measured zero reuse because all
+304 invalidations were swaps. Task 729 measured the window between an unlock and the next lock,
+found 303 of 303 held **exactly one swap and nothing else**, and so models the swap as an
+exchange rather than a loss.
+
+`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true` counts only; `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`
+applies. **Both are off by default.** The teardown segfault seen in apply mode reproduced with the
+same signature in an OFF run under the same settings, establishing it as a pre-existing defect
+unrelated to this feature (Task 729 follow-up). Changing the default waits for an OFF-against-OFF
+scene baseline and a performance measurement. Separately,
+`REPIU_GLIDE_LFB_LOCK_INTERVAL_CENSUS=1|on|true` classifies the window between an unlock and the
+next lock as swaps-only, cleared, drawn, or region.
+
+`ReadbackFramebuffer` reads the window drawable and nearest-neighbor downsamples it to the logical
+resolution while `PresentLfbSurface` upscales it again, so on a drawable that is not an integer
+multiple the present-then-readback round trip does not restore the original pixel; and OpenGL
+leaves back buffer contents undefined after a swap. Reusing the copies replaces both
+uncertainties with the page-flip semantics of the original hardware.
+
+---
+
+## x64 종료 회수 판정 / x64 shutdown recovery decision
+
+Task 730부터 예산 만료·종료 요청 시 guest thread 회수 여부는 `DecideShutdownRecovery`
+(`include/repiu/engine/shutdown_recovery_policy.h`)가 정합니다. x64 Linux에서는 시그널 context의
+**전체 RIP**를 읽어, 상위 32비트가 0이고 하위 32비트가 guest 이미지나 AOT cache 안일 때만 cache 탈출
+trampoline으로 회수합니다. guest 코드와 cache는 설계상 4 GiB 아래에 놓이므로 이 조건은 정당한 회수를
+막지 않습니다. 32비트 host는 이전과 같습니다. 결과는 `[repiu-shutdown]` 줄의 `host_ip=`,
+`decision=`, `aliased=`로 보고됩니다.
+
+From Task 730, whether the guest thread is recovered at budget expiry or on a quit request is decided
+by `DecideShutdownRecovery` (`include/repiu/engine/shutdown_recovery_policy.h`). On x64 Linux it reads
+the **full RIP** from the signal context and recovers through the cache-exit trampoline only when the
+upper 32 bits are zero and the low 32 bits are in the guest image or AOT cache. Guest code and the
+cache are placed below 4 GiB by design, so the condition never blocks a legitimate recovery. 32-bit
+hosts are unchanged. The outcome is reported as `host_ip=`, `decision=` and `aliased=` on the
+`[repiu-shutdown]` line.
+
+Task 733부터 Win32에는 종료 회수 구간 동안만 **redirect guard**가 있습니다. Win32 회수는 guest thread를
+멈추고 `SetThreadContext`로 EIP·ESP를 바꾸는데, legacy backend에서는 멈춘 순간 커널이 이미 single-step
+예외를 전달하던 중일 수 있고 재작성은 그 예외를 취소하지 않습니다. guard는 엔진 VEH보다 먼저 호출되는
+VEH로, 회수 적용 뒤 guest thread에 도착한 예외 중 context EIP가 회수 진입점이거나 guest/cache 코드인 것에
+`RecoverToHost`를 다시 적용하고 실행을 재개합니다(`DecideShutdownRedirectGuard`). guest thread가 멈춘 뒤
+제거되며 `[repiu-shutdown] redirect-guard reapplied_entry=N reapplied_guest=M`을 남깁니다. 배경은
+[Win32 thread context 재작성과 전달 중인 예외](docs/kb/win32-thread-context-rewrite-and-in-flight-exceptions.md)에
+있습니다.
+
+From Task 733 Win32 has a **redirect guard** for the shutdown recovery window only. Win32 recovery suspends
+the guest thread and rewrites EIP and ESP with `SetThreadContext`; under the legacy backend the kernel may
+already be delivering a single-step exception at that moment, and the rewrite does not cancel it. The guard
+is a VEH called before the engine's: for exceptions reaching the guest thread after the redirect whose
+context EIP is the recovery entry or guest/cache code, it reapplies `RecoverToHost` and resumes
+(`DecideShutdownRedirectGuard`). It is removed after the guest thread stops and reports
+`[repiu-shutdown] redirect-guard reapplied_entry=N reapplied_guest=M`. Background:
+[Rewriting a Win32 thread context while an exception is in flight](docs/kb/win32-thread-context-rewrite-and-in-flight-exceptions.md).
 
 ---
 

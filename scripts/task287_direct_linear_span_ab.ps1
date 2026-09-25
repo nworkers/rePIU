@@ -254,26 +254,26 @@ try {
             'fallback: ([0-9/]+)' 4
         $span = Read-SlashValues `
             (Find-LastLine $lines `
-                'Win32 native linear span entry/boundary/cancel/instructions/reject:') `
+                'native linear span entry/boundary/cancel/instructions/reject:') `
             'reject: ([0-9/]+)' 5
         $spanCache = Read-SlashValues `
             (Find-LastLine $lines `
-                'Win32 native linear span cache hit/miss:') `
+                'native linear span cache hit/miss:') `
             'miss: ([0-9/]+)' 2
         $spanRejectCache = Read-SlashValues `
             (Find-LastLine $lines `
-                'Win32 native linear span reject cache hit/miss/stale/store/capacity-skip:') `
+                'native linear span reject cache hit/miss/stale/store/capacity-skip:') `
             'capacity-skip: ([0-9/]+)' 5
         $spanWrite = Read-SlashValues `
             (Find-LastLine $lines `
-                'Win32 native linear span write cross/uncovered/fault-cancel:') `
+                'native linear span write cross/uncovered/fault-cancel:') `
             'fault-cancel: ([0-9/]+)' 3
         $spanJump = Read-SlashValues `
             (Find-LastLine $lines `
-                'Win32 native linear span jump chain/backward-stop:') `
+                'native linear span jump chain/backward-stop:') `
             'backward-stop: ([0-9/]+)' 2
         $spanCancelLine = Find-LastLine $lines `
-            'Win32 native linear span last cancel code/eip:'
+            'native linear span last cancel code/eip:'
         $drawCount = 0
         foreach ($ordinal in 71..76) {
             $drawCount += Read-GlideCallCount $lines $ordinal

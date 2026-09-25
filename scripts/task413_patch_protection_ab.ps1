@@ -100,9 +100,9 @@ foreach ($condition in $order)
     $swap = Get-LastMatch $text "name=_GRBUFFERSWAP@4 count=\s*(\d+)"
     $frames = if ($null -eq $swap) { 0 } else { [UInt64]$swap.Groups[1].Value }
     $generations = Get-LastMatch $text `
-        "Win32 AOT generation publishes/quarantines: (\d+)/(\d+)"
+        "AOT generation publishes/quarantines: (\d+)/(\d+)"
     $exceptions = Get-LastMatch $text `
-        ("Win32 exception census single-step/breakpoint/access-violation/" +
+        ("exception census single-step/breakpoint/access-violation/" +
          "other/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)")
     $patches = ([regex]::Matches($text, "icache patch #(\d+)"))
     $lastPatch = if ($patches.Count -eq 0) { 0 } else {

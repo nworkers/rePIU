@@ -147,7 +147,7 @@ function Read-Runs
             "timer tick delivery backlog-enabled/due/injected/coalesced/dropped/deferred/max-backlog/remaining: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName tick delivery"
         $chain = Get-LastMetricMatch $text `
-            "Win32 INT 8 chain HLE count/source/pointer/target: (\d+)" `
+            "INT 8 chain HLE count/source/pointer/target: (\d+)" `
             "$runName INT 8 chain count"
 
         $enabled = $ticks.Groups[1].Value -eq "true"

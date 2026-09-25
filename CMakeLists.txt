@@ -314,6 +314,12 @@ target_sources(repiu_exe
         src/engine/telemetry/glide_gate_timing.cpp
         src/engine/telemetry/glide_ordinal_timing.cpp
         src/engine/telemetry/glide_buffer_swap_timing.cpp
+        src/engine/telemetry/glide_lfb_timing.cpp
+        src/engine/telemetry/glide_lfb_write_footprint.cpp
+        src/engine/telemetry/glide_lfb_native_store_census.cpp
+        src/engine/glide_lfb_staging_shadow.cpp
+        src/engine/glide_lfb_lock_interval_census.cpp
+        src/engine/execution/shutdown_recovery_policy.cpp
         src/engine/telemetry/glide_setter_state_model.cpp
         src/engine/telemetry/glide_setter_state_census.cpp
         src/engine/telemetry/glide_async_present.cpp
@@ -451,6 +457,7 @@ if(UNIX AND NOT EMSCRIPTEN)
                 src/engine/telemetry/linux_x64_native_write_trace.cpp
                 src/platform/linux/aot_dbt_dispatch_x64.cpp
                 src/platform/linux/aot_dbt_return_thunk_x64.S
+                src/platform/linux/aot_dbt_glide_gate_thunk_x64.S
                 # Task 575: the two fault-recovery symbols the fence above
                 # takes away. They are the only ones an x64 `repiu` link was
                 # missing, and they are `ud2` here rather than a return --
@@ -574,6 +581,7 @@ endif()
 # on every host so the same assertions can be compared across them.
 add_executable(repiu_core_probe
     src/tools/core_probe/main.cpp
+    src/tools/aot_probe/shutdown_recovery_policy_probe.cpp
     src/tools/aot_probe/code_cache_placement_probe.cpp
     src/tools/aot_probe/dos_console_device_probe.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
@@ -726,17 +734,18 @@ if(UNIX AND NOT EMSCRIPTEN)
     )
     repiu_link_linux_engine(repiu_launcher)
 
-    # Task 503d-17: the loader itself. The entry point is the same source the
-    # Windows host uses -- `src/host/win32/main.cpp` under a Linux build looks
-    # wrong against its path. Task 520 fixed that mismatch for the engine by
-    # moving it to `src/engine`; the loader is the one that remains, and moving
-    # 5,577 lines is a task of its own.
+    # Task 503d-17: the loader itself, built from the same source as the
+    # Windows host. Task 731 moved it from `src/host/win32/` to
+    # `src/host/loader/`: it includes no Windows header and branches on the
+    # platform in one log line, so the old path named a platform the code does
+    # not depend on. Task 732 then dropped the "Win32 " prefix from its log
+    # lines, which already carry the `[loader]` logger tag.
     #
     # GL by name for the same reason repiu_launcher names it: the Glide backend
     # calls into it directly, and only the plain name resolves in the i386
     # library directory `-m32` puts on the search path.
     add_executable(repiu
-        src/host/win32/main.cpp
+        src/host/loader/main.cpp
         src/launcher/launcher_ui.cpp
     )
     target_link_libraries(repiu
@@ -789,6 +798,12 @@ if(WIN32)
         src/tools/aot_probe/glide_gate_timing_probe.cpp
         src/tools/aot_probe/glide_ordinal_timing_probe.cpp
         src/tools/aot_probe/glide_buffer_swap_timing_probe.cpp
+        src/tools/aot_probe/glide_lfb_timing_probe.cpp
+        src/tools/aot_probe/glide_lfb_write_footprint_probe.cpp
+        src/tools/aot_probe/glide_lfb_native_store_census_probe.cpp
+        src/tools/aot_probe/glide_lfb_staging_shadow_probe.cpp
+        src/tools/aot_probe/glide_lfb_lock_interval_probe.cpp
+        src/tools/aot_probe/shutdown_recovery_policy_probe.cpp
         src/tools/aot_probe/glide_setter_state_census_probe.cpp
         src/tools/aot_probe/glide_async_present_probe.cpp
         src/tools/aot_probe/glide_draw_batch_probe.cpp
@@ -817,7 +832,7 @@ if(WIN32)
         src/tools/glide_render_probe/main.cpp
     )
     add_executable(repiu
-        src/host/win32/main.cpp
+        src/host/loader/main.cpp
         src/launcher/launcher_ui.cpp
     )
     target_link_libraries(repiu_exe_analyzer

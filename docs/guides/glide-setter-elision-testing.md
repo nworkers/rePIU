@@ -62,10 +62,10 @@ build\win32_x86_debug\Release\repiu.exe pumpit1 2> elide-off.log
 
 | 찾을 문자열 | 읽을 값 |
 |---|---|
-| `Win32 Glide call trace: ordinal=... _GRBUFFERSWAP@4 count=` | **프레임 수** |
-| `Win32 execution time share veh/glide-gate/...` | **glide-gate 비중** |
-| `Win32 Glide setter elision enabled/entries/elided/applied/...` | **생략 횟수** |
-| `Win32 Glide setter census enabled/entries/calls/first/same/changed/...` | **호출 수와 동일 상태 수** |
+| `Glide call trace: ordinal=... _GRBUFFERSWAP@4 count=` | **프레임 수** |
+| `execution time share veh/glide-gate/...` | **glide-gate 비중** |
+| `Glide setter elision enabled/entries/elided/applied/...` | **생략 횟수** |
+| `Glide setter census enabled/entries/calls/first/same/changed/...` | **호출 수와 동일 상태 수** |
 
 PowerShell로 한 번에 뽑는 방법입니다.
 
@@ -166,7 +166,7 @@ build\win32_x86_debug\Release\repiu.exe pumpit1 2> tex-on.log
 읽을 줄은 1단계와 같고, 생략 요약에 **`texture-state`** 항목이 추가됐습니다.
 
 ```
-Win32 Glide setter elision enabled/texture-state/entries/elided/applied/...
+Glide setter elision enabled/texture-state/entries/elided/applied/...
 ```
 
 **판정 순서는 정확성 → 시각 → 성능으로 같습니다.**
@@ -178,7 +178,7 @@ Win32 Glide setter elision enabled/texture-state/entries/elided/applied/...
 * 성능: 프레임 중앙값 차이가 5%를 넘으면 승격 근거가 됩니다. 5% 이내면 rendezvous
   단가가 이미 충분히 낮다는 뜻이므로, 다음 축은 생략이 아니라 **command batching**입니다.
 
-`Win32 Glide ordinal timing: ordinal=` 줄에서 두 텍스처 setter의 work/call도 함께
+`Glide ordinal timing: ordinal=` 줄에서 두 텍스처 setter의 work/call도 함께
 남겨 주시면 batching의 단가 근거가 됩니다.
 
 ## 6단계 — draw batching A/B — Task 438 · **완료, 기본값 승격됨**
@@ -221,11 +221,11 @@ build\win32_x86_debug\Release\repiu.exe pumpit1 2> batch-on.log
 읽을 줄은 다음 두 개가 추가됩니다.
 
 ```
-Win32 Glide draw batch enabled/queued/drawn/flushes/failures/max-batch/pending/mean-batch
-Win32 Glide draw batch flush reason non-draw-gate/primitive-change/capacity
+Glide draw batch enabled/queued/drawn/flushes/failures/max-batch/pending/mean-batch
+Glide draw batch flush reason non-draw-gate/primitive-change/capacity
 ```
 
-> **바이너리를 먼저 확인하십시오.** 두 실행 모두 `Win32 Glide draw batch ...` 줄이
+> **바이너리를 먼저 확인하십시오.** 두 실행 모두 `Glide draw batch ...` 줄이
 > 있어야 합니다. 없으면 배치 코드가 없는 빌드입니다 — `scripts\build_win32_x86.ps1
 > -Configuration Release`로 다시 빌드하십시오. **1차 A/B가 이것 때문에 무효였습니다.**
 
@@ -247,8 +247,8 @@ gameplay 로그로 계산한 상한은 **5.44**이며, 실제 값이 4를 넘어
 **13% 차이**난 적이 있어 프레임으로는 이 크기를 분해할 수 없습니다. 대신:
 
 ```
-Win32 execution time cycles guest-run/veh/glide-gate/port-io/dos:
-Win32 Glide ordinal timing: ordinal=73 ...
+execution time cycles guest-run/veh/glide-gate/port-io/dos:
+Glide ordinal timing: ordinal=73 ...
 ```
 
 * **`glide-gate` cycle을 `guest-run` cycle로 나눈 비중**이 내려가야 합니다(11.0% → 8%대 기대).
@@ -327,7 +327,7 @@ versus clamp) and magnified sprites (linear versus nearest) — a wrongly elided
 shows up as smeared borders or a changed filter, not as a missing object. **Performance:** a
 median frame difference beyond 5% is the case for promoting the default; within 5% the rendezvous
 unit cost is already low enough that the next axis is **command batching** rather than more
-elision. Capturing the `Win32 Glide ordinal timing: ordinal=` lines for the two texture setters
+elision. Capturing the `Glide ordinal timing: ordinal=` lines for the two texture setters
 gives that batching decision its unit cost.
 
 ## Step six — the draw batching A/B, Task 438
@@ -351,11 +351,11 @@ here**: `REPIU_GLIDE_SWAP_INTERVAL=0`, `REPIU_EXECUTION_TIME_PROFILE=1` and
 Two new lines appear:
 
 ```
-Win32 Glide draw batch enabled/queued/drawn/flushes/failures/max-batch/pending/mean-batch
-Win32 Glide draw batch flush reason non-draw-gate/primitive-change/capacity
+Glide draw batch enabled/queued/drawn/flushes/failures/max-batch/pending/mean-batch
+Glide draw batch flush reason non-draw-gate/primitive-change/capacity
 ```
 
-**Check the binary first:** both logs must contain a `Win32 Glide draw batch ...` line. Its
+**Check the binary first:** both logs must contain a `Glide draw batch ...` line. Its
 absence means the build has no batching code — rebuild with
 `scriptsuild_win32_x86.ps1 -Configuration Release`. **The first A/B was void for exactly this
 reason.**

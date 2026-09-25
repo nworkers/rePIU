@@ -42,20 +42,20 @@ set REPIU_PORT_IO_CENSUS_MAPPING=1
 ## 3. 읽을 줄
 
 ```
-Win32 port I/O address census entries/overflow/total: <항목>/<초과>/<합계>
-Win32 port I/O address #N guest/count/cache/arena/mapped/reentry: ...
-Win32 port I/O address #N entry count/prev-code/prev-eip/flags: ...
-Win32 port I/O address #N entry prev step/bp/av/other: ...
-Win32 arena port I/O entry trace total/shown: ...
-Win32 arena port I/O entry #N guest/prev-code/prev-eip/prev-in-cache/tf/reentry/legacy/step: ...
+port I/O address census entries/overflow/total: <항목>/<초과>/<합계>
+port I/O address #N guest/count/cache/arena/mapped/reentry: ...
+port I/O address #N entry count/prev-code/prev-eip/flags: ...
+port I/O address #N entry prev step/bp/av/other: ...
+arena port I/O entry trace total/shown: ...
+arena port I/O entry #N guest/prev-code/prev-eip/prev-in-cache/tf/reentry/legacy/step: ...
 ```
 
 Task 410부터 **누가 그 직전 예외를 처리했는지**도 나옵니다.
 
 ```
-Win32 port I/O address #N entry prev exit-site/exit-eip: <site>/<eip>
-Win32 arena single-step exit total/sum: <총수>/<합>
-Win32 arena single-step exit <site>: <count>
+port I/O address #N entry prev exit-site/exit-eip: <site>/<eip>
+arena single-step exit total/sum: <총수>/<합>
+arena single-step exit <site>: <count>
 ```
 
 `exit-eip`가 캐시 범위(`0x0A000000`~`0x0E000000`)면 그 소비자는 **캐시로 복귀**시킨
@@ -82,7 +82,7 @@ violation, `0xC0000096` privileged instruction입니다.
 
 ## 5. 반드시 함께 확인할 것
 
-* `Win32 AOT generation publishes/quarantines: .../N` — **N이 0이 아니면 격리 실행**
+* `AOT generation publishes/quarantines: .../N` — **N이 0이 아니면 격리 실행**
   입니다. 격리·정상 두 모드는 재진입 거동이 정반대이므로 **섞어서 평균 내지 않습니다.**
 * `exception census single-step/breakpoint/access-violation/other/total` — 진입
   히스토그램의 분류 합이 이 총수를 넘을 수 없습니다. **분류 수가 해당 예외 총수보다

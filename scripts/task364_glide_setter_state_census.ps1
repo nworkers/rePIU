@@ -175,25 +175,25 @@ function Read-ProfileRuns
             ConvertFrom-Json
 
         $summary = Get-LastMetricMatch $text `
-            "Win32 Glide setter census enabled/entries/calls/first/same/changed/failure/unsupported: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide setter census enabled/entries/calls/first/same/changed/failure/unsupported: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName census summary"
         $health = Get-LastMetricMatch $text `
-            "Win32 Glide setter census key-overflow/distinct-overflow/ordinal-overflow/invalidations/frames/texture-generation: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide setter census key-overflow/distinct-overflow/ordinal-overflow/invalidations/frames/texture-generation: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName census health"
         $phaseState = Get-LastMetricMatch $text `
-            "Win32 Glide setter phase enabled/clamped: (true|false)/(\d+)" `
+            "Glide setter phase enabled/clamped: (true|false)/(\d+)" `
             "$runName phase state"
         $depth = Get-LastMetricMatch $text `
-            "Win32 Glide setter phase depth-mask calls/drain/apply/error/total/max-total/max-apply/max-error/drain-iterations/errors: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide setter phase depth-mask calls/drain/apply/error/total/max-total/max-apply/max-error/drain-iterations/errors: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName depth-mask phases"
         $blend = Get-LastMetricMatch $text `
-            "Win32 Glide setter phase alpha-blend calls/drain/apply/error/total/max-total/max-apply/max-error/drain-iterations/errors: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide setter phase alpha-blend calls/drain/apply/error/total/max-total/max-apply/max-error/drain-iterations/errors: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName alpha-blend phases"
         $ordinalSummary = Get-LastMetricMatch $text `
-            "Win32 Glide ordinal timing enabled/entries/completed/overflow/clamped: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Glide ordinal timing enabled/entries/completed/overflow/clamped: (true|false)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "$runName ordinal summary"
         $gate = Get-LastMetricMatch $text `
-            "Win32 Glide gate entries/handled/ESP: (\d+)/(\d+)/" `
+            "Glide gate entries/handled/ESP: (\d+)/(\d+)/" `
             "$runName gate counts"
 
         # C3 stability: the instruments must not introduce a clamped sample or
@@ -260,9 +260,9 @@ function Read-ProfileRuns
         }
 
         $censusLines = Get-AllMetricMatches $text `
-            "Win32 Glide setter census: ordinal=(\d+) name=(\S+) calls=(\d+) first=(\d+) same=(\d+) changed=(\d+) failure=(\d+) unsupported=(\d+) key_overflow=(\d+) distinct=(\d+) distinct_overflow=(\d+) max_run=(\d+) max_frame_calls=(\d+) max_frame_changes=(\d+)"
+            "Glide setter census: ordinal=(\d+) name=(\S+) calls=(\d+) first=(\d+) same=(\d+) changed=(\d+) failure=(\d+) unsupported=(\d+) key_overflow=(\d+) distinct=(\d+) distinct_overflow=(\d+) max_run=(\d+) max_frame_calls=(\d+) max_frame_changes=(\d+)"
         $ordinalLines = Get-AllMetricMatches $text `
-            "Win32 Glide ordinal timing: ordinal=(\d+) name=(\S+) count=(\d+) gate=(\d+) max=(\d+) rendezvous=(\d+) queue=(\d+) wake=(\d+) work=(\d+) complete=(\d+) residual=(\d+) backend_total=(\d+) direct=(\d+) direct_work=(\d+)"
+            "Glide ordinal timing: ordinal=(\d+) name=(\S+) count=(\d+) gate=(\d+) max=(\d+) rendezvous=(\d+) queue=(\d+) wake=(\d+) work=(\d+) complete=(\d+) residual=(\d+) backend_total=(\d+) direct=(\d+) direct_work=(\d+)"
         # The per-run log repeats each block once per emitted summary, so index
         # by ordinal and keep the last occurrence.
         $ordinalByKey = @{}

@@ -38,7 +38,7 @@ build\win32_x86_debug\Release\repiu.exe pumpit2 2> run.txt
 파일 헤더에 요약이 있고, 로그에는 한 줄이 나옵니다.
 
 ```
-Win32 CD audio position census entries/regressions: <기록수>/<역행수>
+CD audio position census entries/regressions: <기록수>/<역행수>
 ```
 
 각 행은 다음과 같습니다.
@@ -126,7 +126,7 @@ at that rate — and the series lands in `build/cd_audio_position_census.txt`
 
 ## Reading
 
-The log prints `Win32 CD audio position census entries/regressions`, and each row is
+The log prints `CD audio position census entries/regressions`, and each row is
 `wall_ms current_lba queued_lba stream_bytes start_lba end_lba worker_iterations underruns
 generation playing paused delta_lba ticks_due ticks_injected tick_lag_ms safe_point_traps
 ticks_coalesced_in_gate`. `current_lba` is what the game sees and `delta_lba` is where to look.
