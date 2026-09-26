@@ -3299,6 +3299,28 @@ void PrintExecutionAttempt(
             ticks.coalesced_total != 0U
                 ? ticks.coalesced_in_gate_total * 100U / ticks.coalesced_total
                 : 0U);
+        // Task 735: ticks held back because IRQ0 was still in service, and how
+        // each service ended -- by the ISR's EOI or by its return.
+        // Task 740: the PIU10 MP3 pipeline. `stats()` existed but nothing
+        // printed it, so a run with noise or starvation left no number.
+        const auto& mp3 = attempt.piu10_mp3_stats;
+        logger.info(
+            "PIU10 MP3 received/dropped/decoded/starvation/toggles/multi/"
+            "pcm-empty/pcm-low-water-bytes/device-buffer-frames: "
+            "{}/{}/{}/{}/{}/{}/{}/{}/{}",
+            mp3.received_bytes, mp3.dropped_bytes, mp3.decoded_frames,
+            mp3.starvation_events, mp3.sync_toggles,
+            mp3.sync_multi_toggle_events, mp3.pcm_empty_events,
+            mp3.pcm_queued_low_water_bytes, mp3.device_buffer_frames);
+        const auto& in_service = attempt.pic_timer_in_service;
+        logger.info(
+            "timer IRQ0 in-service blocked/sti-delivered/sti-chain-blocked/"
+            "eoi-cleared/stack-retired/active-at-end: {}/{}/{}/{}/{}/{}",
+            in_service.blocked_in_service_total,
+            in_service.delivered_at_sti_total,
+            in_service.blocked_sti_chain_total,
+            in_service.cleared_by_eoi_total,
+            in_service.retired_by_stack_total, in_service.active);
     }
     logger.info("INT 8 chain HLE count/source/pointer/target: {}/{}/{}/{}:{}",
                 attempt.timer_interrupt_chain_hle_count,
@@ -5520,6 +5542,55 @@ int main(int argc, char** argv)
     {
         logger->error("Failed to build requested AOT execution image: {} / {}",
                       aot_plan.message, aot_image.message);
+        // Task 735. Name the rejected entries: this image never runs, so its
+        // failure is only diagnosable here.
+        logger->error("AOT decode failures total/sampled: {}/{}",
+                      aot_image.decode_failure_count,
+                      aot_image.decode_failure_samples.size());
+        for (const repiu::runtime::AotDecodeFailureSample& sample :
+             aot_image.decode_failure_samples)
+        {
+            std::string guest_bytes;
+            int guest_kind = -1;
+            for (const repiu::runtime::AotBasicBlock& block : aot_plan.blocks)
+            {
+                for (const repiu::runtime::AotInstructionRecord& instruction :
+                     block.instructions)
+                {
+                    if (instruction.guest_address == sample.guest_address)
+                    {
+                        guest_kind = static_cast<int>(instruction.kind);
+                        for (const std::uint8_t byte : instruction.bytes)
+                        {
+                            char hex[3] = {};
+                            std::snprintf(hex, sizeof(hex), "%02X", byte);
+                            guest_bytes += hex;
+                        }
+                    }
+                }
+            }
+            std::string emitted_bytes;
+            const std::size_t emitted_end = std::min<std::size_t>(
+                aot_image.bytes.size(),
+                static_cast<std::size_t>(sample.cache_offset) +
+                    std::min<std::uint32_t>(sample.emitted_length, 48U));
+            for (std::size_t offset = sample.cache_offset;
+                 offset < emitted_end; ++offset)
+            {
+                char hex[3] = {};
+                std::snprintf(hex, sizeof(hex), "%02X",
+                              aot_image.bytes[offset]);
+                emitted_bytes += hex;
+            }
+            logger->error(
+                "AOT decode failure guest=0x{:08X} kind={} guest_bytes={} "
+                "cache=0x{:08X} emitted_len={} decoded_bytes={} "
+                "decoded_instructions={} expected_instructions={} emitted={}",
+                sample.guest_address, guest_kind, guest_bytes,
+                sample.cache_offset, sample.emitted_length,
+                sample.decoded_bytes, sample.decoded_instructions,
+                sample.expected_instructions, emitted_bytes);
+        }
         repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         return 1;

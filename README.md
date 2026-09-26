@@ -169,12 +169,16 @@ build/linux_i386/repiu_launcher
 ```
 
 독립 `repiu_launcher`의 롬셋 목록과 옵션은 Windows와 같은 코드입니다. 게임은 위의 `repiu`
-실행 파일로 직접 시작합니다. 데스크톱 패키지 없이 코어와 probe만 빌드하려면 `--headless`를
-주십시오.
+실행 파일로 직접 시작합니다. 데스크톱 개발 패키지가 없는 호스트에서 코어와 probe만 빌드하려면
+`--headless`를 주십시오. 이 스위치는 SDL이 X11/Wayland 개발 패키지 없이도 configure를 통과하게 할
+뿐이며, 패키지가 있는 호스트에서는 아무것도 바꾸지 않습니다(Task 739). 구성이 다른 트리는
+`--build-dir`로 따로 두십시오.
 
 *The standalone `repiu_launcher` shares its ROM-set list and options with Windows. Start games
 directly through the `repiu` executable shown above. Pass `--headless` when only the core and probes
-are needed without desktop packages.*
+are needed on a host without the desktop development packages; the switch only lets SDL configure
+without X11/Wayland development packages and changes nothing on a host that has them (Task 739). Keep
+differently configured trees apart with `--build-dir`.*
 
 ### 7. 웹(wasm) 빌드 / Web (wasm) build
 

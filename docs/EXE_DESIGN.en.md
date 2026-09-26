@@ -432,3 +432,44 @@ running this code must preserve EFLAGS across `ret`. The case where the Linux x6
 and the song-select screen retried `fsin` forever, is in the
 [Task 734 work log](work-logs/20260926-734-linux-x64-return-thunk-flags.md). `DS:0x96398` is object-4
 file offset `0x1A4998` and holds the exact 2π (`0x4001 C90FDAA22168C235`).
+
+## pumpitea PIU.EXE layout and input scan (confirmed, Task 735)
+
+Four LE objects. Object 2 (code) is at file `0x23000`, link address `0x20000` (execution address
+`0x01010000`); object 4 (data) is at file `0x11C000`, size `0x8C0900`. Execution address = link address
++ `0x00FF0000`.
+
+| Execution address | Content |
+|---|---|
+| `0x011074D8` | `82 68 10 01` = `sub byte ptr [eax+0x10], 1`, a use of opcode `82` (#UD in long mode). Before Task 735 this one instruction got the Linux x64 AOT image rejected |
+| `0x01028E30` | Input scan. Starting with `ECX=0x2A8` it repeats `in ax, dx` **200 times** (a delay loop), then `out 0x2A4`, `out 0x2A6` (lamps/select), then `in 0x2A8`, `in 0x2AA` |
+
+The input scan runs once per timer tick (20,264 times in an 88-second run, equal to the EOI count). The
+delay loop makes it 200 port reads per tick, 4,052,600 in 88 seconds. pumpit2a's ISR reads JAMMA twice
+per tick.
+
+
+## pumpitea and pumpit2a timer ISRs (confirmed, Task 736)
+
+| Game | ISR | Flow |
+|---|---|---|
+| pumpitea | `0x0102AAE4` | `pusha` and segment pushes → helper → **`cli`** (`0x0102AAF3`) → five-slot loop (back edge `0x0102AB07`; a slot's callback runs when its accumulator passes `0x10000`) → chain to the previous handler when the accumulator passes (`pushf; lcall *0x1d7940`) → EOI (`out 0x20`, `0x0102AB7D`) → `sti` → `iret` |
+| pumpit2a | `0x0103F123` | `pusha` and segment pushes → helper → **chain to the previous handler first** (`pushf; lcall *0x17fa24`) → callback slots (every 4 ticks) → tick counters → EOI (outportb at `0x0103F1E4`) → `sti` (`0x0103F1E9`) → `iret` |
+
+pumpitea keeps the PIT at 51.9 kHz (divisor 23) briefly after start, then switches to 240 Hz (divisor
+4971). Both ISRs write their own EOI. Addresses are Linux execution addresses (add `0x03000000` on Win32).
+
+## pumpitea object 3 16-bit stack-switch stub and the GL texture path (confirmed, Task 737)
+
+Object 3 (link `0x120000`, execution address Linux `0x01110000` / Win32 `0x04110000`, 16-bit code)
+is the same code as pumpit2a's Task 692 stub: it saves SS at `cs:[0]`, `test edi,edi`, sets a
+selector base through DPMI `AX=0007`, `cli; mov ss,bx; mov sp,0x2000; sti`, then far-calls the
+function EDI names with `push cs; push ax; push edi; retf`; the return stub (`+0x32`) restores the
+original stack with `mov ss,cs:[0]; mov esp,ebp; retfd`. The stub is part of the GL driver's CFG, so a
+cache for a 32-bit segment must not copy its bytes.
+
+| Execution address (Win32) | Content |
+|---|---|
+| `0x040CA448` | glTexImage2D wrapper: error path when `[0x72e8c]` (the context) is zero, otherwise through `0x0409FA1C` (texture image descriptor) to `call [esi+0x2a8]` |
+| `0x0407A664` | `call [esi+0x9c8]`, the driver's texture function `0x04049988` (`ret 8`); the fallback of this indirect call's translation failure was the Task 737 crash point |
+| `0x04028E30` | Input scan; the delay loop is `inc ebx; sub eax,eax; in ax,dx; cmp ebx,200; jge 0x04029F52; jmp back`, the inverted form |

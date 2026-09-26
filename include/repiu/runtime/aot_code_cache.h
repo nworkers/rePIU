@@ -443,6 +443,21 @@ struct AotDirectReturnProbeSite
     std::uint32_t hit_counter_address_offset = 0;
 };
 
+// Task 735. One address-map entry whose emitted bytes did not decode as the
+// emitter intended: short coverage, or the right length in the wrong number of
+// instructions.
+struct AotDecodeFailureSample
+{
+    std::uint32_t guest_address = 0;
+    std::uint32_t cache_offset = 0;
+    std::uint32_t emitted_length = 0;
+    std::uint32_t decoded_bytes = 0;
+    std::uint32_t decoded_instructions = 0;
+    std::uint32_t expected_instructions = 0;
+};
+
+inline constexpr std::size_t kAotDecodeFailureSampleCapacity = 8U;
+
 struct AotCodeCacheImage
 {
     bool valid = false;
@@ -532,6 +547,10 @@ struct AotCodeCacheImage
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;
     std::uint32_t decode_failure_count = 0;
+    // Task 735. The first entries the decode check rejected. The count alone
+    // says an image is unusable but not which guest instruction made it so,
+    // and a rejected image never runs, so nothing later can find out either.
+    std::vector<AotDecodeFailureSample> decode_failure_samples;
     std::uint64_t elapsed_microseconds = 0;
     std::string message;
 };

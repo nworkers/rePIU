@@ -18,6 +18,21 @@ struct Piu10Mp3AudioStats
     std::uint64_t queued_pcm_frames = 0;
     std::uint64_t starvation_events = 0;
     std::uint64_t batched_bytes = 0;
+    // Task 740. Frame-sync toggles handed to the guest, and the worker calls
+    // that toggled more than once at a time -- a guest polling the status at
+    // 240 Hz reads an even count of those as no change and loses the frame.
+    std::uint64_t sync_toggles = 0;
+    std::uint64_t sync_multi_toggle_events = 0;
+    // Task 740. Measured where the decoder refills the PCM queue, one frame
+    // at a time while a song plays: the least PCM found there, and how often
+    // the queue was found empty with the previous refill less than 200 ms
+    // before (a gap on the speaker, not the tail of a song).
+    std::uint64_t pcm_empty_events = 0;
+    std::uint64_t pcm_queued_low_water_bytes = 0;
+    // The SDL device's buffer in sample frames: the step in which it pulls
+    // PCM, and so the step in which everything derived from the queue moved
+    // before Task 740.
+    int device_buffer_frames = 0;
     std::size_t ring_bytes = 0;
     std::size_t ring_high_water = 0;
     std::size_t inflight_bytes = 0;
@@ -40,6 +55,14 @@ struct Piu10Mp3AudioSnapshot
     std::uint64_t received_bytes = 0;
     std::uint64_t decoded_frames = 0;
     std::uint8_t frame_sync = 0;
+    bool demand = false;
+    std::uint64_t sync_toggles = 0;
+    std::uint64_t sync_multi_toggle_events = 0;
+    std::uint64_t starvation_events = 0;
+    std::uint64_t pcm_empty_events = 0;
+    // Task 740. How far the playback clock sits behind the bytes the device
+    // has pulled; at most one device buffer while the device keeps time.
+    double playback_lag_ms = 0.0;
 };
 
 class Piu10Mp3AudioOut

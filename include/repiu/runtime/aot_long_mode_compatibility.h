@@ -187,6 +187,12 @@ enum class LongModeLowering
     // Task 690. In a 16-bit code object, `25 iw` is a word accumulator AND.
     // Add `66` so long mode preserves the 16-bit accumulator semantics.
     k16BitAndAccumulatorImmediate,
+    // Task 735. `82 /r ib`, the legacy alias of the group-1 byte operations
+    // `80 /r ib`, raises #UD in long mode. The two are the same operation with
+    // the same flags, so the opcode byte becomes `80`. Named only when the `80`
+    // spelling needs nothing else; when it does, the classifier reports that
+    // lowering instead and the lowerer applies it to the `80` bytes.
+    kGroup1ImmediateAlias,
 };
 
 struct LongModeCompatibilityResult

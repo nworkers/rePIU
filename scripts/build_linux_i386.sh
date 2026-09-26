@@ -1,28 +1,39 @@
 #!/usr/bin/env bash
-# Task 501. Builds the platform-neutral core and its probe as 32-bit x86 on
-# Linux.
+# Task 501. Builds the Linux host as 32-bit x86: the core, the execution
+# engine, the loader (`repiu`), the launcher, the probes and the tools.
 #
 # The architecture is not a preference. The guest's 32-bit x86 code runs
 # natively in the host process, exactly as it does under the Win32 host, so the
-# host itself has to be a 32-bit process.
+# host itself has to be a 32-bit process. (The x86-64 host in
+# build_linux_x64.sh runs the guest through the long-mode code cache instead.)
 #
-# Only the targets that exist on Linux today are built. The execution engine,
-# the loader, and the launcher are still Win32-only; bringing them over is
-# Stage 3 and Stage 2 of the port.
+# Task 739 brought this script level with the x64 one: `--build-dir` keeps two
+# configurations apart, the SDL console switch is passed both ways, and the
+# header no longer describes the Task 501 state in which only the core and its
+# probe existed on Linux.
 set -euo pipefail
 
 configuration="Debug"
 targets=()
 headless=0
+build_directory=""
 
 usage()
 {
     cat <<'USAGE'
 usage: build_linux_i386.sh [--config Debug|Release|RelWithDebInfo|MinSizeRel]
-                           [--target NAME]... [--headless]
-Builds into build/linux_i386. With no --target, every default target is built.
---headless drops SDL desktop support, which suits the core and its probes but
-not the launcher.
+                           [--build-dir PATH] [--target NAME]... [--headless]
+Builds into build/linux_i386 unless --build-dir names another directory. With no
+--target, every default target is built. --headless lets SDL configure on a host
+without X11/Wayland development packages; it suits the core and its probes but
+not the launcher. (SDL still builds every desktop driver it finds, so on a host
+that has the packages the flag changes nothing.)
+
+--build-dir is what keeps two configurations apart. This is a single-config
+generator, so a tree holds exactly one CMAKE_BUILD_TYPE: pointing --config at a
+directory configured the other way reconfigures it in place and discards the
+build that was there. Give the second configuration its own directory --
+build/linux_i386_release next to build/linux_i386, say -- when you want both.
 USAGE
 }
 
@@ -30,6 +41,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --config)
             configuration="${2:?--config needs a value}"
+            shift 2
+            ;;
+        --build-dir)
+            build_directory="${2:?--build-dir needs a value}"
             shift 2
             ;;
         --target)
@@ -53,7 +68,29 @@ while [[ $# -gt 0 ]]; do
 done
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-build_dir="$root/build/linux_i386"
+build_dir="${build_directory:-$root/build/linux_i386}"
+
+# Named rather than left to be discovered: reconfiguring a tree to the other
+# build type throws away everything already compiled there, and the message that
+# says so scrolls past inside CMake's output.
+if [[ -f "$build_dir/CMakeCache.txt" ]]; then
+    existing="$(sed -n 's/^CMAKE_BUILD_TYPE:STRING=//p' \
+        "$build_dir/CMakeCache.txt")"
+    if [[ -n "$existing" && "$existing" != "$configuration" ]]; then
+        cat >&2 <<REconfig
+$build_dir is configured as $existing and this run asks for $configuration.
+
+A single-config generator holds one build type per directory, so continuing
+would reconfigure that tree and rebuild it from nothing. Use --build-dir to give
+this configuration its own directory:
+
+    scripts/build_linux_i386.sh --config $configuration \
+        --build-dir "$root/build/linux_i386_$(echo "$configuration" | tr '[:upper:]' '[:lower:]')"
+
+REconfig
+        exit 1
+    fi
+fi
 
 # A missing 32-bit toolchain otherwise surfaces as hundreds of header errors
 # with the actual cause buried, so it is checked up front and named.
@@ -134,9 +171,16 @@ fi
 # PulseAudio or PipeWire, WSL among them. The build still succeeds and the game
 # still runs; it just never makes a sound. The check below names the package
 # rather than leaving that to be rediscovered.
+# Task 739. The console-build switch is passed both ways rather than only when
+# asked for: CMake keeps the previous answer in the cache, so a tree once
+# configured --headless stayed that way on every later plain run and nothing
+# said so. (All the switch does is let SDL configure without X11/Wayland
+# development packages -- SDL still builds every desktop driver it finds.)
 sdl_options=(-DSDL_X11_XSCRNSAVER=OFF -DSDL_X11_XTEST=OFF)
 if [[ $headless -ne 0 ]]; then
     sdl_options+=(-DSDL_UNIX_CONSOLE_BUILD=ON)
+else
+    sdl_options+=(-DSDL_UNIX_CONSOLE_BUILD=OFF)
 fi
 
 # SDL finds its optional dependencies with pkg-config, and pkg-config's default

@@ -812,6 +812,12 @@ bool HandlePortIoInstruction(repiu::platform::GuestCpuContext *win32_context, Th
     return true;
   }
 
+  // Task 735. Every OCW2 write is seen here, so a specific EOI for IRQ0
+  // (0x60) ends its service too, even though only 0x20 is emulated below.
+  if (width == 1U && port == kPortPicCommand) {
+    NotePicCommand(&context->pic_timer_in_service,
+                   static_cast<std::uint8_t>(value & 0xFFU));
+  }
   if (width == 1U && port == kPortPicCommand && value == 0x20U) {
     RecordPortIo(context, static_cast<std::uint32_t>(win32_context->Eip),
                  opcode, port, width, value, false, true, "emulated-pic-eoi");

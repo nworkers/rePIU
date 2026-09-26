@@ -113,8 +113,9 @@ bash scripts/task508_refused_recovery_repro.sh 3 60000 task508
   없이 예산 만료를 시험하면 감시견이 먼저 끝냈을 수 있습니다.
 * **인자 없이 실행하면 런처가 뜹니다.** 런처 경로는 선택을 자식 프로세스로 넘기므로 PID가
   둘이 되고, 어느 쪽에 TERM을 보냈는지가 결과를 바꿉니다. 롬셋 ID를 인자로 주십시오.
-* **`--headless`로 구성한 트리로는 이 확인을 할 수 없습니다.** 창이 없으면 SDL 종료 이벤트
-  경로도 없습니다.
+* **창이 뜨지 않는 트리로는 이 확인을 할 수 없습니다.** 창이 없으면 SDL 종료 이벤트 경로도
+  없습니다. `--headless`는 X11/Wayland 개발 패키지 없이 configure를 통과시키는 스위치라, 패키지가
+  없는 호스트에서 만든 트리가 여기에 해당합니다(Task 739).
 * **`exit=133`이 보이면 회귀입니다.** Task 508 이전에는 회수를 거절당한 실행이 여섯 번 중 두
   번 SIGTRAP의 커널 기본 처분으로 끝났습니다. 508 이후 이 갈래는 코어 덤프 없이 예산 만료
   코드로 끝나야 하므로, 다시 133이 나오면 종료 블록이 게스트 스레드가 아직 필요로 하는 폴트
@@ -230,8 +231,9 @@ and the guest thread ends with the process.
   without `REPIU_STALL_TIMEOUT_MS=0` may have been ended by the watchdog first.
 * **With no argument the launcher opens.** That path hands the selection to a child process, so there
   are two PIDs and which one received TERM changes the result. Pass the ROM set id.
-* **A tree configured with `--headless` cannot run this check** — with no window there is no SDL quit
-  event either.
+* **A tree that opens no window cannot run this check** — with no window there is no SDL quit
+  event either. `--headless` only lets SDL configure without X11/Wayland development packages, so a
+  tree built on a host without them is the case (Task 739).
 * **`exit=133` is a regression.** Before Task 508, two of six runs whose recovery was refused ended
   in SIGTRAP's default kernel disposition. Since 508 this arm ends with the budget-expiry code and no
   core dump, so a 133 appearing again means the shutdown block is once more removing a fault handler

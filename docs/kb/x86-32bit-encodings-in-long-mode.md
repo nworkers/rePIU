@@ -89,7 +89,9 @@ long mode에서 **stack 관련 명령의 기본 operand size는 64비트**이고
 `06`/`0E`/`16`/`1E` (`PUSH ES`/`CS`/`SS`/`DS`), `07`/`17`/`1F` (`POP ES`/`SS`/`DS`),
 `27` (`DAA`), `2F` (`DAS`), `37` (`AAA`), `3F` (`AAS`), `60`/`61` (`PUSHAD`/`POPAD`),
 `9A` (far `CALL`), `CE` (`INTO`), `D4` (`AAM`), `D5` (`AAD`), `D6` (`SALC`),
-`EA` (far `JMP`).
+`EA` (far `JMP`), `82` (`80` group-1 byte 연산의 별칭).
+
+`82 /r ib`는 16·32-bit mode에서 `80 /r ib`와 같은 명령(`ADD`/`OR`/`ADC`/`SBB`/`AND`/`SUB`/`XOR`/`CMP` r/m8, imm8)이지만 long mode에서는 #UD다. 연산과 flags가 같으므로 `80`으로 바꾸면 된다. pumpitea의 `82 68 10 01`이 그대로 복사되어 AOT image 검증에 걸린 사례가 Task 735다.
 
 ### 주소 크기와 `67` prefix
 
@@ -200,7 +202,13 @@ is no way to ask for 32; a `66` prefix gives 16.
 
 `06`/`0E`/`16`/`1E`, `07`/`17`/`1F`, `27` (`DAA`), `2F` (`DAS`), `37` (`AAA`),
 `3F` (`AAS`), `60`/`61` (`PUSHAD`/`POPAD`), `9A` (far `CALL`), `CE` (`INTO`),
-`D4` (`AAM`), `D5` (`AAD`), `D6` (`SALC`), `EA` (far `JMP`).
+`D4` (`AAM`), `D5` (`AAD`), `D6` (`SALC`), `EA` (far `JMP`), `82` (alias of the `80` group-1
+byte operations).
+
+`82 /r ib` is the same instruction as `80 /r ib` (`ADD`/`OR`/`ADC`/`SBB`/`AND`/`SUB`/`XOR`/`CMP` r/m8, imm8)
+in 16- and 32-bit mode but raises #UD in long mode. The operation and flags are identical, so rewriting
+the opcode byte to `80` is enough. Task 735 is the case where pumpitea's `82 68 10 01` was copied
+verbatim and failed the AOT image check.
 
 ### Address size and the `67` prefix
 

@@ -1311,3 +1311,33 @@ supervisor, and analyzer now default to `pumpit1`, and setup/test asset checks u
 passed in both configurations. The registry probe reported `piu10_target_profiles=true` and
 `jamma_target_profiles=true`; the no-argument Debug analyzer selected `Target: pumpit1` and
 printed its detailed display name.
+
+## 21. PIU10 MP3 재생 시계 (Task 740)
+
+**확인됨:** frame-sync(status bit 2)와 DEMAND(bit 0)는 Task 460·464 이후 SDL 장치가 가져간 byte 수에
+매여 있었고, 그 수는 장치 buffer 단위로 움직입니다. WSLg(768 frame, 17 ms)에서는 frame당 토글 하나가
+유지되지만, buffer를 2048 frame으로 강제하면 초당 4~6회, 4096 frame이면 토글의 40%가 한 worker
+호출에 두 개 이상 겹쳤습니다. decoder도 같은 계단으로 다시 채워 DEMAND와 guest의 frame 카운터가
+계단으로 움직였습니다. 이제 `Piu10Mp3AudioOut`은 직전 계단의 byte 수에서 PCM 속도로 올라가고 가져간
+수를 넘지 않는 재생 시계를 두고, frame-sync 전이와 decode 게이트(시계 앞 0.25초, 큐가 그 절반
+아래면 즉시)를 그 시계로 판단합니다. 최종 보고 한 줄(`PIU10 MP3 received/…/device-buffer-frames`)과
+`REPIU_PIU10_MP3_CENSUS_MS=<ms>` census가 토글·다중 토글·기아·빈 큐·시계 지연을 냅니다.
+
+**미확정:** 사용자 host의 노이즈는 WSLg에서 재현되지 않았습니다. 곡 중 PCM 큐는 235 ms 아래로
+내려가지 않았습니다.
+
+### English
+
+**Confirmed:** Since Tasks 460 and 464, frame-sync (status bit 2) and DEMAND (bit 0) were tied to the
+byte count the SDL device had pulled, which moves in device-buffer steps. On WSLg (768 frames, 17 ms)
+one toggle per frame held, but forcing the buffer to 2048 frames gave four to six collapsed toggles a
+second and 4096 frames collapsed 40% of them into one worker call. The decoder refilled in the same
+steps, so DEMAND and the guest's frame counter moved in steps too. `Piu10Mp3AudioOut` now keeps a
+playback clock that rises at the PCM rate from the count before the latest step and never passes the
+pulled count; frame-sync transitions and the decode gate (a quarter second ahead of the clock, at once
+if the queue drops below half of that) follow it. The final report line (`PIU10 MP3
+received/…/device-buffer-frames`) and the `REPIU_PIU10_MP3_CENSUS_MS=<ms>` census give toggles,
+multi-toggles, starvation, empty queue and clock lag.
+
+**Unresolved:** The noise on the user's host did not reproduce on WSLg; the PCM queue never fell below
+235 ms mid-song.

@@ -152,3 +152,38 @@ as repeated entries matching BIOS typematic behavior. See the
 [RBIL INT 16h index](https://fd.lod.bz/rbil/zint/index_16.html) for the per-function contracts.
 
 ---
+
+## 2026-09-26 IRQ0 in-service, EOI, 그리고 user mode의 IF / IRQ0 in-service, EOI and IF in user mode
+
+8259 PIC는 IRQ를 CPU에 전달하면 그 IRQ의 in-service 비트(ISR 레지스터)를 세우고, 핸들러가 EOI를
+쓸 때까지 같은 우선순위 이하의 IRQ를 다시 올리지 않습니다. EOI는 master PIC 명령 port 0x20에
+OCW2로 씁니다. `0x20`은 non-specific EOI(가장 높은 in-service 비트를 지움), `0x60 | level`은
+specific EOI입니다. 그래서 타이머 핸들러가 `sti`로 인터럽트를 다시 켜더라도 EOI 전에는 IRQ0이
+중첩되지 않고, EOI와 `sti`(또는 `iret`) 뒤에 밀린 IRQ0이 처리됩니다. `sti` 직후 한 명령 동안은
+인터럽트가 인식되지 않습니다(interrupt shadow).
+
+user mode(CPL 3, IOPL 0)에서는 `cli`/`sti`가 #GP를 일으키고, `popf`는 IF를 조용히 바꾸지
+않습니다. 운영체제는 signal/예외 복귀 때 사용자 코드의 IF를 항상 1로 둡니다. 따라서 user mode에서
+guest를 실행하는 엔진은 guest의 IF를 host 레지스터로 표현할 수 없고, 인터럽트 주입 판단에 host
+EFLAGS의 IF를 쓰면 guest `cli`가 무시됩니다(rePIU Task 736). 같은 이유로 엔진이 trace용으로 세운
+TF를 guest가 볼 수 있는 frame에 저장하면 guest의 `iret`이 그것을 되살립니다.
+
+참고: [Intel 8259A 데이터시트](https://pdos.csail.mit.edu/6.828/2018/readings/hardware/8259A.pdf)(OCW2,
+EOI), Intel SDM Vol. 2의 `CLI`/`STI`/`POPF`, Vol. 3의 6.8.3(interrupt shadow)과 IOPL.
+
+The 8259 PIC sets an IRQ's in-service bit (the ISR register) when it delivers the IRQ, and raises no
+IRQ of the same or lower priority again until the handler writes an EOI. EOI is an OCW2 written to the
+master PIC's command port 0x20: `0x20` is a non-specific EOI (clears the highest in-service bit),
+`0x60 | level` a specific EOI. So even if a timer handler re-enables interrupts with `sti`, IRQ0 does not
+nest before the EOI, and an owed IRQ0 is taken after the EOI and the `sti` (or `iret`). Interrupts are
+not recognised for one instruction after `sti` (the interrupt shadow).
+
+In user mode (CPL 3, IOPL 0), `cli`/`sti` raise #GP and `popf` silently leaves IF alone; operating
+systems always return to user code with IF set. An engine running the guest in user mode therefore
+cannot hold the guest's IF in the host register, and deciding interrupt injection from the host EFLAGS
+IF ignores a guest `cli` (rePIU Task 736). For the same reason, a TF the engine sets for its own tracing
+must not be saved into a frame the guest can see, or the guest's `iret` restores it.
+
+Sources: the [Intel 8259A datasheet](https://pdos.csail.mit.edu/6.828/2018/readings/hardware/8259A.pdf)
+(OCW2, EOI); Intel SDM Vol. 2 on `CLI`/`STI`/`POPF`, and Vol. 3 section 6.8.3 (interrupt shadow) and
+IOPL.

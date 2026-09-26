@@ -25,8 +25,10 @@ usage()
 usage: build_linux_x64.sh [--config Debug|Release|RelWithDebInfo|MinSizeRel]
                           [--build-dir PATH] [--target NAME]... [--headless]
 Builds into build/linux_x64 unless --build-dir names another directory. With no
---target, every default target is built. --headless drops SDL desktop support,
-which suits the core and its probes but not the launcher.
+--target, every default target is built. --headless lets SDL configure on a host
+without X11/Wayland development packages; it suits the core and its probes but
+not the launcher. (SDL still builds every desktop driver it finds, so on a host
+that has the packages the flag changes nothing.)
 
 --build-dir is what keeps two configurations apart. This is a single-config
 generator, so a tree holds exactly one CMAKE_BUILD_TYPE: pointing --config at a
@@ -112,9 +114,16 @@ fi
 
 # XSCRNSAVER and XTEST are switched off for the same reason as on i386: both are
 # optional X11 extensions this project never uses.
+# Task 739. The console-build switch is passed both ways rather than only when
+# asked for: CMake keeps the previous answer in the cache, so a tree once
+# configured --headless stayed that way on every later plain run and nothing
+# said so. (All the switch does is let SDL configure without X11/Wayland
+# development packages -- SDL still builds every desktop driver it finds.)
 sdl_options=(-DSDL_X11_XSCRNSAVER=OFF -DSDL_X11_XTEST=OFF)
 if [[ $headless -ne 0 ]]; then
     sdl_options+=(-DSDL_UNIX_CONSOLE_BUILD=ON)
+else
+    sdl_options+=(-DSDL_UNIX_CONSOLE_BUILD=OFF)
 fi
 
 cmake -S "$root" -B "$build_dir" \

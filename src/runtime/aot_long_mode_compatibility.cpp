@@ -2,10 +2,41 @@
 
 #include <Zydis.h>
 
+#include <cstring>
+
 namespace repiu::runtime
 {
 namespace
 {
+
+// Task 735. In 16- and 32-bit mode `82 /r ib` is an alias of `80 /r ib`; long
+// mode removed it (#UD). pumpitea's code carries one -- `82 68 10 01`, `sub byte
+// ptr [eax+0x10], 1` -- and copying it with the address-size prefix produced an
+// image the decode check rejected. The long-mode path therefore judges and lowers
+// the `80` spelling. Writes the canonical bytes to `canonical`, which must hold
+// `instruction.length` bytes, and returns false for anything that is not the
+// alias.
+bool CanonicalizeGroup1ImmediateAlias(
+    const ZydisDecodedInstruction& instruction,
+    const std::uint8_t* const bytes,
+    std::uint8_t* const canonical)
+{
+    if (instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT ||
+        instruction.opcode != 0x82U)
+    {
+        return false;
+    }
+    const std::size_t opcode_index = instruction.raw.prefix_count;
+    if (opcode_index >= instruction.length ||
+        instruction.length > kMaxLoweredBytes ||
+        bytes[opcode_index] != 0x82U)
+    {
+        return false;
+    }
+    std::memcpy(canonical, bytes, instruction.length);
+    canonical[opcode_index] = 0x80U;
+    return true;
+}
 
 using Result = LongModeCompatibilityResult;
 
@@ -866,6 +897,21 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
         return Refuse(LongModeDivergence::kNone);
     }
 
+    // Task 735. Judged as its `80` spelling. Never `kIdenticalBytes`: callers
+    // copy those verbatim, and the verbatim bytes are the ones that #UD.
+    std::uint8_t canonical[kMaxLoweredBytes] = {};
+    if (CanonicalizeGroup1ImmediateAlias(instruction, bytes, canonical))
+    {
+        const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+            canonical, instruction.length, guest_code_default_operand_size);
+        if (verdict.compatibility == LongModeByteCompatibility::kIdenticalBytes)
+        {
+            return Reencode(LongModeDivergence::kInvalidInLongMode,
+                            LongModeLowering::kGroup1ImmediateAlias);
+        }
+        return verdict;
+    }
+
     const std::uint8_t opcode = instruction.opcode;
 
     // Task 680. Do not send a 16-bit decode through the 32-bit classifier. A
@@ -1624,6 +1670,26 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
     }
 
     const std::size_t length = instruction.length;
+
+    // Task 735. The classifier judged the `80` spelling, so lower that: either
+    // the canonical bytes alone, or whatever lowering they needed.
+    std::uint8_t canonical[kMaxLoweredBytes] = {};
+    if (CanonicalizeGroup1ImmediateAlias(instruction, bytes, canonical))
+    {
+        if (verdict.lowering == LongModeLowering::kGroup1ImmediateAlias)
+        {
+            std::memcpy(lowered, canonical, length);
+            *lowered_count = length;
+            if (instruction_count != nullptr)
+            {
+                *instruction_count = 1U;
+            }
+            return true;
+        }
+        return LowerLongModeBytes(canonical, length, lowered, lowered_count,
+                                  instruction_count,
+                                  guest_code_default_operand_size);
+    }
 
     // Task 680. `BC iw` in a 16-bit code object writes only SP. R15W is the
     // low word of the guest ESP state, while the host stack remains in RSP.

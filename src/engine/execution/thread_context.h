@@ -25,6 +25,7 @@
 #include "repiu/engine/glide_setter_state_census.h"
 #include "repiu/engine/glide_draw_batch.h"
 #include "repiu/engine/glide_setter_state_cache.h"
+#include "repiu/engine/pic_timer_in_service.h"
 #include "repiu/engine/timer_tick_delivery.h"
 #include "repiu/engine/jamma_input_timeline.h"
 #include "repiu/engine/aot_boundary_opcode_census.h"
@@ -1164,6 +1165,9 @@ struct ThreadContext
     // actually received. Always on; the bounded backlog that preserves owed
     // ticks is opt-in.
     TimerTickDeliveryCounters timer_tick_delivery;
+    // Task 735. IRQ0's in-service bit: set by an injection, cleared by the
+    // ISR's EOI, so a tick owed during the ISR waits instead of nesting.
+    PicTimerInService pic_timer_in_service;
     std::atomic<std::uint32_t> last_timer_injection_ticks{0};
     // Task 351: expired PIT ticks not yet attributed to the safe-point source
     // that successfully delivers them. Deferred traps leave this untouched.

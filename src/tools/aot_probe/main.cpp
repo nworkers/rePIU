@@ -34,6 +34,8 @@
 #include "glide_lfb_native_store_census_probe.h"
 #include "glide_lfb_lock_interval_probe.h"
 #include "shutdown_recovery_policy_probe.h"
+#include "pic_timer_in_service_probe.h"
+#include "build_identity_probe.h"
 #include "glide_lfb_staging_shadow_probe.h"
 #include "glide_setter_state_census_probe.h"
 #include "glide_async_present_probe.h"
@@ -664,6 +666,14 @@ int main(int argc, char** argv)
     if (argc == 2 && std::strcmp(argv[1], "--shutdown-recovery-policy") == 0)
     {
         return repiu::tools::RunShutdownRecoveryPolicyProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--pic-timer-in-service") == 0)
+    {
+        return repiu::tools::RunPicTimerInServiceProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--build-identity") == 0)
+    {
+        return repiu::tools::RunBuildIdentityProbe() ? 0 : 1;
     }
     if (argc == 2 && std::strcmp(argv[1], "--piu10") == 0)
     {

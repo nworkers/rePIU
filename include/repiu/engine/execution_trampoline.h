@@ -29,7 +29,9 @@
 #include "repiu/engine/glide_async_present.h"
 #include "repiu/engine/glide_draw_batch.h"
 #include "repiu/engine/glide_setter_state_cache.h"
+#include "repiu/engine/pic_timer_in_service.h"
 #include "repiu/engine/timer_tick_delivery.h"
+#include "repiu/engine/piu10_mp3_audio_out.h"
 #include "repiu/engine/aot_boundary_opcode_census.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/hle/glide_implementation_issue.h"
@@ -748,6 +750,10 @@ struct MinimalExecutionAttempt
     OutOfArenaStepCensusSnapshot out_of_arena_step_census;
     // Task 366: timer ticks owed against timer ticks the guest received.
     TimerTickDeliverySnapshot timer_tick_delivery;
+    // Task 740. Read after the guest thread stops.
+    Piu10Mp3AudioStats piu10_mp3_stats;
+    // Task 735. Read after the guest thread stops, so a plain copy.
+    PicTimerInService pic_timer_in_service;
     std::uint32_t native_fast_path_entry_count = 0;
     std::uint32_t native_fast_path_return_count = 0;
     std::uint32_t native_fast_path_cancel_count = 0;

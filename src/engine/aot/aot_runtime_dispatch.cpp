@@ -1772,11 +1772,19 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
     // that ordering when cache resolution fails and execution continues in
     // legacy fallback; otherwise the callee's first push overwrites the
     // missing return slot.
+    //
+    // Task 737. That holds on x86-64, where legacy fallback cannot run the
+    // guest's 32-bit CALL and continues in the callee. An i386 host's legacy
+    // fallback re-executes the CALL natively instead, so the commit is undone
+    // below when resolution fails; kept, it put the return address on the
+    // stack twice, and pumpitea on Win32 returned into its GL context.
+    const std::uint32_t call_entry_esp =
+        static_cast<std::uint32_t>(win32_context->Esp);
+    bool call_frame_recorded = false;
     if (is_call)
     {
         const std::uint32_t return_address = source + instruction_size;
-        const std::uint32_t entry_esp =
-            static_cast<std::uint32_t>(win32_context->Esp);
+        const std::uint32_t entry_esp = call_entry_esp;
         const std::uint32_t stack_address = win32_context->Esp - 4U;
         if (!WriteGuestUInt32(
                 context,
@@ -1808,6 +1816,7 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
             frame.origin = origin;
             context->aot_last_call_source = source;
             context->aot_last_call_target = target;
+            call_frame_recorded = true;
         }
     }
     std::uint32_t cache_target = target;
@@ -1833,6 +1842,21 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
     }
     if (!ResolveAotTransferTarget(context, target, &cache_target))
     {
+#if !defined(__x86_64__)
+        // Task 737. The legacy fallback re-executes this CALL, which pushes
+        // the return address itself; undo the commit made above. The word
+        // already written below ESP is simply overwritten by that push.
+        if (is_call)
+        {
+            win32_context->Esp = call_entry_esp;
+            if (call_frame_recorded)
+            {
+                --context->aot_call_depth;
+            }
+        }
+#else
+        (void)call_frame_recorded;
+#endif
         if (fallback_reason != nullptr)
         {
             *fallback_reason = target_failure;

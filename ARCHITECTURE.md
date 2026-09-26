@@ -201,7 +201,7 @@ Glide 비교 함수 `0..7`은 backend에서 OpenGL `GL_NEVER..GL_ALWAYS`로 변�
 
 창 배율 또는 일반 resize가 발생하면 drawable pixel 크기로 viewport와 full-window scissor를 갱신합니다. 확대된 framebuffer의 LFB readback은 drawable 전체를 읽은 뒤 논리 해상도로 최근접 축소하여 원본 게스트의 LFB 크기와 row 순서를 보존합니다.
 
-SDL 창 제목은 루트 `VERSION`에서 CMake가 검증·주입한 `REPIU_VERSION`, backend 컴파일 날짜 `__DATE__`, 현재 `ExecutionBackend` 이름, 실측 FPS를 조합합니다. 실행 orchestration이 플랫폼 공용 backend enum을 `GlideOpenGlBackend`에 전달하며, backend는 성공한 guest buffer swap을 단조 시간 기준 약 1초 구간으로 집계합니다. 제목 생성과 갱신은 모두 SDL window를 소유한 실행기 메인 스레드에서 수행됩니다. `VERSION` 파일은 configure dependency이므로 변경 시 build system이 자동 재구성됩니다.
+SDL 창 제목은 루트 `VERSION`에서 CMake가 검증·주입한 `REPIU_VERSION`, 빌드 identity 라벨(`Win/x86 Debug`처럼 플랫폼/아키텍처 빌드구성 — Task 738, `repiu::platform::BuildIdentityLabel`, 구성은 CMake의 `REPIU_BUILD_CONFIG="$<CONFIG>"`), backend 컴파일 날짜 `__DATE__`, 현재 `ExecutionBackend` 이름, 실측 FPS를 조합합니다. 실행 orchestration이 플랫폼 공용 backend enum을 `GlideOpenGlBackend`에 전달하며, backend는 성공한 guest buffer swap을 단조 시간 기준 약 1초 구간으로 집계합니다. 제목 생성과 갱신은 모두 SDL window를 소유한 실행기 메인 스레드에서 수행됩니다. `VERSION` 파일은 configure dependency이므로 변경 시 build system이 자동 재구성됩니다.
 
 `SDL_EVENT_QUIT`과 `SDL_EVENT_WINDOW_CLOSE_REQUESTED`는 모두 host 종료 요청으로 기록됩니다. 실행기 polling loop가 요청을 감지하면 timeout과 동일한 context-recovery 절차로 guest worker를 먼저 멈추고, main thread에서 SDL/OpenGL과 translation worker를 정리합니다. event handler는 직접 process exit이나 resource 파괴를 수행하지 않습니다.
 
@@ -224,7 +224,7 @@ The platform-neutral `GlideImplementationIssueTracker` classifies unimplemented 
 
 Window-scale and ordinary resize events update the viewport and full-window scissor to the drawable pixel size. LFB readback samples the complete enlarged framebuffer and nearest-neighbor downsamples it to the logical dimensions, preserving the original guest-visible LFB size and row ordering.
 
-The SDL window title combines the CMake-validated `REPIU_VERSION` from the root `VERSION` file, the backend compilation date from `__DATE__`, the active `ExecutionBackend` name, and measured FPS. Execution orchestration passes the platform-neutral backend enum to `GlideOpenGlBackend`, which measures successful guest buffer swaps over roughly one-second monotonic-time periods. Title creation and updates both run on the executor main thread that owns the SDL window. `VERSION` is a configure dependency, so changing it automatically regenerates the build system.
+The SDL window title combines the CMake-validated `REPIU_VERSION` from the root `VERSION` file, the build identity label (platform/architecture and configuration such as `Win/x86 Debug` -- Task 738, `repiu::platform::BuildIdentityLabel`, with the configuration from CMake's `REPIU_BUILD_CONFIG="$<CONFIG>"`), the backend compilation date from `__DATE__`, the active `ExecutionBackend` name, and measured FPS. Execution orchestration passes the platform-neutral backend enum to `GlideOpenGlBackend`, which measures successful guest buffer swaps over roughly one-second monotonic-time periods. Title creation and updates both run on the executor main thread that owns the SDL window. `VERSION` is a configure dependency, so changing it automatically regenerates the build system.
 
 Both `SDL_EVENT_QUIT` and `SDL_EVENT_WINDOW_CLOSE_REQUESTED` record a host exit request. The executor polling loop detects the request, stops the guest worker through the same context-recovery procedure used by timeout teardown, and then cleans up SDL/OpenGL and the translation worker on the main thread. The event handler never exits the process or destroys resources directly.
 
@@ -770,7 +770,7 @@ updates before the call, and loop edge after the return. Audit plans stop at bot
 boundary and the `0xE00` compressed-inflight `DEMAND` boundary so scalar status polling returns at
 the same point.
 
-`0x02D0..0x02DF`의 PIU10 ISA 보드는 `0x02A0..0x02AF`의 JAMMA/YMZ280B 보드와 별도 장치입니다. 플랫폼 공용 `hle::Piu10IsaBoard`가 20-bit flash 주소, 12-bit 목적지, `piu10.u8` read-only word access, MP3 status-source 계약과 optional CAT702 PIU 직렬 상태를 소유합니다. 실행 준비 계층은 target profile의 `enable_piu10_isa_board`가 활성화되면 `piu10.u8`을 추출하고, 별도 `enable_cat702`도 true일 때만 `<target>.cat702`를 요구하고 주입합니다. CAT702이 false여도 PIU10 flash, MP3와 DAC는 동작하며 CAT702 data-out bit는 0, data/clock/select 쓰기는 무시됩니다. 기본 내장 profile에서는 두 capability가 `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, `pumpipx3`에 켜지고 `pumpit1`, `pumpit2`, `pumpit3`에는 꺼져 있습니다. 목적지 `0x008`의 압축 byte는 `sound::DecoderInputFifo`의 4 KiB 물리 SPSC ring으로 들어갑니다. FIFO의 atomic inflight는 guest 수락부터 parser/minimp3의 실제 소비까지 ring과 worker staging을 합친 모든 byte를 추적하며, `DEMAND`는 이 값이 MAS3507D 계약을 참고한 `0xE00` byte 논리 수위보다 낮을 때만 활성화됩니다. ring에서 staging으로 이동할 때는 inflight가 줄지 않고 parser cursor가 전진할 때만 줄어듭니다. Win32 `Piu10Mp3AudioOut` worker는 첫 세 개의 호환 MPEG header로 sync를 확정한 뒤 하나의 persistent upstream `minimp3` decoder로 frame을 연속 decode하고, S16 PCM을 SDL3 audio device stream에 직접 공급합니다. 공용 MPEG parser가 연속 header로 검증한 정확히 한 frame 길이만 minimp3에 넘겨 FIFO pop 끝의 불완전한 다음 header가 현재 frame sync를 무효화하지 않게 합니다. decode된 각 PCM frame의 시작 offset은 SDL queue 소비량과 비교하며, MAS3507D frame-sync 상태는 worker의 선행 decode 시점이 아니라 실제 재생이 해당 offset에 도달할 때 전이합니다. 검증된 feeder-loop shape에서는 현재 `OUT DX,AL` 뒤의 frame tail을 한 번에 ring으로 옮기고, 명령 operand에서 추출한 source cursor, frame count와 guest counter를 원본 byte loop와 동일하게 갱신합니다. batch enqueue는 inflight의 `0xE00` 논리 수위를 넘지 않고 byte path는 4 KiB까지 허용하여 512-byte stale-status race headroom을 유지합니다. 검증에 실패하거나 FIFO 여유가 부족하면 기존 byte 경로로 닫히므로 원본 frame 경계와 제어 흐름은 유지됩니다. `REPIU_PIU10_MP3_STREAM_AUDIT=1`은 모든 PIU10 capability 진단 실행에서 producer/consumer stream을 독립적인 4 KiB hash로 비교하며 기본값은 꺼져 있습니다. 다른 PIU10 접근은 일반 adapter와 계측을 유지합니다. MAME 구현은 계약 참고 자료일 뿐 코드는 포함하지 않습니다. 별도 `piu10.u9` YMZ280B 초기화는 이 capability와 독립적입니다.
+`0x02D0..0x02DF`의 PIU10 ISA 보드는 `0x02A0..0x02AF`의 JAMMA/YMZ280B 보드와 별도 장치입니다. 플랫폼 공용 `hle::Piu10IsaBoard`가 20-bit flash 주소, 12-bit 목적지, `piu10.u8` read-only word access, MP3 status-source 계약과 optional CAT702 PIU 직렬 상태를 소유합니다. 실행 준비 계층은 target profile의 `enable_piu10_isa_board`가 활성화되면 `piu10.u8`을 추출하고, 별도 `enable_cat702`도 true일 때만 `<target>.cat702`를 요구하고 주입합니다. CAT702이 false여도 PIU10 flash, MP3와 DAC는 동작하며 CAT702 data-out bit는 0, data/clock/select 쓰기는 무시됩니다. 기본 내장 profile에서는 두 capability가 `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, `pumpipx3`에 켜지고 `pumpit1`, `pumpit2`, `pumpit3`에는 꺼져 있습니다. 목적지 `0x008`의 압축 byte는 `sound::DecoderInputFifo`의 4 KiB 물리 SPSC ring으로 들어갑니다. FIFO의 atomic inflight는 guest 수락부터 parser/minimp3의 실제 소비까지 ring과 worker staging을 합친 모든 byte를 추적하며, `DEMAND`는 이 값이 MAS3507D 계약을 참고한 `0xE00` byte 논리 수위보다 낮을 때만 활성화됩니다. ring에서 staging으로 이동할 때는 inflight가 줄지 않고 parser cursor가 전진할 때만 줄어듭니다. Win32 `Piu10Mp3AudioOut` worker는 첫 세 개의 호환 MPEG header로 sync를 확정한 뒤 하나의 persistent upstream `minimp3` decoder로 frame을 연속 decode하고, S16 PCM을 SDL3 audio device stream에 직접 공급합니다. 공용 MPEG parser가 연속 header로 검증한 정확히 한 frame 길이만 minimp3에 넘겨 FIFO pop 끝의 불완전한 다음 header가 현재 frame sync를 무효화하지 않게 합니다. decode된 각 PCM frame의 시작 offset은 재생 시계와 비교하며, MAS3507D frame-sync 상태는 worker의 선행 decode 시점이 아니라 재생이 해당 offset에 도달할 때 전이합니다. 재생 시계(Task 740)는 SDL 장치가 가져간 byte 수(`total_pcm_bytes_put - SDL_GetAudioStreamQueued`)를 그대로 쓰지 않습니다. 그 값은 장치 buffer 단위(WSLg 17 ms, 다른 host 46 ms 이상)로 계단처럼 움직여 한 계단 안의 frame 경계가 한 호출에서 함께 토글되고 decoder도 계단 단위로 몰아서 채웠으며, guest의 demand와 frame 수도 같은 계단으로 움직였습니다. 시계는 직전 계단의 byte 수에서 PCM 속도로 올라가고, 뒤로 가지 않으며, 장치가 가져간 수를 넘지 않습니다. decoder는 이 시계 앞에 0.25초를 유지하도록 frame 하나씩 decode하고, 큐가 그 절반 아래로 떨어졌을 때만 한 번에 채웁니다. 검증된 feeder-loop shape에서는 현재 `OUT DX,AL` 뒤의 frame tail을 한 번에 ring으로 옮기고, 명령 operand에서 추출한 source cursor, frame count와 guest counter를 원본 byte loop와 동일하게 갱신합니다. batch enqueue는 inflight의 `0xE00` 논리 수위를 넘지 않고 byte path는 4 KiB까지 허용하여 512-byte stale-status race headroom을 유지합니다. 검증에 실패하거나 FIFO 여유가 부족하면 기존 byte 경로로 닫히므로 원본 frame 경계와 제어 흐름은 유지됩니다. `REPIU_PIU10_MP3_STREAM_AUDIT=1`은 모든 PIU10 capability 진단 실행에서 producer/consumer stream을 독립적인 4 KiB hash로 비교하며 기본값은 꺼져 있습니다. 다른 PIU10 접근은 일반 adapter와 계측을 유지합니다. MAME 구현은 계약 참고 자료일 뿐 코드는 포함하지 않습니다. 별도 `piu10.u9` YMZ280B 초기화는 이 capability와 독립적입니다.
 
 ```mermaid
 flowchart LR
@@ -784,7 +784,7 @@ flowchart LR
     Q -->|"inflight < 0xE00"| M
 ```
 
-The PIU10 ISA board at `0x02D0..0x02DF` is separate from the JAMMA/YMZ280B board at `0x02A0..0x02AF`. Platform-neutral `hle::Piu10IsaBoard` owns the 20-bit flash address, 12-bit destination, read-only `piu10.u8` word access, MP3 status-source contract, and optional CAT702 PIU serial state. Setup extracts `piu10.u8` when `enable_piu10_isa_board` is true and requires `<target>.cat702` only when the independent `enable_cat702` capability is also true. With CAT702 disabled, flash, MP3, and DAC remain active, CAT702 data-out reads zero, and data/clock/select writes are ignored. Both capabilities default to enabled for `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, and `pumpipx3`, and disabled for `pumpit1`, `pumpit2`, and `pumpit3`. Destination-`0x008` compressed bytes enter the 4 KiB physical SPSC ring in `sound::DecoderInputFifo`. Its atomic inflight count tracks every byte across the ring and worker staging from guest acceptance through actual parser/minimp3 consumption; `DEMAND` is asserted only while this value is below the MAS3507D-derived logical `0xE00` level. Moving bytes into staging does not reduce inflight, while parser-cursor advancement does. The Win32 `Piu10Mp3AudioOut` worker confirms sync from three compatible MPEG headers, continuously decodes frames with one persistent upstream `minimp3` instance, and sends S16 PCM directly to an SDL3 audio-device stream. It passes minimp3 exactly one frame length already validated through consecutive headers by the shared MPEG parser, so an incomplete next header at a FIFO-pop boundary cannot invalidate the current frame. Each decoded PCM frame's start offset is compared with SDL queue consumption, and MAS3507D frame-sync changes when playback reaches that offset rather than when the worker decodes ahead. For a verified feeder-loop shape, the HLE transfers the current frame tail in one ring operation and updates the source cursor, frame count, and guest counter derived from the instruction operands. Batch enqueue stops at the inflight logical `0xE00` level, while the byte path may use 4 KiB to retain 512 bytes of stale-status race headroom. It fails closed to the byte path on a shape, range, state, or FIFO-space mismatch, preserving original frame-boundary and control-flow logic. `REPIU_PIU10_MP3_STREAM_AUDIT=1` independently hashes producer and consumer streams in 4 KiB chunks for every PIU10-capable target and is off by default. Other PIU10 accesses retain the generic adapter and instrumentation. MAME is a contract reference only and no MAME code is included. Independent `piu10.u9` YMZ280B initialization remains outside this gate.
+The PIU10 ISA board at `0x02D0..0x02DF` is separate from the JAMMA/YMZ280B board at `0x02A0..0x02AF`. Platform-neutral `hle::Piu10IsaBoard` owns the 20-bit flash address, 12-bit destination, read-only `piu10.u8` word access, MP3 status-source contract, and optional CAT702 PIU serial state. Setup extracts `piu10.u8` when `enable_piu10_isa_board` is true and requires `<target>.cat702` only when the independent `enable_cat702` capability is also true. With CAT702 disabled, flash, MP3, and DAC remain active, CAT702 data-out reads zero, and data/clock/select writes are ignored. Both capabilities default to enabled for `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, and `pumpipx3`, and disabled for `pumpit1`, `pumpit2`, and `pumpit3`. Destination-`0x008` compressed bytes enter the 4 KiB physical SPSC ring in `sound::DecoderInputFifo`. Its atomic inflight count tracks every byte across the ring and worker staging from guest acceptance through actual parser/minimp3 consumption; `DEMAND` is asserted only while this value is below the MAS3507D-derived logical `0xE00` level. Moving bytes into staging does not reduce inflight, while parser-cursor advancement does. The Win32 `Piu10Mp3AudioOut` worker confirms sync from three compatible MPEG headers, continuously decodes frames with one persistent upstream `minimp3` instance, and sends S16 PCM directly to an SDL3 audio-device stream. It passes minimp3 exactly one frame length already validated through consecutive headers by the shared MPEG parser, so an incomplete next header at a FIFO-pop boundary cannot invalidate the current frame. Each decoded PCM frame's start offset is compared with a playback clock, and MAS3507D frame-sync changes when playback reaches that offset rather than when the worker decodes ahead. The clock (Task 740) does not use the pulled byte count (`total_pcm_bytes_put - SDL_GetAudioStreamQueued`) directly: that count moves in device-buffer steps (17 ms on WSLg, 46 ms or more on other hosts), so every frame boundary inside one step toggled in the same call, the decoder refilled a whole step at once, and the guest's demand and frame count moved in the same steps. The clock rises at the PCM rate from the count before the latest step, never runs backwards and never passes the pulled count. The decoder keeps a quarter second ahead of this clock one frame at a time, and refills at once only when the queue has dropped below half of that. For a verified feeder-loop shape, the HLE transfers the current frame tail in one ring operation and updates the source cursor, frame count, and guest counter derived from the instruction operands. Batch enqueue stops at the inflight logical `0xE00` level, while the byte path may use 4 KiB to retain 512 bytes of stale-status race headroom. It fails closed to the byte path on a shape, range, state, or FIFO-space mismatch, preserving original frame-boundary and control-flow logic. `REPIU_PIU10_MP3_STREAM_AUDIT=1` independently hashes producer and consumer streams in 4 KiB chunks for every PIU10-capable target and is off by default. Other PIU10 accesses retain the generic adapter and instrumentation. MAME is a contract reference only and no MAME code is included. Independent `piu10.u9` YMZ280B initialization remains outside this gate.
 
 모든 PIU10 target profile의 MP3 시작 지연 기본값은 0 ms입니다. `REPIU_PIU10_MP3_LATENCY_MS`는 실행별로 0~500 ms 범위의 지연을 명시할 때만 적용됩니다. 플랫폼 공용 `sound::Dac3350aControl`은 목적지 `0x010`의 SDA/SCL에서 DAC3350A I²C AVOL transaction을 복원하고, MAME의 DAC3350A 계약과 같은 dB 계단을 linear gain으로 변환합니다. AVOL 0은 mute, 1은 -75 dB, `0x2C`는 0 dB입니다. Win32 backend는 좌우 gain의 평균을 thread-safe `SDL_SetAudioStreamGain`에 전달합니다. 이는 이미 queue에 들어간 PCM의 출력 gain에도 적용되지만 SDL queue, 압축 FIFO, MPEG/minimp3 상태와 frame-sync는 변경하지 않습니다. 실제 `pumpito`에서는 좌우 값이 같아 평균으로 인한 차이가 없습니다. pause 상태는 모델링하지 않습니다.
 
@@ -2751,6 +2751,24 @@ and YMZ280B windows are handled by earlier branches. `REPIU_PORT_IO_DELAY_LOOP=0
 the old behaviour, and the attempt, batch, skipped-iteration, and refusal-reason counts are
 logged.
 
+Task 737은 같은 루프의 **조건을 뒤집은 형식**을 받아들입니다. pumpitea의 입력 스캔은
+`cmp ebx,200; jge exit; jmp back`이라 Task 414의 `jl back` 모양과 어긋났고, Win32에서는 IN 한 번의
+예외 왕복(약 20 µs) × 200 × 240 Hz가 CPU 전체를 써서 게임이 35초 뒤 멈췄습니다. `IN` 뒤 `cmp` 다음이
+**앞으로 가는** `jge`/`jg`(짧은 형식과 `0F 8D`/`0F 8F`)이고 그 뒤가 짧은 무조건 `jmp`이면 조건을
+`jl`/`jle`로 뒤집고 `jmp`의 변위로 본문 시작을 구해 기존 검증에 넘깁니다. 본문 모양, EAX 0화 증명,
+카운터 레지스터, 남은 반복 수 규칙은 그대로이며, 배치 뒤 guest는 여전히 마지막 반복을 직접 실행합니다.
+pumpitea에서 Win32 90초에 19,001회 배치로 읽기 376만 회를 건너뛰었고 pumpit2a에서는 일치가 없습니다.
+
+Task 737 accepts the **inverted form** of the same loop. pumpitea's input scan is `cmp ebx,200; jge
+exit; jmp back`, which Task 414's `jl back` shape refused, and on Win32 one IN's exception round trip
+(about 20 µs) × 200 × 240 Hz consumed the whole CPU, stalling the game after 35 s. When the `cmp` after
+the `IN` is followed by a **forward** `jge`/`jg` (short form or `0F 8D`/`0F 8F`) and then a short
+unconditional `jmp`, the condition is inverted to `jl`/`jle`, the body start is taken from the `jmp`'s
+displacement, and the existing checks take over. The body shape, the EAX-zeroing proof, the counter
+register and the remaining-iteration rules are unchanged, and after a batch the guest still runs the
+final iteration itself. On pumpitea, 90 s of Win32 made 19,001 batches skipping 3.76 M reads; pumpit2a
+has no match.
+
 Task 470은 같은 정책을 **호출 래퍼형 입력 루프**로 확장합니다. 제한된 래퍼가 EDX를
 stack에 저장하고 EAX의 포트 번호를 EDX로 옮긴 뒤 EAX를 0으로 만들고 `IN`, EDX 복원,
 `RET`을 수행하는지 검증합니다. guest 반환 주소 앞의 `call rel32`가 그 래퍼를 가리키고,
@@ -2971,6 +2989,29 @@ initial placement and dynamic appends. The poll thread publishes only the reques
 before generic AOT reentry, explicitly resumes at `ExceptionAddress + 1`, and delegates all
 frame creation to `InjectPendingInterrupts`. Natural-boundary delivery also clears the request
 to prevent a stale trap. Final diagnostics report site and trap/injected/deferred counts.
+
+### 타이머 IRQ0 in-service와 `sti` 시점 전달 / Timer IRQ0 in-service and delivery at `sti` (Task 736)
+
+guest는 user mode에서 실행되므로 IF를 실제로 끌 수 없습니다. guest `cli`는 저장된 context를 고쳐
+흉내 내지만 커널이 복귀 때 IF를 다시 켜므로, `InjectPendingInterrupts`의 IF 검사는 ISR 안의
+`cli`를 보지 못합니다. 그래서 주입은 IF와 별도로 `PicTimerInService`(PIC의 IRQ0 in-service
+비트)를 따릅니다. 주입이 비트를 세우고 port 0x20의 EOI(0x20, 0x60)가 지우며, 서 있는 동안의
+시도는 보류됩니다. EOI를 쓰지 않는 핸들러를 위해 guest ESP가 주입 frame 위로 올라가면 지웁니다.
+EOI 뒤 밀린 tick은 에뮬레이트된 `sti`가 세운 요청을 dispatcher의 다음 주입 시도가 소비하며
+전달되고, 두 번 연속 `sti` 전달은 막아 중첩 깊이를 2로 묶습니다. 주입 frame의 EFLAGS에서는
+엔진의 trace TF를 지웁니다. `REPIU_PIC_TIMER_IN_SERVICE=0`이면 이전 동작입니다. 자세한 것은
+[Task 736 설계](docs/design/20260926-736-pic-timer-in-service.md)에 있습니다.
+
+The guest runs in user mode and cannot really clear IF: a guest `cli` is emulated by editing the saved
+context, and the kernel sets IF again on return, so the IF test in `InjectPendingInterrupts` cannot see
+a `cli` inside an ISR. Injection therefore also follows `PicTimerInService`, the PIC's IRQ0 in-service
+bit: set by an injection, cleared by an EOI written to port 0x20 (0x20 or 0x60), with attempts held
+meanwhile; for a handler that never writes an EOI it is cleared once guest ESP rises above the injected
+frame. After the EOI an owed tick is delivered when the dispatcher's next injection attempt consumes the
+request an emulated `sti` sets, and two `sti` deliveries in a row are refused, bounding nesting at depth
+2. The engine's trace TF is cleared from the injected frame's EFLAGS. `REPIU_PIC_TIMER_IN_SERVICE=0`
+restores the earlier behaviour. See the
+[Task 736 design](docs/design/20260926-736-pic-timer-in-service.md).
 
 ## AOT timer source 귀속 / AOT timer-source attribution
 
@@ -3886,6 +3927,23 @@ source metadata, CALL fallback removes only the miss-address slot with
 `LEA ESP,[ESP+8]` and removes both metadata slots. This policy changes no original guest
 code; it reproduces only CALL/JMP stack effects at the DBT/HLE boundary.
 
+**Task 737 정정.** 위 규칙은 **x86-64 host에만** 맞습니다. x64의 legacy fallback은 guest의
+32-bit CALL을 실행할 수 없어 피호출 함수에서 이어서 실행하므로 push를 미리 해 두어야 합니다.
+i386 host의 legacy fallback은 그 CALL을 **원본 그대로 다시 실행**해 반환 주소를 한 번 더 push하므로,
+같은 규칙이 반환 주소를 두 번 쌓았고 pumpitea의 호출자 `ret 0x18`이 GL 컨텍스트 포인터로
+복귀했습니다. 지금은 해석 실패 시 i386에서만 `HandleAotIndirectTransfer`가 ESP와 call frame을
+진입 값으로 되돌리고, i386 전용 host-dispatch miss tail은 CALL fallback도 `LEA ESP,[ESP+8]`로 두
+슬롯을 버립니다(probe `indirect_fallback_call_stack_restored`). x86-64 경로는 그대로입니다.
+
+**Task 737 correction.** The rule above is right **for x86-64 hosts only**: their legacy fallback
+cannot run a guest 32-bit CALL and continues in the callee, so the push must be made in advance. An
+i386 host's legacy fallback **re-executes the CALL natively**, pushing the return address once more,
+so the shared rule stacked it twice and pumpitea's caller `ret 0x18` returned into its GL context
+pointer. On i386 only, `HandleAotIndirectTransfer` now restores ESP and the call frame to their entry
+values when resolution fails, and the i386-only host-dispatch miss tail drops both slots with
+`LEA ESP,[ESP+8]` for a CALL as well (probe `indirect_fallback_call_stack_restored`). The x86-64 path
+is unchanged.
+
 Linux x64 AOT 재진입에서 planner HLE provenance와 원본 전송 명령 판별이 겹치면
 전송 명령을 우선한다. 기존 간접 전송 decoder는 단일 CS override(`2E`)가 붙은
 `FF /2`와 `FF /4`를 처리하며, ModRM/SIB effective offset을 현재 source를 포함하는
@@ -3928,6 +3986,31 @@ dispatch includes POP FS/GS so that both prologue sequences and epilogue POP run
 cleanly at the HLE boundary.
 
 ---
+
+## i386 cache와 16-bit 코드 객체 / The i386 cache and 16-bit code objects (Task 737)
+
+i386 emitter의 `kCopy`는 guest 바이트를 그대로 복사하는데, cache는 32-bit 코드 세그먼트에서
+실행되므로 **16-bit 코드 객체의 바이트는 다른 명령이 됩니다** — `00 24`는 16-bit에서 `add [si],ah`,
+32-bit에서는 잘린 SIB 형식입니다. long-mode emitter는 그런 기록을 이미 INT3 경계로 거절하지만 i386
+switch는 그대로 복사했고, pumpitea의 object 3(16-bit 스택 전환 stub, Task 692의 pumpit2a와 같은
+코드)이 CFG에 들어가는 dynamic 이미지가 전부 decode 검증에서 거절되었습니다. 실패한 주소는
+retire되지 않아 전송마다 재시도되어 guest thread가 시간의 87%를 translation worker 대기에 썼습니다.
+Task 737부터 i386 `kCopy`는 `guest_code_default_operand_size == k16`인 기록을 HLE 경계 INT3으로
+방출합니다. dynamic 번역 실패 메시지에는 단계(plan/image)와 첫 decode 실패 항목(guest 주소,
+바이트·명령 수, 방출 바이트)이 들어갑니다. 거절된 이미지는 실행되지 않으므로 여기가 유일한 진단
+지점입니다.
+
+The i386 emitter's `kCopy` copies guest bytes verbatim, and the cache runs under a 32-bit code
+segment, so **a 16-bit code object's bytes become different instructions** -- `00 24` is
+`add [si],ah` in 16-bit code and a truncated SIB form in 32-bit. The long-mode emitter already
+refuses such records with an INT3 boundary, but the i386 switch copied them, and every dynamic image
+whose CFG reached pumpitea's object 3 (the 16-bit stack-switch stub, the same code Task 692 found in
+pumpit2a) was rejected by the decode check. Failed addresses are not retired and were retried on every
+transfer, leaving the guest thread waiting for the translation worker 87% of the time. Since Task 737
+the i386 `kCopy` emits a record with `guest_code_default_operand_size == k16` as an HLE boundary
+INT3. The dynamic translation failure message now carries the stage (plan/image) and the first decode
+failure sample (guest address, byte and instruction counts, emitted bytes); a rejected image never
+runs, so this is the only place to diagnose it.
 
 ## Linux x64 혼합 모드 AOT 및 16-bit 스택 레지스터 lowering
 
@@ -4259,6 +4342,23 @@ source metadata, CALL fallback removes only the miss-address slot with
 `LEA ESP,[ESP+4]`, preserving the already-pushed return address. JMP fallback retains
 `LEA ESP,[ESP+8]` and removes both metadata slots. This policy changes no original guest
 code; it reproduces only CALL/JMP stack effects at the DBT/HLE boundary.
+
+**Task 737 정정.** 위 규칙은 **x86-64 host에만** 맞습니다. x64의 legacy fallback은 guest의
+32-bit CALL을 실행할 수 없어 피호출 함수에서 이어서 실행하므로 push를 미리 해 두어야 합니다.
+i386 host의 legacy fallback은 그 CALL을 **원본 그대로 다시 실행**해 반환 주소를 한 번 더 push하므로,
+같은 규칙이 반환 주소를 두 번 쌓았고 pumpitea의 호출자 `ret 0x18`이 GL 컨텍스트 포인터로
+복귀했습니다. 지금은 해석 실패 시 i386에서만 `HandleAotIndirectTransfer`가 ESP와 call frame을
+진입 값으로 되돌리고, i386 전용 host-dispatch miss tail은 CALL fallback도 `LEA ESP,[ESP+8]`로 두
+슬롯을 버립니다(probe `indirect_fallback_call_stack_restored`). x86-64 경로는 그대로입니다.
+
+**Task 737 correction.** The rule above is right **for x86-64 hosts only**: their legacy fallback
+cannot run a guest 32-bit CALL and continues in the callee, so the push must be made in advance. An
+i386 host's legacy fallback **re-executes the CALL natively**, pushing the return address once more,
+so the shared rule stacked it twice and pumpitea's caller `ret 0x18` returned into its GL context
+pointer. On i386 only, `HandleAotIndirectTransfer` now restores ESP and the call frame to their entry
+values when resolution fails, and the i386-only host-dispatch miss tail drops both slots with
+`LEA ESP,[ESP+8]` for a CALL as well (probe `indirect_fallback_call_stack_restored`). The x86-64 path
+is unchanged.
 
 ---
 

@@ -49,6 +49,7 @@
 #include <limits>
 #include <sstream>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -2345,6 +2346,15 @@ bool HandlePrivilegedTrapInstruction(repiu::platform::GuestCpuContext* win32_con
         RecordHandledHleTrap(win32_context, context, *instruction);
         win32_context->EFlags |= kEFlagsInterruptEnable;
         ++win32_context->Eip;
+        // Task 735. A pending IRQ0 is taken as soon as IF is set again, which
+        // for a timer handler is its closing `sti` after the EOI. This is where
+        // a tick owed during a long host call is caught up, now that the
+        // in-service bit keeps it out of the handler's body. Only requested
+        // here; the dispatcher's next injection attempt delivers it.
+        if (PicTimerInServiceEnabled())
+        {
+            context->pic_timer_in_service.sti_request = true;
+        }
         return true;
     }
     if (*instruction == 0xF4 && context->fatal_breakpoint_continued)
@@ -4819,6 +4829,10 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
 std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_context,
                                       ThreadContext* context)
 {
+    // Task 735. An emulated `sti` asks for the next attempt, wherever the
+    // dispatcher makes it; an attempt with nothing owed still consumes it.
+    const bool at_sti = std::exchange(
+        context->pic_timer_in_service.sti_request, false);
     if (!context->timer_interrupt_pending.load(std::memory_order_acquire))
     {
         return 0U;
@@ -4861,7 +4875,26 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
         return 0U;
     }
 
-    std::uint32_t eflags = win32_context->EFlags;
+    // Task 735. The IF test above cannot see a guest `cli`: user mode keeps IF
+    // set in the host context whatever the guest asked for. The PIC's
+    // in-service bit is what keeps IRQ0 out of its own handler on the real
+    // machine, and without it pumpitea's 51.9 kHz phase nested injected
+    // frames inside the ISR until the guest stack overflowed. The policy also
+    // bounds delivery at `sti` so a closing `sti` cannot chain handlers.
+    if (PicTimerInServiceEnabled() &&
+        PicTimerBlocksInjection(&context->pic_timer_in_service,
+                                static_cast<std::uint32_t>(win32_context->Esp),
+                                at_sti))
+    {
+        RecordTimerTickDeferred(&context->timer_tick_delivery);
+        return 0U;
+    }
+
+    // Task 735. TF in this context is the engine's trace flag, set by the
+    // dispatcher before HLE handling, never the guest's. Pushed into the frame
+    // it came back with the handler's `iret` -- natively on Win32 -- and a
+    // stray single step escaped from ordinary guest code.
+    std::uint32_t eflags = win32_context->EFlags & ~0x00000100U;
     std::uint32_t segcs = win32_context->SegCs;
     std::uint32_t eip = win32_context->Eip;
 #if defined(__x86_64__)
@@ -4928,6 +4961,8 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
     const bool keep_armed = RecordTimerTickInjected(
         &context->timer_tick_delivery, TimerTickBacklogEnabled());
     const std::uint32_t interrupt_frame_esp = win32_context->Esp - 12U;
+    NotePicTimerInjected(&context->pic_timer_in_service, interrupt_frame_esp,
+                         at_sti);
     context->jamma_input_timeline.BeginTimerInterrupt(
         win32_context->Esp, interrupt_frame_esp);
     context->timer_interrupt_pending.store(keep_armed,
@@ -6076,6 +6111,9 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     if (context->enable_privileged_trap_hle &&
         HandlePrivilegedTrapInstruction(win32_context, context))
     {
+        // Task 735. An emulated `sti` may make an owed tick deliverable; the
+        // DOS HLE chain below injects at the same point.
+        InjectPendingInterrupts(win32_context, context);
         NoteVehExitSite(context, VehExitSite::kHleChainPrivileged);
         return repiu::platform::FaultDisposition::kResume;
     }

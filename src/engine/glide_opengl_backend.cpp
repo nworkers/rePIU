@@ -5,6 +5,7 @@
 #include "repiu/input/jamma_input_bindings.h"
 #include "repiu/engine/execution_time_profile.h"
 #include "repiu/engine/jamma_input_timeline.h"
+#include "repiu/platform/build_identity.h"
 #include "sdl_bios_keyboard_adapter.h"
 
 
@@ -837,7 +838,10 @@ std::string
 GlideOpenGlBackend::BuildWindowTitle(double frames_per_second) const {
   std::ostringstream stream;
   stream.imbue(std::locale::classic());
-  stream << "rePIU v" REPIU_VERSION " - Build " __DATE__
+  // Task 738. The build identity sits beside the version: a screenshot or a
+  // report then says which binary it came from.
+  stream << "rePIU v" REPIU_VERSION " ("
+         << repiu::platform::BuildIdentityLabel() << ") - Build " __DATE__
          << " - Glide 2 OpenGL ["
          << runtime::ExecutionBackendName(execution_backend_)
          << "] - FPS : " << std::fixed << std::setprecision(1)

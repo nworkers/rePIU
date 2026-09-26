@@ -1452,6 +1452,84 @@ bool ProbeCsOverrideDataAccess()
     return ok;
 }
 
+// Task 735. `82 /r ib` is #UD in long mode and must come out as `80 /r ib`,
+// both alone and underneath another lowering. The memory form is pumpitea's
+// `82 68 10 01`, which used to be copied as `67 82 68 10 01` and failed the
+// image's decode check.
+bool ProbeGroup1ImmediateAlias()
+{
+    using repiu::runtime::GuestCodeDefaultOperandSize;
+    using repiu::runtime::LongModeLowering;
+    const auto decode64 = [](const std::uint8_t* bytes, std::size_t count,
+                             ZydisDecodedInstruction* instruction,
+                             ZydisDecodedOperand* operands) {
+        ZydisDecoder decoder;
+        return ZYAN_SUCCESS(ZydisDecoderInit(&decoder,
+                                             ZYDIS_MACHINE_MODE_LONG_64,
+                                             ZYDIS_STACK_WIDTH_64)) &&
+            ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, bytes, count,
+                                                instruction, operands)) &&
+            instruction->length == count;
+    };
+
+    // add al, 1 -- nothing else to lower, so the alias is the lowering.
+    const std::uint8_t register_form[] = {0x82U, 0xC0U, 0x01U};
+    const LongModeCompatibilityResult register_verdict =
+        ClassifyLongModeBytes(register_form, sizeof(register_form),
+                              GuestCodeDefaultOperandSize::k32);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    const bool register_ok =
+        register_verdict.compatibility ==
+            LongModeByteCompatibility::kNeedsReencode &&
+        register_verdict.divergence == LongModeDivergence::kInvalidInLongMode &&
+        register_verdict.lowering == LongModeLowering::kGroup1ImmediateAlias &&
+        repiu::runtime::LowerLongModeBytes(
+            register_form, sizeof(register_form), lowered, &lowered_count,
+            &lowered_instructions, GuestCodeDefaultOperandSize::k32) &&
+        lowered_count == 3U && lowered_instructions == 1U &&
+        lowered[0] == 0x80U && lowered[1] == 0xC0U && lowered[2] == 0x01U &&
+        decode64(lowered, lowered_count, &instruction, operands) &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_ADD &&
+        operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+        operands[0].reg.value == ZYDIS_REGISTER_AL &&
+        operands[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE &&
+        operands[1].imm.value.u == 1U;
+
+    // sub byte ptr [eax+0x10], 1 -- the memory form also needs its 32-bit
+    // address size back, so the `80` spelling takes the address-size lowering.
+    const std::uint8_t memory_form[] = {0x82U, 0x68U, 0x10U, 0x01U};
+    const LongModeCompatibilityResult memory_verdict = ClassifyLongModeBytes(
+        memory_form, sizeof(memory_form), GuestCodeDefaultOperandSize::k32);
+    lowered_count = 0U;
+    lowered_instructions = 0U;
+    const bool memory_ok =
+        memory_verdict.compatibility ==
+            LongModeByteCompatibility::kNeedsReencode &&
+        memory_verdict.lowering != LongModeLowering::kNone &&
+        repiu::runtime::LowerLongModeBytes(
+            memory_form, sizeof(memory_form), lowered, &lowered_count,
+            &lowered_instructions, GuestCodeDefaultOperandSize::k32) &&
+        lowered_count == 5U && lowered_instructions == 1U &&
+        lowered[0] == 0x67U && lowered[1] == 0x80U &&
+        decode64(lowered, lowered_count, &instruction, operands) &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_SUB &&
+        instruction.address_width == 32U &&
+        operands[0].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+        operands[0].mem.base == ZYDIS_REGISTER_EAX &&
+        operands[0].mem.disp.value == 0x10 &&
+        operands[1].imm.value.u == 1U;
+
+    const bool ok = register_ok && memory_ok;
+    std::cout << "long_mode_group1_immediate_alias=" << (ok ? "true" : "false")
+              << ",register=" << (register_ok ? "true" : "false")
+              << ",memory=" << (memory_ok ? "true" : "false") << "\n";
+    return ok;
+}
+
 bool RunLongModeCompatibilityProbe()
 {
     const bool silent_ok = ProbeSilentlyDifferent();
@@ -1476,6 +1554,7 @@ bool RunLongModeCompatibilityProbe()
     const bool sixteen_bit_segment_push_ok = Probe16BitSegmentPushHle();
     const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
     const bool cs_override_data_ok = ProbeCsOverrideDataAccess();
+    const bool group1_alias_ok = ProbeGroup1ImmediateAlias();
 
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
         reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
@@ -1485,7 +1564,7 @@ bool RunLongModeCompatibilityProbe()
         sixteen_bit_lea_ok &&
         sixteen_bit_lea16_ok && sixteen_bit_test_ok &&
         sixteen_bit_jcc_ok && sixteen_bit_segment_push_ok &&
-        sixteen_bit_loopnz_ok && cs_override_data_ok;
+        sixteen_bit_loopnz_ok && cs_override_data_ok && group1_alias_ok;
     std::cout << "long_mode_compatibility_all=" << (all ? "true" : "false")
               << "\n";
     return all;

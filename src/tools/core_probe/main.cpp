@@ -34,6 +34,8 @@
 #include "far_return_probe.h"
 #include "final_execution_report_probe.h"
 #include "shutdown_recovery_policy_probe.h"
+#include "pic_timer_in_service_probe.h"
+#include "build_identity_probe.h"
 #include "flat_stack_segment_fold_probe.h"
 #include "execution_backend_probe.h"
 #include "execution_timeout_probe.h"
@@ -173,6 +175,10 @@ constexpr CoreProbe kCoreProbes[] = {
     // needs a pointer wider than 32 bits, which only the x64 hosts have.
     {"shutdown_recovery_policy",
      &repiu::tools::RunShutdownRecoveryPolicyProbe},
+    // Task 735. Pure policy, so every host runs it.
+    {"pic_timer_in_service", &repiu::tools::RunPicTimerInServiceProbe},
+    // Task 738. The window-title label, checked against this compiler.
+    {"build_identity", &repiu::tools::RunBuildIdentityProbe},
 };
 
 // Task 513. Named, not counted: a list of what this host cannot ask is worth

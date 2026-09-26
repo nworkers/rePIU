@@ -80,6 +80,12 @@ struct Piu10Mp3AudioOut::Impl
     std::atomic<std::uint64_t> queued_pcm_frames{0};
     std::atomic<std::uint64_t> starvation_events{0};
     std::atomic<std::uint64_t> batched_bytes{0};
+    std::atomic<std::uint64_t> sync_toggles{0};
+    std::atomic<std::uint64_t> sync_multi_toggle_events{0};
+    std::atomic<std::uint64_t> pcm_empty_events{0};
+    std::atomic<std::uint64_t> pcm_queued_low_water_bytes{UINT64_MAX};
+    std::atomic<std::uint64_t> playback_lag_bytes{0};
+    int device_buffer_frames = 0;
     std::atomic<std::size_t> decoder_pending_bytes{0};
     std::atomic<int> reported_sample_rate{kDefaultSampleRate};
     std::atomic<int> reported_channels{kDefaultChannels};
@@ -96,7 +102,86 @@ struct Piu10Mp3AudioOut::Impl
     std::atomic<bool> playback_started{false};
     std::deque<std::uint64_t> frame_start_pcm_offsets;
     std::uint64_t total_pcm_bytes_put = 0U;
+    // Task 740. A playback clock between device pulls. The bytes the device
+    // has taken (`total_pcm_bytes_put` less `SDL_GetAudioStreamQueued`) move
+    // in device-buffer steps: 17 ms on WSLg, 46 ms or more on other hosts.
+    // Before this clock, every frame boundary inside one step toggled
+    // frame-sync in the same worker call, and the decoder refilled the whole
+    // step at once, so the guest's demand and its frame count moved in the
+    // same steps -- which is the arrow clock stalling and catching up. The
+    // clock rises at the PCM rate from the pulled count before the latest
+    // step, never runs backwards and never passes the pulled count, so it
+    // is at most one device buffer behind the device and cannot drift.
+    std::uint64_t clock_reported = 0U;
+    std::uint64_t clock_origin = 0U;
+    std::uint64_t clock_estimate = 0U;
+    std::chrono::steady_clock::time_point clock_step_time{};
+    std::chrono::steady_clock::time_point last_put_time{};
+    bool last_put_valid = false;
     std::string message;
+
+    std::uint64_t PcmBytesPerSecond() const
+    {
+        return static_cast<std::uint64_t>(source_sample_rate) *
+            static_cast<std::uint64_t>(source_channels) *
+            sizeof(std::int16_t);
+    }
+
+    // The playback clock for the queue state `queued`. Worker thread only.
+    std::uint64_t PlaybackPosition(const std::uint64_t queued)
+    {
+        const std::uint64_t reported = total_pcm_bytes_put -
+            std::min(total_pcm_bytes_put, queued);
+        const auto now = std::chrono::steady_clock::now();
+        if (reported != clock_reported)
+        {
+            // The line restarts from the count before this step, so the
+            // step's own length is what it spans and a late observation
+            // stalls the clock for the delay instead of losing it.
+            clock_origin = clock_reported;
+            clock_reported = reported;
+            clock_step_time = now;
+        }
+        const double elapsed_seconds =
+            std::chrono::duration<double>(now - clock_step_time).count();
+        std::uint64_t estimate = clock_origin +
+            static_cast<std::uint64_t>(
+                elapsed_seconds * static_cast<double>(PcmBytesPerSecond()));
+        estimate = std::min(estimate, clock_reported);
+        estimate = std::max(estimate, clock_estimate);
+        clock_estimate = estimate;
+        playback_lag_bytes.store(
+            clock_reported - estimate, std::memory_order_relaxed);
+        return estimate;
+    }
+
+    // Whether the decoder should produce another frame: keep a quarter
+    // second of PCM ahead of the playback clock, one frame at a time as the
+    // clock advances, and refill at once only when a burst of device pulls
+    // has taken more than half of it.
+    bool NeedsPcm()
+    {
+        const int queued_value = SDL_GetAudioStreamQueued(stream);
+        const std::uint64_t queued = queued_value > 0
+            ? static_cast<std::uint64_t>(queued_value) : 0U;
+        if (queued < static_cast<std::uint64_t>(kMaximumQueuedPcmBytes) / 2U)
+        {
+            return true;
+        }
+        const std::uint64_t ahead =
+            total_pcm_bytes_put - PlaybackPosition(queued);
+        return ahead < static_cast<std::uint64_t>(kMaximumQueuedPcmBytes);
+    }
+
+    void ResetPlaybackClock()
+    {
+        clock_reported = 0U;
+        clock_origin = 0U;
+        clock_estimate = 0U;
+        clock_step_time = std::chrono::steady_clock::time_point{};
+        last_put_valid = false;
+        playback_lag_bytes.store(0U, std::memory_order_relaxed);
+    }
 
     void AdvanceFrameSyncToPlayback()
     {
@@ -107,13 +192,25 @@ struct Piu10Mp3AudioOut::Impl
         const int queued_value = SDL_GetAudioStreamQueued(stream);
         const std::uint64_t queued = queued_value > 0
             ? static_cast<std::uint64_t>(queued_value) : 0U;
-        const std::uint64_t consumed = total_pcm_bytes_put -
-            std::min(total_pcm_bytes_put, queued);
+        // Task 740: the playback clock, not the pulled byte count, so that
+        // one frame boundary is crossed at a time.
+        const std::uint64_t position = PlaybackPosition(queued);
+        std::uint32_t toggles = 0U;
         while (!frame_start_pcm_offsets.empty() &&
-               frame_start_pcm_offsets.front() <= consumed)
+               frame_start_pcm_offsets.front() <= position)
         {
             frame_sync.fetch_xor(1U, std::memory_order_relaxed);
             frame_start_pcm_offsets.pop_front();
+            ++toggles;
+        }
+        if (toggles != 0U)
+        {
+            sync_toggles.fetch_add(toggles, std::memory_order_relaxed);
+            if (toggles > 1U)
+            {
+                sync_multi_toggle_events.fetch_add(
+                    1U, std::memory_order_relaxed);
+            }
         }
     }
 
@@ -207,6 +304,31 @@ struct Piu10Mp3AudioOut::Impl
             startup_latency_pending = false;
         }
         const std::uint64_t frame_start = total_pcm_bytes_put;
+        // Task 740. The queue is at its trough here, just before a refill.
+        // A refill less than 200 ms after the previous one is a playing
+        // song; the tail of a song drains without one.
+        const auto put_time = std::chrono::steady_clock::now();
+        if (playback_started.load(std::memory_order_relaxed) &&
+            last_put_valid && put_time - last_put_time <
+                std::chrono::milliseconds(200))
+        {
+            const int trough_value = SDL_GetAudioStreamQueued(stream);
+            const std::uint64_t trough = trough_value > 0
+                ? static_cast<std::uint64_t>(trough_value) : 0U;
+            std::uint64_t low = pcm_queued_low_water_bytes.load(
+                std::memory_order_relaxed);
+            while (trough < low &&
+                   !pcm_queued_low_water_bytes.compare_exchange_weak(
+                       low, trough, std::memory_order_relaxed))
+            {
+            }
+            if (trough == 0U)
+            {
+                pcm_empty_events.fetch_add(1U, std::memory_order_relaxed);
+            }
+        }
+        last_put_time = put_time;
+        last_put_valid = true;
         if (!SDL_PutAudioStreamData(stream, pcm, pcm_bytes))
         {
             std::fprintf(stderr,
@@ -320,7 +442,7 @@ struct Piu10Mp3AudioOut::Impl
         while (!shutdown.load(std::memory_order_acquire))
         {
             AdvanceFrameSyncToPlayback();
-            if (SDL_GetAudioStreamQueued(stream) >= kMaximumQueuedPcmBytes)
+            if (!NeedsPcm())
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
@@ -341,7 +463,7 @@ struct Piu10Mp3AudioOut::Impl
             }
 
             bool progressed = false;
-            while (SDL_GetAudioStreamQueued(stream) < kMaximumQueuedPcmBytes)
+            while (NeedsPcm())
             {
                 const std::size_t previous_cursor = cursor;
                 if (!DecodeOne(&encoded, &cursor, &stream_found, &decoder))
@@ -440,6 +562,24 @@ bool Piu10Mp3AudioOut::Open()
     impl_->frame_sync.store(1U, std::memory_order_relaxed);
     impl_->frame_start_pcm_offsets.clear();
     impl_->total_pcm_bytes_put = 0U;
+    impl_->ResetPlaybackClock();
+    impl_->sync_toggles.store(0U, std::memory_order_relaxed);
+    impl_->sync_multi_toggle_events.store(0U, std::memory_order_relaxed);
+    impl_->pcm_empty_events.store(0U, std::memory_order_relaxed);
+    impl_->pcm_queued_low_water_bytes.store(
+        UINT64_MAX, std::memory_order_relaxed);
+    impl_->device_buffer_frames = 0;
+    {
+        const SDL_AudioDeviceID device =
+            SDL_GetAudioStreamDevice(impl_->stream);
+        SDL_AudioSpec device_spec = {};
+        int device_frames = 0;
+        if (device != 0U &&
+            SDL_GetAudioDeviceFormat(device, &device_spec, &device_frames))
+        {
+            impl_->device_buffer_frames = device_frames;
+        }
+    }
     impl_->startup_latency_pending = true;
     impl_->received_bytes.store(0U, std::memory_order_relaxed);
     impl_->dropped_bytes.store(0U, std::memory_order_relaxed);
@@ -623,6 +763,15 @@ Piu10Mp3AudioStats Piu10Mp3AudioOut::stats() const
         impl_->queued_pcm_frames.load(std::memory_order_relaxed),
         impl_->starvation_events.load(std::memory_order_relaxed),
         impl_->batched_bytes.load(std::memory_order_relaxed),
+        impl_->sync_toggles.load(std::memory_order_relaxed),
+        impl_->sync_multi_toggle_events.load(std::memory_order_relaxed),
+        impl_->pcm_empty_events.load(std::memory_order_relaxed),
+        impl_->pcm_queued_low_water_bytes.load(std::memory_order_relaxed) ==
+                UINT64_MAX
+            ? 0U
+            : impl_->pcm_queued_low_water_bytes.load(
+                  std::memory_order_relaxed),
+        impl_->device_buffer_frames,
         impl_->compressed.ring_size(), impl_->compressed.ring_high_water(),
         impl_->compressed.inflight_size(),
         impl_->compressed.inflight_high_water()};
@@ -641,6 +790,23 @@ Piu10Mp3AudioSnapshot Piu10Mp3AudioOut::Snapshot() const
         impl_->decoded_frames.load(std::memory_order_relaxed);
     snapshot.frame_sync =
         impl_->frame_sync.load(std::memory_order_relaxed);
+    snapshot.demand = demand();
+    snapshot.sync_toggles =
+        impl_->sync_toggles.load(std::memory_order_relaxed);
+    snapshot.sync_multi_toggle_events =
+        impl_->sync_multi_toggle_events.load(std::memory_order_relaxed);
+    snapshot.starvation_events =
+        impl_->starvation_events.load(std::memory_order_relaxed);
+    snapshot.pcm_empty_events =
+        impl_->pcm_empty_events.load(std::memory_order_relaxed);
+    {
+        const std::uint64_t rate = impl_->PcmBytesPerSecond();
+        snapshot.playback_lag_ms = rate != 0U
+            ? static_cast<double>(impl_->playback_lag_bytes.load(
+                  std::memory_order_relaxed)) * 1000.0 /
+                static_cast<double>(rate)
+            : 0.0;
+    }
     snapshot.pcm_sample_rate =
         impl_->reported_sample_rate.load(std::memory_order_relaxed);
     snapshot.pcm_channels =

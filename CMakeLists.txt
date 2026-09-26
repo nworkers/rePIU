@@ -227,6 +227,7 @@ add_library(repiu_exe
     src/target/target_profile.cpp
     src/platform/guest_stack_switch_state.cpp
     src/platform/host_error_stream.cpp
+    src/platform/build_identity.cpp
     src/platform/host_thread.cpp
     src/platform/host_time.cpp
 )
@@ -340,6 +341,7 @@ target_sources(repiu_exe
         src/engine/aot/aot_ff_target_timing.cpp
         src/engine/io/port_io_emulator.cpp
         src/engine/io/jamma_input_timeline.cpp
+        src/engine/io/pic_timer_in_service.cpp
         src/engine/io/piu10_mp3_frame_batch.cpp
         src/engine/io/port_io_delay_loop.cpp
         src/engine/io/eeprom_93c46.cpp
@@ -517,6 +519,10 @@ endif()
 target_compile_definitions(repiu_exe
     PRIVATE
         REPIU_VERSION="${REPIU_VERSION}"
+        # Task 738. The active configuration, right under a multi-config
+        # generator too; a single-config generator with no build type yields
+        # an empty string, which the reader treats as "decide from NDEBUG".
+        REPIU_BUILD_CONFIG="$<CONFIG>"
         ${REPIU_MINIZ_DEFINITIONS}
 )
 
@@ -526,6 +532,19 @@ target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static)
 # binding headers, so SDL3's include directories are part of this library's
 # interface and every consumer needs them.
 target_link_libraries(repiu_exe PUBLIC SDL3::SDL3-static)
+
+# Task 739. The Glide backend inside this static library calls OpenGL directly,
+# so on Linux every consumer has to link GL -- and a static library's
+# dependency belongs to the target that has it, not to whichever consumer
+# happened to notice. Until now only `repiu` and the x64 `repiu_core_probe`
+# named GL themselves, so `repiu_instruction_census` failed the default build's
+# last link on both Linux architectures and the i386 `repiu_core_probe` failed
+# once Task 720's Glide gate probe reached the backend. The plain name is used
+# for the reason `repiu` records: only it resolves in the i386 library
+# directory `-m32` puts on the search path.
+if(UNIX AND NOT EMSCRIPTEN)
+    target_link_libraries(repiu_exe PUBLIC GL)
+endif()
 
 add_executable(repiu_chd_cd_probe
     src/tools/chd_cd_probe/main.cpp
@@ -582,6 +601,8 @@ endif()
 add_executable(repiu_core_probe
     src/tools/core_probe/main.cpp
     src/tools/aot_probe/shutdown_recovery_policy_probe.cpp
+    src/tools/aot_probe/pic_timer_in_service_probe.cpp
+    src/tools/aot_probe/build_identity_probe.cpp
     src/tools/aot_probe/code_cache_placement_probe.cpp
     src/tools/aot_probe/dos_console_device_probe.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
@@ -804,6 +825,8 @@ if(WIN32)
         src/tools/aot_probe/glide_lfb_staging_shadow_probe.cpp
         src/tools/aot_probe/glide_lfb_lock_interval_probe.cpp
         src/tools/aot_probe/shutdown_recovery_policy_probe.cpp
+        src/tools/aot_probe/pic_timer_in_service_probe.cpp
+        src/tools/aot_probe/build_identity_probe.cpp
         src/tools/aot_probe/glide_setter_state_census_probe.cpp
         src/tools/aot_probe/glide_async_present_probe.cpp
         src/tools/aot_probe/glide_draw_batch_probe.cpp

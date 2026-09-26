@@ -1336,7 +1336,36 @@ bool AppendDynamicAotTranslation(
         static_cast<std::uint32_t>(image.bytes.size());
     if (!plan_built || !image_built)
     {
-        result->message = "failed to translate dynamic guest target";
+        // Task 737. Say which stage declined and why; the bare message could
+        // not tell a plan refusal from an emission refusal, and a target that
+        // keeps failing is retried on every transfer.
+        result->message = std::string("failed to translate dynamic guest target: ") +
+            (plan_built ? "image: " + image.message : "plan: " + plan.message);
+        if (plan_built && !image.decode_failure_samples.empty())
+        {
+            const runtime::AotDecodeFailureSample& sample =
+                image.decode_failure_samples.front();
+            char detail[160] = {};
+            std::snprintf(detail, sizeof(detail),
+                          " (first at guest 0x%08X: %u of %u bytes, %u of %u "
+                          "instructions decoded; %u entries failed)",
+                          sample.guest_address, sample.decoded_bytes,
+                          sample.emitted_length, sample.decoded_instructions,
+                          sample.expected_instructions,
+                          image.decode_failure_count);
+            result->message += detail;
+            result->message += " emitted=";
+            for (std::uint32_t index = 0U;
+                 index < sample.emitted_length && index < 16U &&
+                 sample.cache_offset + index < image.bytes.size();
+                 ++index)
+            {
+                char hex[3] = {};
+                std::snprintf(hex, sizeof(hex), "%02X",
+                              image.bytes[sample.cache_offset + index]);
+                result->message += hex;
+            }
+        }
         return true;
     }
     const std::uint32_t contains_address = DynamicAotContainsAddress();

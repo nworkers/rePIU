@@ -18353,3 +18353,238 @@ the suite creates that tree. Items 2-6 remain.
   transfer. Whether earlier Linux x64 anomalies change with this fix has not been checked.
 * A 20 ms guest position census got no samples in these WSLg x11 runs (4,180 capture failures); 50 ms
   worked in the user's runs.
+
+---
+
+## 2026-09-26 Task 735 — pumpitea가 Linux x64에서 시작하지 못함: opcode `82`
+
+[작업 로그](../work-logs/20260926-735-long-mode-group1-immediate-alias.md) ·
+[설계](../design/20260926-735-long-mode-group1-immediate-alias.md)
+
+### 확인됨
+
+* pumpitea의 AOT 이미지는 decode 검증에서 항목 하나 때문에 거절되었다: guest `0x011074D8`의
+  `82 68 10 01`이 `67 82 68 10 01`로 방출되었는데, opcode `82`는 long mode에서 #UD다.
+  long-mode 경로가 `82`를 `80` 표기로 판단·방출하게 한 뒤 이미지(418,364 bytes)가 만들어지고
+  88초 실행이 폴트 없이 1,582 frame을 그렸으며 입력에 효과음으로 반응했다.
+* pumpitea의 음악은 CD-DA가 아니라 `AUDIO\*.AUD`(PIU10 MP3)다. MSCDEX는 트랙 2개, 요청 0.
+* 입력 스캔의 200회 `in` 지연 루프(`0x01028E42`)가 포트 I/O의 99%(88초에 4,052,600회)이고,
+  전부 arena에서 trap과 HLE 재진입으로 실행된다(cache 0). breakpoint 예외는 88초에 505만 회였다.
+
+### 미확정
+
+* 이 trap 부하가 pumpitea의 체감 속도를 얼마나 떨어뜨리는지는 재지 않았다. ISR 코드가 왜 AOT
+  port I/O direct dispatch가 아니라 arena 경로로 실행되는지도 확인하지 않았다.
+* 게임 진행(곡 선택·플레이)까지는 확인하지 않았다.
+
+## English
+
+### Confirmed
+
+* pumpitea's AOT image was rejected by the decode check over a single entry: guest `0x011074D8`,
+  `82 68 10 01`, emitted as `67 82 68 10 01`, and opcode `82` is #UD in long mode. With the long-mode
+  path judging and emitting `82` as its `80` spelling, the image (418,364 bytes) builds, an 88-second
+  run drew 1,582 frames with no fault, and input got sound-effect responses.
+* pumpitea's music is `AUDIO\*.AUD` (PIU10 MP3), not CD-DA: MSCDEX reports two tracks and no requests.
+* The input scan's 200-iteration `in` delay loop (`0x01028E42`) is 99% of port I/O (4,052,600 in 88 s),
+  all executed in the arena through a trap and HLE re-entry (cache 0). Breakpoint exceptions totalled
+  5.05 million in 88 s.
+
+### Unresolved
+
+* How much this trap load slows pumpitea was not measured, nor why the ISR code runs on the arena path
+  rather than through AOT port I/O direct dispatch.
+* Game progress (song select, play) was not checked.
+
+
+---
+
+## 2026-09-26 Task 736 — pumpitea 타이머 ISR 중첩으로 stack overflow
+
+[작업 로그](../work-logs/20260926-736-pic-timer-in-service.md) ·
+[설계](../design/20260926-736-pic-timer-in-service.md)
+
+### 확인됨
+
+* pumpitea는 시작 직후 PIT를 51.9 kHz(`divisor=23`)로 잠시 설정했다가 240 Hz로 바꾼다. 51.9 kHz
+  동안 엔진이 타이머 ISR의 `cli` 뒤 루프 back-edge(`0x0102AB07`)에서 다음 tick을 주입해 ISR이
+  중첩되고, 240 Hz 전환 전에 stack이 넘치면 segfault로 끝난다(간헐적).
+* 주입 판정의 IF 검사는 guest `cli`를 볼 수 없다(user mode). PIC in-service 비트, EOI 뒤 `sti`
+  시점 전달(연쇄 금지), 주입 frame의 TF 제거로 pumpitea는 3/3 폴트 없이 240 Hz 단계에 도달한다.
+* pumpit2a의 ISR은 이전 핸들러 chain(HLE 경계)으로 시작해 EOI와 `sti`로 끝난다. 이전에는 chain
+  경계에서 EOI 전 중첩 주입으로 밀린 tick을 따라잡았다. in-service 비트만 두면 tick 전달이 약
+  25% 줄고, `sti` 시점 전달을 더하면 정상 상태 초당 약 241로 돌아온다.
+* 두 게임 모두 주입 수와 EOI 수가 같다(ISR이 스스로 EOI를 쓴다).
+
+### 미확정
+
+* Win32 pumpitea는 이 작업과 무관하게 약 8초에 데이터 페이지(`0x049E26C8`) 실행으로
+  `0xC0000005`가 난다. 스위치를 꺼도 같다.
+* 다른 게임(pumpit1, pumpit3, pumpitpc)의 ISR이 EOI를 스스로 쓰는지는 확인하지 않았다. 쓰지
+  않으면 stack fallback에 의존한다.
+
+## English
+
+### Confirmed
+
+* pumpitea briefly programs the PIT to 51.9 kHz (`divisor=23`) right after start, then switches to
+  240 Hz. During the 51.9 kHz phase the engine injected the next tick at the loop back edge after the
+  timer ISR's `cli` (`0x0102AB07`), nesting the ISR; if the stack overflows before the 240 Hz switch the
+  run ends in a segfault (intermittent).
+* The IF test in the injection decision cannot see a guest `cli` (user mode). With the PIC in-service
+  bit, delivery at `sti` after the EOI (no chaining), and TF removed from injected frames, pumpitea
+  reaches its 240 Hz phase with no faults in 3 of 3 runs.
+* pumpit2a's ISR starts with a chain to the previous handler (an HLE boundary) and ends with EOI and
+  `sti`. The old behaviour caught up owed ticks by nested injection at that chain boundary, before the
+  EOI. The in-service bit alone cut tick delivery by about 25%; adding delivery at `sti` restores about
+  241 per second in steady state.
+* In both games injections equal EOIs: the ISRs write their own EOI.
+
+### Unresolved
+
+* Win32 pumpitea fails independently of this task: `0xC0000005` executing a data page (`0x049E26C8`)
+  about 8 s in, the same with the switch off.
+* Whether the other games' ISRs (pumpit1, pumpit3, pumpitpc) write their own EOI was not checked; if
+  not, they rely on the stack fallback.
+
+---
+
+## 2026-09-26 Task 737 — Win32 pumpitea 시작 크래시: 세 겹의 결함
+
+[작업 로그](../work-logs/20260926-737-win32-pumpitea-indirect-fallback-and-mode16-copy.md) ·
+[설계](../design/20260926-737-win32-pumpitea-indirect-fallback-and-mode16-copy.md)
+
+### 확인됨
+
+* Win32 pumpitea의 8초 `0xC0000005`(`0x049E26C8`, 데이터 페이지)는 GL 드라이버 텍스처 함수
+  `0x0407A664 call [esi+0x9c8]`의 dynamic 번역이 실패한 뒤, **i386 간접 CALL fallback이 반환 주소를
+  두 번 push**해서 호출자의 `ret 0x18`이 GL 컨텍스트 포인터로 복귀한 것이다. 실행 probe로 복귀점 스택에
+  `0x0407A66A`가 두 번 있음을 확인했다.
+* **3.87(Task 650) 정정:** "CALL의 push를 대상 해석 전에 완료하고 fallback이 그것을 남긴다"는 규칙은
+  x86-64에만 맞다. x64의 legacy fallback은 피호출 함수에서 이어가지만, i386의 legacy fallback은 CALL을
+  원본 그대로 재실행해 다시 push한다. i386에서는 해석 실패 시 push를 되돌리고 miss tail도 두 슬롯을
+  버린다. Task 650의 Linux 관측과 x64 경로는 그대로다.
+* 그 번역 실패의 원인은 object 3(16-bit 스택 전환 stub, `0x04110000`)의 바이트를 i386 `kCopy`가 그대로
+  복사해 decode 검증에 걸린 것이다. long-mode emitter는 같은 기록을 INT3으로 거절하므로 Linux에는
+  없던 실패다. 실패 주소는 retire되지 않아 전송마다 재시도됐다.
+* pumpitea의 ISR 입력 스캔(`cmp ebx,200; jge exit; jmp back`)은 Task 414 batcher의 `jl back` 모양과
+  달라 Win32에서 IN 200회 × 240 Hz가 CPU 전체를 썼다. 뒤집은 형식을 받아들인 뒤 Win32 90초에 배치
+  19,001회, Linux 30초에 6,280회이며 Linux 프레임은 35초 841 → 30초 1,190이다.
+* 세 가지를 고친 Win32 pumpitea는 90초 동안 크래시 없이 그리고 `bga\title.dat`를 열며 20~61 fps다.
+
+### 미확정
+
+* Win32 legacy backend의 pumpitea crash(`0x040FD010`)는 재확인하지 않았다.
+* Win32 pumpitea의 곡 선택·플레이 진행은 확인하지 않았다.
+* Linux pumpit2a 한 실행이 예산 만료 시점에 `signal=0xb rip=0x200246`으로 끝났다(이후 3회 정상).
+  Task 730의 기존 teardown 결함 서명이다.
+
+## English
+
+### Confirmed
+
+* Win32 pumpitea's `0xC0000005` at 8 s (`0x049E26C8`, a data page) came from the **i386 indirect
+  CALL fallback pushing the return address twice** after the dynamic translation of the GL driver's
+  texture function (`0x0407A664 call [esi+0x9c8]`) failed; the caller's `ret 0x18` then returned
+  into the GL context pointer. Execution probes showed `0x0407A66A` twice on the stack at the return
+  point.
+* **Correction to 3.87 (Task 650):** the rule "commit the CALL's push before target resolution and let
+  the fallback keep it" holds for x86-64 only. An x64 legacy fallback continues in the callee; an i386
+  legacy fallback re-executes the CALL natively and pushes again. On i386 the push is now undone on
+  resolution failure and the miss tail drops both slots. Task 650's Linux observations and the x64 path
+  stand.
+* That translation failure came from i386 `kCopy` copying object 3 (the 16-bit stack-switch stub at
+  `0x04110000`) verbatim and failing the decode check. The long-mode emitter refuses the same record
+  with an INT3, so Linux never had it. Failed addresses are not retired and were retried on every
+  transfer.
+* pumpitea's ISR input scan (`cmp ebx,200; jge exit; jmp back`) did not match Task 414's `jl back`
+  shape, so on Win32 200 INs × 240 Hz consumed the whole CPU. With the inverted form accepted, Win32
+  makes 19,001 batches in 90 s and Linux 6,280 in 30 s; Linux frames went from 841 in 35 s to 1,190 in
+  30 s.
+* With all three fixed, Win32 pumpitea runs 90 s without a crash, opens `bga\title.dat`, at 20-61 fps.
+
+### Unresolved
+
+* The Win32 legacy backend's pumpitea crash (`0x040FD010`) was not re-checked.
+* Win32 pumpitea's progress to song select and play was not checked.
+* One Linux pumpit2a run ended at budget expiry with `signal=0xb rip=0x200246` (three clean runs
+  after); that is the signature of Task 730's pre-existing teardown fault.
+
+## 2026-09-26 Task 740 — PIU10 MP3 재생: 장치 buffer 계단이 노트 시계였다
+
+작업 로그: [20260926-740](../work-logs/20260926-740-piu10-mp3-playback-noise-and-note-stutter.md)
+
+보고: Linux x64 Release로 pumpitea를 플레이하면 음악에 가끔 노이즈가 끼고 화살표가 멈췄다가 올라간다.
+
+### 확인됨
+
+* `REPIU_PIU10_MP3_CENSUS_MS=20`으로 MP3 파이프라인을 20 ms마다 찍고, XTest 합성 키로 코인·시작·곡
+  선택까지 자동 진행해 실제 플레이의 곡(`AUDIO\39.AUD`)을 18초 측정했습니다. attract 데모는 MP3를
+  틀지 않습니다(`01.AUD` 타이틀 징글뿐).
+* WSLg 기본 장치 buffer(768 frame, 17 ms)에서는 다중 토글 0, PCM 빈 큐 0, 곡 중 큐 최저 235 ms,
+  tick 234~244/s로 곡 중 20 ms 이상의 tick 공백이 없었습니다. 40~160 ms의 tick 공백은 장면 전환
+  (로딩) 중에만 있었습니다.
+* 장치 buffer를 2048 frame으로 강제하면 초당 4~6회, 4096 frame이면 토글의 40%(174/429)가 한 호출에
+  두 개 이상으로 뭉쳤습니다. 240 Hz로 폴링하는 guest는 짝수 개 토글을 변화 없음으로 봅니다. decoder도
+  장치가 가져간 만큼을 한 번에 채우므로 demand와 guest의 frame 카운터도 같은 계단으로 움직였습니다.
+* 4096 frame에서는 WSLg의 PulseAudio가 초당 세 덩어리만 가져가 재생 자체가 1/3 속도였습니다.
+  이 값은 WSLg의 산물이지 다른 host를 대표하지 않습니다.
+* 수정: 장치 계단 사이를 PCM 속도로 보간하는 재생 시계. 토글과 decode 게이트가 그 시계로 움직입니다.
+  768·2048 모두 다중 토글 0, 시계 지연은 장치 buffer 한 개 이내(17 ms / 35 ms), 토글 38~39/s,
+  decode와 토글 수 일치, PCM 큐 최저 235 ms / 218 ms.
+* 첫 구현은 계단마다 worker의 관측 지연(2~3 ms)을 잃어 시계가 19% 느렸습니다(초당 31 토글, 지연이
+  초당 190 ms씩 증가). 직전 계단의 byte 수에 고정해 드리프트를 없앴습니다.
+
+### 사용자 확인
+
+* 수정본으로 노트가 뛰어넘거나 멈칫거리는 증상이 사라졌고 노이즈도 들리지 않았다고 사용자가
+  확인했습니다(2026-09-26). 사용자 로그: multi 0, pcm-empty 0, device-buffer-frames 768.
+
+### 미확정
+
+* 노이즈는 WSLg에서 재현되지 않았습니다. 사용자 host의 장치 buffer와 `pcm-empty`가 최종 보고에
+  찍히므로 그 값으로 판단합니다.
+* 토글 간격의 지터(한 20 ms census 표본에 토글 두 개가 드는 경우 8~48/700)는 worker의 2 ms sleep
+  깨어남 지연이며 수정 전후 같습니다. frame을 잃지는 않습니다.
+
+## English
+
+## 2026-09-26 Task 740 — PIU10 MP3 playback: the device-buffer step was the arrow clock
+
+Work log: [20260926-740](../work-logs/20260926-740-piu10-mp3-playback-noise-and-note-stutter.md)
+
+Report: playing pumpitea on Linux x64 Release, the music sometimes carries noise and the arrows stall
+and jump.
+
+### Confirmed
+
+* `REPIU_PIU10_MP3_CENSUS_MS=20` prints the MP3 pipeline every 20 ms; XTest synthetic keys drove
+  coin, start and song select so that a real play song (`AUDIO\39.AUD`) was measured for 18 s. The
+  attract demo plays no MP3 (only the `01.AUD` title jingle).
+* With WSLg's default device buffer (768 frames, 17 ms): no multi-toggles, no empty PCM queue, a
+  mid-song queue minimum of 235 ms, 234-244 ticks a second and no tick gap of 20 ms or more while
+  the song played; 40-160 ms tick gaps occurred only during scene loads.
+* Forcing the device buffer to 2048 frames gave four to six multi-toggle events a second; 4096 frames
+  collapsed 40% of the toggles (174/429). A guest polling at 240 Hz reads an even number as no
+  change. The decoder also refilled whatever the device pulled in one go, so demand and the guest's
+  frame counter moved in the same steps.
+* At 4096 frames WSLg's PulseAudio pulled only three chunks a second and playback ran at a third of
+  its speed: a WSLg artefact, not representative of other hosts.
+* Fix: a playback clock interpolated at the PCM rate between device steps, driving both the toggles
+  and the decode gate. At 768 and 2048 frames: zero multi-toggles, clock lag within one device buffer
+  (17 ms / 35 ms), 38-39 toggles a second matching the decoded frames, queue minimum 235 ms / 218 ms.
+* The first version lost the worker's observation delay (2-3 ms) at every step and ran 19% slow
+  (31 toggles a second, lag growing 190 ms every second); anchoring at the previous pulled count
+  removed the drift.
+
+### User confirmation
+
+* With the fixed build the user confirmed that the arrows no longer skip or stall and that no noise
+  was heard (2026-09-26). The user's log: multi 0, pcm-empty 0, device-buffer-frames 768.
+
+### Unresolved
+
+* The noise did not reproduce on WSLg. The final report now prints the host's device buffer and
+  `pcm-empty`, which decide it on the user's host.
+* Toggle-interval jitter (two toggles inside one 20 ms census sample, 8-48 of 700) is the worker's
+  2 ms sleep wake-up latency and is the same before and after; no frame is lost.

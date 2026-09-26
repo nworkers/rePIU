@@ -2030,14 +2030,17 @@ bool EmitIndirectInlineCacheSlot(const AotInstructionRecord& instruction,
             static_cast<std::uint32_t>(image->bytes.size() - 4U);
         dispatch_site.fallback_cache_offset =
             static_cast<std::uint32_t>(image->bytes.size());
-        // The thunk RET has already removed guest-source metadata. A CALL
-        // fallback must discard only the miss address so the return address
-        // pushed above remains at [ESP]; a JMP has no guest return address and
-        // discards both remaining metadata slots.
-        image->bytes.insert(
-            image->bytes.end(),
-            {0x8DU, 0x64U, 0x24U,
-             static_cast<std::uint8_t>(site.is_call ? 0x04U : 0x08U)});
+        // The thunk RET has already removed guest-source metadata. The
+        // fallback discards both remaining slots -- for a CALL, the return
+        // address pushed above as well -- because the breakpoint below
+        // re-dispatches the guest instruction from its pre-transfer state.
+        //
+        // Task 737. Task 650 kept a CALL's return address here, for x86-64's
+        // sake. But this slot is the i386 emitter's alone -- long mode has its
+        // own -- and on i386 the re-dispatch pushes the return address again,
+        // or the legacy fallback re-executes the CALL, so a kept one became a
+        // second copy on the guest stack.
+        image->bytes.insert(image->bytes.end(), {0x8DU, 0x64U, 0x24U, 0x08U});
         image->bytes.push_back(0xCCU);
         dispatch_site.success_cache_offset =
             static_cast<std::uint32_t>(image->bytes.size());
@@ -3084,6 +3087,23 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             switch (instruction.kind)
             {
                 case AotInstructionKind::kCopy:
+                    // Task 737. The i386 cache runs under a 32-bit code
+                    // segment, where a 16-bit code object's bytes mean
+                    // something else -- `00 24` is `add [si], ah` there and a
+                    // truncated SIB form here -- so they cannot be copied. They
+                    // become a boundary the legacy/HLE path executes, as the
+                    // long-mode emitter's refusals do. Copied, pumpitea's
+                    // object-3 stub failed the decode check of every dynamic
+                    // image that reached it.
+                    if (instruction.guest_code_default_operand_size ==
+                        GuestCodeDefaultOperandSize::k16)
+                    {
+                        image->bytes.push_back(0xCCU);
+                        image->fixups.push_back({AotFixupKind::kHleBoundary,
+                                                 instruction.guest_address, 0U,
+                                                 cache_offset, false});
+                        break;
+                    }
                     image->bytes.insert(image->bytes.end(),
                                         instruction.bytes.begin(),
                                         instruction.bytes.end());
@@ -3438,6 +3458,14 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
              decoded_instructions != expected_instructions))
         {
             ++image->decode_failure_count;
+            if (image->decode_failure_samples.size() <
+                kAotDecodeFailureSampleCapacity)
+            {
+                image->decode_failure_samples.push_back(
+                    {map.guest_address, map.cache_offset, map.emitted_length,
+                     decoded_bytes, decoded_instructions,
+                     expected_instructions});
+            }
         }
     }
     image->elapsed_microseconds = static_cast<std::uint64_t>(

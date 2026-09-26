@@ -552,6 +552,22 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
     std::uint32_t last_cd_audio_ticks_coalesced = 0;
     std::uint32_t last_cd_audio_ticks_in_gate = 0;
     std::uint32_t last_cd_audio_safe_point_traps = 0;
+    // Task 740. The PIU10 MP3 pipeline on its own cadence, for the same reason
+    // as the CD census: what the guest feeds, what the decoder has played and
+    // how the frame-sync toggles arrive, on one time axis with the ticks.
+    const TickCount piu10_mp3_census_interval = [] {
+        const char* const value = std::getenv("REPIU_PIU10_MP3_CENSUS_MS");
+        if (value == nullptr || *value == '\0')
+        {
+            return static_cast<TickCount>(0);
+        }
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        return static_cast<TickCount>(
+            end != value && *end == '\0' && parsed != 0UL && parsed <= 1000UL
+                ? parsed : 0UL);
+    }();
+    TickCount last_piu10_mp3_census_tick = start_tick;
     // Task 412: the loader's own image range, so a host sample can name the
     // call site that led into the kernel. Resolved once; the sampling path only
     // compares against it.
@@ -923,6 +939,45 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
             RecordCdAudioPosition(
                 progress_context->cd_audio_position_census.get(), entry);
             last_cd_audio_census_tick = current_tick;
+        }
+
+        if (piu10_mp3_census_interval != 0 && progress_context != nullptr &&
+            current_tick - last_piu10_mp3_census_tick >=
+                piu10_mp3_census_interval)
+        {
+            const Piu10Mp3AudioSnapshot mp3 =
+                progress_context->piu10_mp3_audio.Snapshot();
+            const TimerTickDeliverySnapshot ticks =
+                SnapshotTimerTickDelivery(
+                    progress_context->timer_tick_delivery);
+            char line[320] = {};
+            const int length = std::snprintf(
+                line, sizeof(line),
+                "[repiu-piu10-mp3-census] elapsed_ms=%lu received=%llu "
+                "decoded=%llu queued_ms=%.1f lag_ms=%.1f inflight=%zu "
+                "ring=%zu demand=%u sync=%u toggles=%llu multi=%llu "
+                "starvation=%llu pcm_empty=%llu ticks_injected=%u\n",
+                static_cast<unsigned long>(current_tick - start_tick),
+                static_cast<unsigned long long>(mp3.received_bytes),
+                static_cast<unsigned long long>(mp3.decoded_frames),
+                mp3.pcm_queued_ms, mp3.playback_lag_ms,
+                mp3.compressed_inflight_bytes,
+                mp3.compressed_ring_bytes, mp3.demand ? 1U : 0U,
+                static_cast<unsigned>(mp3.frame_sync),
+                static_cast<unsigned long long>(mp3.sync_toggles),
+                static_cast<unsigned long long>(mp3.sync_multi_toggle_events),
+                static_cast<unsigned long long>(mp3.starvation_events),
+                static_cast<unsigned long long>(mp3.pcm_empty_events),
+                ticks.injected_total);
+            if (length > 0)
+            {
+                repiu::platform::WriteHostErrorStream(
+                    line,
+                    static_cast<std::size_t>(length) < sizeof(line)
+                        ? static_cast<std::size_t>(length)
+                        : sizeof(line) - 1U);
+            }
+            last_piu10_mp3_census_tick = current_tick;
         }
 
         if (native_sampling_enabled && progress_context != nullptr &&
@@ -1373,6 +1428,8 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         SnapshotOutOfArenaStepCensus(context.out_of_arena_step_census);
     attempt->timer_tick_delivery =
         SnapshotTimerTickDelivery(context.timer_tick_delivery);
+    attempt->piu10_mp3_stats = context.piu10_mp3_audio.stats();
+    attempt->pic_timer_in_service = context.pic_timer_in_service;
     attempt->native_fast_path_entry_count =
         context.native_fast_path.entry_count.load(std::memory_order_relaxed);
     attempt->native_fast_path_return_count =

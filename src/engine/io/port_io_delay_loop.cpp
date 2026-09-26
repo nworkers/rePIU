@@ -396,7 +396,45 @@ bool TryBatchPortIoDelayLoop(ThreadContext* context,
     }
 
     const std::uint8_t* branch = GuestBytes(branch_address);
-    const std::uint8_t condition = branch[0];
+    std::uint8_t condition = branch[0];
+    std::int32_t displacement = static_cast<std::int8_t>(branch[1]);
+    std::uint32_t back_edge_end = branch_address + 2U;
+    // Task 737. The same loop with the test inverted: a forward `jge`/`jg` out
+    // of the loop, then an unconditional short `jmp` back. pumpitea's input
+    // scan is `inc ebx; sub eax,eax; in ax,dx; cmp ebx,200; jge exit; jmp
+    // back`, and on Win32 its 200 trapped reads per timer tick cost more than
+    // the tick itself. Continuing while `jge` is not taken is `jl`, and while
+    // `jg` is not taken is `jle`, so it maps onto the forms below.
+    {
+        std::uint32_t exit_length = 0U;
+        std::int32_t exit_displacement = 0;
+        std::uint8_t inverted = 0U;
+        if (condition == 0x7DU || condition == 0x7FU)
+        {
+            inverted = condition;
+            exit_displacement = static_cast<std::int8_t>(branch[1]);
+            exit_length = 2U;
+        }
+        else if (condition == 0x0FU &&
+                 (branch[1] == 0x8DU || branch[1] == 0x8FU))
+        {
+            inverted = static_cast<std::uint8_t>(branch[1] - 0x10U);
+            std::memcpy(&exit_displacement, branch + 2, sizeof(exit_displacement));
+            exit_length = 6U;
+        }
+        if (inverted != 0U)
+        {
+            const std::uint8_t* back = branch + exit_length;
+            if (exit_displacement <= 0 || back[0] != 0xEBU)
+            {
+                CountOutcome(PortIoDelayLoopOutcome::kShapeMismatch);
+                return false;
+            }
+            condition = inverted == 0x7DU ? 0x7CU : 0x7EU;
+            displacement = static_cast<std::int8_t>(back[1]);
+            back_edge_end = branch_address + exit_length + 2U;
+        }
+    }
     // Signed "still below the limit" forms only. The unsigned forms would need
     // unsigned terminal-value arithmetic below, and getting that subtly wrong
     // would skip real iterations, so they are simply not matched.
@@ -405,9 +443,8 @@ bool TryBatchPortIoDelayLoop(ThreadContext* context,
         CountOutcome(PortIoDelayLoopOutcome::kShapeMismatch);
         return false;
     }
-    const std::int32_t displacement = static_cast<std::int8_t>(branch[1]);
     const std::uint32_t body_start =
-        branch_address + 2U + static_cast<std::uint32_t>(displacement);
+        back_edge_end + static_cast<std::uint32_t>(displacement);
     // The caller guarantees readability of a fixed window before the IN, so a
     // body reaching further back is refused rather than decoded blind.
     if (displacement >= 0 || body_start >= in_address ||

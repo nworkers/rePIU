@@ -912,6 +912,10 @@ bool ProbeUnresolvedBlockFallthroughLookup()
     return ok;
 }
 
+// Task 737. The i386 host-dispatch tail (long mode has its own slot): both a
+// CALL and a JMP fallback drop the two remaining metadata slots, so the
+// breakpoint re-dispatches from the pre-transfer stack. Task 650 had the CALL
+// keep its return address, which the re-dispatch then pushed a second time.
 bool ProbeIndirectFallbackStackCleanup()
 {
     AotTranslationPlan plan;
@@ -956,7 +960,7 @@ bool ProbeIndirectFallbackStackCleanup()
                 fallback[4] == 0xCCU;
             if (site.is_call)
             {
-                call_ok = shape && fallback[3] == 0x04U;
+                call_ok = shape && fallback[3] == 0x08U;
             }
             else
             {
@@ -965,7 +969,7 @@ bool ProbeIndirectFallbackStackCleanup()
         }
     }
     const bool ok = built && call_ok && jump_ok;
-    std::cout << "indirect_fallback_call_return_preserved="
+    std::cout << "indirect_fallback_call_stack_restored="
               << (call_ok ? "true" : "false")
               << ",jump_metadata_removed="
               << (jump_ok ? "true" : "false") << "\n";

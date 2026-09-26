@@ -426,3 +426,42 @@ helper는 결과를 **CF**로 돌려주고 호출자는 `ret` 직후 `jae`로 �
 곡 선택에서 `fsin`을 무한 재시도한 사례가
 [Task 734 작업 로그](work-logs/20260926-734-linux-x64-return-thunk-flags.md)에 있다.
 `DS:0x96398`은 object 4 파일 오프셋 `0x1A4998`이고 정확한 2π(`0x4001 C90FDAA22168C235`)다.
+
+## pumpitea PIU.EXE 배치와 입력 스캔 (확인됨, Task 735)
+
+LE object 4개. object 2(코드)는 파일 `0x23000`, 링크 주소 `0x20000`(실행 주소 `0x01010000`),
+object 4(데이터)는 파일 `0x11C000`, 크기 `0x8C0900`이다. 실행 주소는 링크 주소에 `0x00FF0000`을
+더한 값이다.
+
+| 실행 주소 | 내용 |
+|---|---|
+| `0x011074D8` | `82 68 10 01` = `sub byte ptr [eax+0x10], 1`. opcode `82`(long mode에서 #UD)를 쓰는 곳. Task 735 전에는 Linux x64 AOT 이미지가 이 한 명령 때문에 거절되었다 |
+| `0x01028E30` | 입력 스캔. `ECX=0x2A8`로 시작해 `in ax, dx`를 **200번** 반복(지연 루프) → `out 0x2A4`, `out 0x2A6`(lamp/선택) → `in 0x2A8`, `in 0x2AA` |
+
+입력 스캔은 타이머 tick마다 한 번 돈다(88초 실행에서 20,264회 = EOI 수). 지연 루프 때문에 tick당
+포트 읽기가 200번이며, 88초에 4,052,600번이었다. pumpit2a의 ISR은 tick당 JAMMA를 2번 읽는다.
+
+
+## pumpitea와 pumpit2a의 타이머 ISR (확인됨, Task 736)
+
+| 게임 | ISR | 흐름 |
+|---|---|---|
+| pumpitea | `0x0102AAE4` | `pusha`·세그먼트 push → helper → **`cli`**(`0x0102AAF3`) → 다섯 슬롯 루프(back-edge `0x0102AB07`, 슬롯별 누산기가 `0x10000`을 넘으면 콜백) → 누산기가 넘으면 이전 핸들러 chain(`pushf; lcall *0x1d7940`) → EOI(`out 0x20`, `0x0102AB7D`) → `sti` → `iret` |
+| pumpit2a | `0x0103F123` | `pusha`·세그먼트 push → helper → **이전 핸들러 chain 먼저**(`pushf; lcall *0x17fa24`) → 콜백 슬롯(4 tick마다) → tick 카운터 증가 → EOI(`0x0103F1E4`의 outportb) → `sti`(`0x0103F1E9`) → `iret` |
+
+pumpitea는 시작 직후 PIT를 51.9 kHz(divisor 23)로 잠시 두었다가 240 Hz(divisor 4971)로 바꾼다.
+두 ISR 모두 스스로 EOI를 쓴다. 주소는 Linux 실행 주소다(Win32는 `0x03000000`을 더한다).
+
+## pumpitea object 3의 16-bit 스택 전환 stub과 GL 텍스처 경로 (확인됨, Task 737)
+
+object 3(링크 `0x120000`, 실행 주소 Linux `0x01110000`/Win32 `0x04110000`, 16-bit 코드)은 pumpit2a의
+Task 692 stub과 같은 코드다. `cs:[0]`에 SS를 저장하고, `test edi,edi` → DPMI `AX=0007`로 selector
+base 설정 → `cli; mov ss,bx; mov sp,0x2000; sti` → `push cs; push ax; push edi; retf`로 EDI가 가리키는
+함수를 far call 하며, 복귀 stub(`+0x32`)은 `mov ss,cs:[0]; mov esp,ebp; retfd`로 원래 스택으로 돌아온다.
+이 stub은 GL 드라이버의 CFG에 포함되므로 32-bit 세그먼트용 cache가 그 바이트를 복사하면 안 된다.
+
+| 실행 주소 (Win32) | 내용 |
+|---|---|
+| `0x040CA448` | glTexImage2D 래퍼. `[0x72e8c]`(컨텍스트)가 0이면 오류 경로, 아니면 `0x0409FA1C`(텍스처 이미지 기술자 생성)를 거쳐 `call [esi+0x2a8]` |
+| `0x0407A664` | `call [esi+0x9c8]` — 드라이버의 텍스처 함수 `0x04049988`(`ret 8`). 이 간접 호출의 번역 실패 fallback이 Task 737 크래시 지점이다 |
+| `0x04028E30` | 입력 스캔. 지연 루프는 `inc ebx; sub eax,eax; in ax,dx; cmp ebx,200; jge 0x04029F52; jmp back` — 조건을 뒤집은 형식 |
