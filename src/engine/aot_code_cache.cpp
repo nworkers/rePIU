@@ -67,6 +67,31 @@ std::uint32_t DynamicAotContainsAddress()
     return address;
 }
 
+// Task 743. `REPIU_AOT_DYNAMIC_REJECT=<guest address>` makes the worker
+// refuse every dynamic image that maps that address, the way a coverage or
+// decode failure would. It exists to reproduce what the engine does when a
+// block cannot be translated, without waiting for a real failure.
+std::uint32_t DynamicAotRejectAddress()
+{
+    static const std::uint32_t address = [] {
+        const char* const value = std::getenv("REPIU_AOT_DYNAMIC_REJECT");
+        if (value == nullptr || *value == '\0')
+        {
+            return 0U;
+        }
+        errno = 0;
+        char* parse_end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &parse_end, 0);
+        if (errno != 0 || parse_end == value || *parse_end != '\0' ||
+            parsed > std::numeric_limits<std::uint32_t>::max())
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
 bool AotImageContainsGuestAddress(
     const runtime::AotCodeCacheImage& image,
     std::uint32_t guest_address)
@@ -1398,6 +1423,23 @@ bool AppendDynamicAotTranslation(
             TraceDynamicAotFixups(image, contains_address);
         }
     }
+    const std::uint32_t reject_address = DynamicAotRejectAddress();
+    static const bool reject_reads = [] {
+        const char* const value = std::getenv("REPIU_AOT_DYNAMIC_REJECT");
+        return value != nullptr && std::strcmp(value, "read") == 0;
+    }();
+    if ((reject_address != 0U &&
+         AotImageContainsGuestAddress(image, reject_address)) ||
+        (reject_reads && !image.guarded_segment_read_sites.empty()))
+    {
+        std::fprintf(stderr,
+                     "[repiu-aot-dynamic] stage=reject entry=0x%08X "
+                     "contains=0x%08X\n",
+                     guest_entry, reject_address);
+        result->message =
+            "dynamic AOT image rejected by REPIU_AOT_DYNAMIC_REJECT";
+        return true;
+    }
     std::uint32_t unsafe_hle_address = 0U;
     const bool hle_covered = runtime::ValidateAotCodeCacheHleCoverage(
         plan, image, &unsafe_hle_address);
@@ -1577,6 +1619,7 @@ bool AppendDynamicAotTranslation(
         repiu::platform::ProtectMemory(
             cache, placement->capacity,
             repiu::platform::MemoryProtection::kExecuteRead, nullptr);
+        std::fprintf(stderr, "[repiu-aot-unsafe] line=%d\n", __LINE__);
         result->unsafe_failure = true;
         result->message = "AOT timer safe-point request is unavailable";
         return true;
@@ -1603,6 +1646,7 @@ bool AppendDynamicAotTranslation(
         repiu::platform::ProtectMemory(
             cache, placement->capacity,
             repiu::platform::MemoryProtection::kExecuteRead, nullptr);
+        std::fprintf(stderr, "[repiu-aot-unsafe] line=%d\n", __LINE__);
         result->unsafe_failure = true;
         result->message = "AOT-DBT return thunk is unavailable";
         return true;
@@ -1614,6 +1658,7 @@ bool AppendDynamicAotTranslation(
         repiu::platform::ProtectMemory(
             cache, placement->capacity,
             repiu::platform::MemoryProtection::kExecuteRead, nullptr);
+        std::fprintf(stderr, "[repiu-aot-unsafe] line=%d\n", __LINE__);
         result->unsafe_failure = true;
         result->message = "AOT direct-return table is unavailable";
         return true;
@@ -1625,6 +1670,7 @@ bool AppendDynamicAotTranslation(
         repiu::platform::ProtectMemory(
             cache, placement->capacity,
             repiu::platform::MemoryProtection::kExecuteRead, nullptr);
+        std::fprintf(stderr, "[repiu-aot-unsafe] line=%d\n", __LINE__);
         result->unsafe_failure = true;
         result->message =
             "AOT-DBT direct-edge thunk is unavailable";
@@ -1637,6 +1683,7 @@ bool AppendDynamicAotTranslation(
         repiu::platform::ProtectMemory(
             cache, placement->capacity,
             repiu::platform::MemoryProtection::kExecuteRead, nullptr);
+        std::fprintf(stderr, "[repiu-aot-unsafe] line=%d\n", __LINE__);
         result->unsafe_failure = true;
         result->message = "AOT-DBT HLE thunk is unavailable";
         return true;
@@ -1648,6 +1695,7 @@ bool AppendDynamicAotTranslation(
         repiu::platform::ProtectMemory(
             cache, placement->capacity,
             repiu::platform::MemoryProtection::kExecuteRead, nullptr);
+        std::fprintf(stderr, "[repiu-aot-unsafe] line=%d\n", __LINE__);
         result->unsafe_failure = true;
         result->message = "AOT-DBT indirect thunk is unavailable";
         return true;
@@ -1716,6 +1764,7 @@ bool AppendDynamicAotTranslation(
     }
     if (!protected_rx)
     {
+        std::fprintf(stderr, "[repiu-aot-unsafe] line=%d\n", __LINE__);
         result->unsafe_failure = true;
         result->message = "failed to restore AOT cache execute protection";
         return true;

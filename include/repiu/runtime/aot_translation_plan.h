@@ -38,6 +38,10 @@ enum class AotInstructionKind
     // physical, shadow, and stack selectors are already identical. Any
     // mismatch reaches the existing HLE boundary (Task 291).
     kGuardedSegmentPop,
+    // Task 742. `push es`/`push ds`/`push fs`/`push gs` with a 32-bit operand.
+    // Invalid opcodes in long mode; the long-mode slot pushes the shadow
+    // selector instead, and the i386 image copies the bytes as they are.
+    kGuardedSegmentPush,
     // Port I/O (IN/OUT DX) handled without #DB exception traps (Task 311).
     kPortIo,
 };

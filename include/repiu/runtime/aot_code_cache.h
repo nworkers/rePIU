@@ -169,6 +169,17 @@ struct AotAddressMapEntry
 [[nodiscard]] bool LongModeGuardedSegmentPopEmittable(
     const AotInstructionRecord& instruction);
 
+// Task 742. Whether the long-mode read slot admits a `mov r16/r32, sreg`: a
+// general register other than ESP as the destination and a segment the
+// engine keeps a shadow for. The slot reads the shadow, so it needs no guard.
+[[nodiscard]] bool LongModeGuardedSegmentReadEmittable(
+    const AotInstructionRecord& instruction);
+
+// Task 742. Whether the long-mode push slot admits a 32-bit `push sreg` of a
+// segment the engine keeps a shadow for.
+[[nodiscard]] bool LongModeGuardedSegmentPushEmittable(
+    const AotInstructionRecord& instruction);
+
 // Task 573. Whether the long-mode indirect-call slot admits this record: a near
 // `FF /2` through memory, whose operand does not name guest `ESP` and whose
 // address form the lowering can move into long mode. Kept beside the emitter so
@@ -537,6 +548,9 @@ struct AotCodeCacheImage
     // guest state -- it consumes the popped dword -- rather than proving there
     // was nothing to change.
     std::uint32_t long_mode_guarded_segment_pop_count = 0;
+    // Task 742.
+    std::uint32_t long_mode_guarded_segment_read_count = 0;
+    std::uint32_t long_mode_guarded_segment_push_count = 0;
     // Task 573. Indirect calls given the target-load / push / thunk slot.
     // Counted apart because this is the first long-mode slot that leaves the
     // cache for a target no static analysis knows -- the return slot leaves for

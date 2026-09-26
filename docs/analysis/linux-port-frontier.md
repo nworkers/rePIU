@@ -18588,3 +18588,202 @@ and jump.
   `pcm-empty`, which decide it on the user's host.
 * Toggle-interval jitter (two toggles inside one 20 ms census sample, 8-48 of 700) is the worker's
   2 ms sleep wake-up latency and is the same before and after; no frame is lost.
+
+## 2026-09-26 Task 741 — trap 부하의 정체는 ISR이 아니라 `delay()`였고, 비용은 재진입의 디코드였다
+
+작업 로그: [20260926-741](../work-logs/20260926-741-breakpoint-site-census-and-isr-trap-load.md)
+
+### 확인됨
+
+* **breakpoint 지점 census**(항상 켜짐, 512칸 open addressing, 최종 보고에 상위 32개
+  `host/guest/cache/count/exits`)를 넣었습니다. Task 735가 "ISR 입력 스캔의 trap 부하"라 부른 것의
+  실제 상위는 Watcom `delay()`의 INT 21h AH=2Ch 세 곳(61%: 시작 후 2초의 보정 spin 452k회와 초당
+  6,600회의 `delay()`), `lseek`(10%, 초당 3,800회), memcpy helper의 `push es; mov es,eax`(10%),
+  `jmp cs:[table]` boundary(2.7%)입니다. ISR 입력 스캔의 batch된 `in`은 tick당 1회(1.2%)입니다.
+* trap 한 번의 VEH 비용 15.2k cycle 중 대부분은 HLE 재진입이 같은 주소를 세 방향으로 Zydis 디코드
+  하는 것이었습니다(segment write 여부, 앞 64 명령의 span 안전, long mode 동일성 — 재진입당 2~3회).
+  주소별 메모(`AotReentryMemoEntry`, 세대·8바이트 지문·code mode)로 8.9k cycle(−41%), VEH 비중
+  14.3% → 9%대, 메모 적중 99%. `REPIU_AOT_REENTRY_MEMO=0`으로 끕니다.
+* `delay()` 보정은 "1초에 AH=2Ch를 몇 번 부를 수 있나"를 재므로 trap이 싸진 만큼 값이 올라갑니다
+  (237,680 → 308,670~328,403). fps는 그대로: 얻은 것은 CPU 점유입니다.
+* 메모의 첫 판은 core probe `general_stack`을 깨뜨렸습니다(probe가 같은 주소의 바이트·code mode를
+  바꿔 다시 묻는데 옛 답). 지문과 code mode를 키에 넣어 통과했고, 이 검사는 게임에서도 guest 쓰기
+  알림을 거치지 않은 바이트 변화를 막아 줍니다.
+* `REPIU_GUEST_POSITION_CENSUS`는 Linux에서 표본을 못 잡습니다(19,516/19,516 실패). DOS INT trace는
+  stderr 출력이 대기 루프를 느리게 해 호출 수를 1/10로 왜곡합니다 — trap 수를 셀 때 쓰지 말 것.
+
+### 남은 것
+
+* trap당 남은 8.9k: prologue 1.2k, DOS 서비스 약 3k, reentry 약 5k. 커널 왕복은 밖.
+* `jmp cs:[table]`(초당 1,100회) 번역, `push es; mov es,eax`(초당 4,000회)의 selector guard.
+* 합성 키 드라이브는 다른 실행 직후에 띄우면 창 포커스를 못 받아 입력이 안 들어갑니다. 단독으로
+  띄울 것.
+
+## English
+
+## 2026-09-26 Task 741 — the trap load was `delay()`, not the ISR, and its cost was the reentry's decoding
+
+Work log: [20260926-741](../work-logs/20260926-741-breakpoint-site-census-and-isr-trap-load.md)
+
+### Confirmed
+
+* A **breakpoint site census** (always on, 512-slot open addressing, the 32 busiest printed as
+  `host/guest/cache/count/exits`) went in. What Task 735 called "the ISR input scan's trap load" is
+  really Watcom `delay()`'s three INT 21h AH=2Ch sites (61%: a 452k-call calibration spin in the first
+  two seconds plus 6,600 `delay()` calls a second), `lseek` (10%, 3,800 a second), a memcpy helper's
+  `push es; mov es,eax` (10%) and a `jmp cs:[table]` boundary (2.7%). The ISR's batched `in` is once
+  per tick (1.2%).
+* Most of a trap's 15.2k-cycle VEH cost was the HLE reentry decoding the same address three ways with
+  Zydis (segment write, span safety up to 64 instructions ahead, long-mode identity, two or three
+  times per reentry). A per-address memo (`AotReentryMemoEntry` with generation, eight-byte
+  fingerprint and code mode) brought it to 8.9k cycles (−41%), the VEH share from 14.3% to about 9%,
+  with 99% hits. `REPIU_AOT_REENTRY_MEMO=0` turns it off.
+* `delay()`'s calibration measures "how many AH=2Ch calls fit in a second", so its value rises as the
+  traps get cheaper (237,680 → 308,670–328,403). Frame rate is unchanged: the gain is CPU occupancy.
+* The memo's first version broke the core probe's `general_stack` (the probe rewrites bytes and the
+  code mode at one address and asks again; it got the old answer). The fingerprint and code mode in
+  the key fixed it, and in the game they also guard against byte changes that bypass the guest-write
+  notification.
+* `REPIU_GUEST_POSITION_CENSUS` captures nothing on Linux (19,516 of 19,516 failures). The DOS INT
+  trace's stderr writes slow the wait loop and distort the call count tenfold; do not use it to count
+  traps.
+
+### Unresolved
+
+* The 8.9k cycles left per trap: prologue 1.2k, DOS service about 3k, reentry about 5k; the kernel
+  round trip is outside.
+* Translating `jmp cs:[table]` (1,100 a second); a selector guard for `push es; mov es,eax` (4,000 a
+  second).
+* The synthetic-key driver gets no window focus when started right after another run; start it alone.
+
+## 2026-09-26 Task 742 — long mode의 segment 읽기·push 슬롯
+
+작업 로그: [20260926-742](../work-logs/20260926-742-long-mode-segment-read-and-push.md)
+
+### 확인됨
+
+* Task 741 census의 10%(memcpy helper의 `push es`·`mov eax,ds`)가 trap 없이 돕니다. 값은 guest
+  selector이고 엔진이 shadow에 유지하므로 슬롯은 guard 없이 shadow를 읽습니다(`kGuardedSegmentRead`
+  15/16바이트, 새 `kGuardedSegmentPush` 23바이트). attract 30초: 두 지점 0회, breakpoint 878,285회,
+  VEH 6.65%. pumpit2a: breakpoint 149,911 → 107,756.
+* 기존 코드는 `enable_guarded_segment_read`가 켜진 long-mode 이미지에 **i386 read 슬롯**을 방출하고
+  있었습니다(pushfq를 host 스택에, host DS=0을 RIP 상대 주소와 비교 → 항상 fallback INT3). 그래서
+  0x010FE376이 매번 trap했습니다. generic switch가 long mode에서는 방출하지 않습니다.
+* 검증기 오프셋 실수(+4/+5)로 동적 이미지가 거절되던 빌드는 시작 직후 `SIGTRAP unhandled
+  rip=0x01104F87`로 죽었습니다: `call eax`가 미번역 대상으로 가면 legacy fallback이 TF를 켜고 arena로
+  가는데 첫 단일 스텝을 VEH가 거절합니다. **동적 이미지가 거절될 때 간접 call 대상에서 죽는 잠복
+  결함**입니다. 오프셋 수정 후 4/4 통과.
+* `unsafe_failure` 7곳이 `[repiu-aot-unsafe] line=N`을 찍습니다.
+
+### 남은 것
+
+* 위 잠복 결함. 동적 이미지가 거절되는 다른 이유가 생기면 재발합니다.
+* `jmp cs:[table]`(초당 1,200회) boundary, ISR의 INT 21h·privileged 명령, `delay()` 폴링.
+
+## English
+
+## 2026-09-26 Task 742 — long-mode segment read and push slots
+
+Work log: [20260926-742](../work-logs/20260926-742-long-mode-segment-read-and-push.md)
+
+### Confirmed
+
+* The 10% of Task 741's census in the memcpy helper's `push es` and `mov eax,ds` runs without a trap.
+  The value is the guest selector, kept by the engine in the shadow, so the slots read the shadow with
+  no guard (`kGuardedSegmentRead` 15/16 bytes, new `kGuardedSegmentPush` 23 bytes). 30 s attract: both
+  sites zero, 878,285 breakpoints, VEH 6.65%. pumpit2a: 149,911 → 107,756 breakpoints.
+* The existing code emitted the **i386 read slot** into long-mode images when
+  `enable_guarded_segment_read` was on (pushfq onto the host stack, host DS = 0 compared
+  RIP-relatively, always the fallback INT3), which is why 0x010FE376 trapped every time. The generic
+  switch no longer emits it in long mode.
+* The build whose validator offsets were wrong (+4 for +5) rejected dynamic images and died right after
+  start with `SIGTRAP unhandled rip=0x01104F87`: when `call eax` reaches an untranslated target the
+  legacy fallback arms TF into the arena and the VEH refuses the first single step. **A latent defect:
+  an indirect-call target dies whenever its dynamic image is rejected.** 4 of 4 runs pass with the
+  offsets fixed.
+* The seven `unsafe_failure` setters print `[repiu-aot-unsafe] line=N`.
+
+### Unresolved
+
+* The latent defect above; any other reason for a rejected dynamic image brings it back.
+* The `jmp cs:[table]` boundary (1,200 a second), the ISR's INT 21h and privileged instructions,
+  `delay()` polling.
+
+## 2026-09-26 Task 743 — 번역되지 않은 return 대상: 막다른 INT3에서 fallback과 이름 있는 실패로
+
+작업 로그: [20260926-743](../work-logs/20260926-743-x64-untranslatable-return-target.md)
+
+### 확인됨
+
+* Task 742가 드러낸 죽음의 경위: 동적 번역이 거절된 continuation(`0x01101E59`, `pop edx`)으로 `ret`이
+  돌아오면 return thunk의 resolver가 "첫 명령이 long mode에서 byte-identical"만 legacy resume으로
+  허용해 0을 돌려주고, thunk의 `int3`을 VEH가 `kNoHostFrameToUnwind`로 거절했습니다. 간접 call의 같은
+  상황은 동일성 검사 없이 VEH 단일 스텝 경로(HLE·stack bridge)로 살아남습니다.
+* resolver를 간접 call과 같은 조건(읽을 수 있는 guest 코드)으로 넓혔습니다. legacy resume thunk는
+  TF 뒤 `jmp`라 #DB가 대상 실행 전에 납니다.
+* 재현 스위치 `REPIU_AOT_DYNAMIC_REJECT=<주소>|read`, fault 보고의 `last_exit_site=`/`last_exit_eip=`,
+  거절 지점의 `[repiu-x64-untranslatable] stage= eip= bytes= …`(8회까지).
+* Linux x64에는 인터프리터가 없어 "번역 없음 + 비동일 명령"(예: 절대 주소 `cmp`)은 여전히 실행할 수
+  없습니다. 동적 번역이 정상이면 도달하지 않습니다.
+
+### 남은 것
+
+* 한 명령 lowering 실행기(또는 인터프리터)가 있어야 위 경우도 삽니다. 미룸.
+
+## English
+
+## 2026-09-26 Task 743 — untranslated return targets: from a dead-end INT3 to a fallback and a named failure
+
+Work log: [20260926-743](../work-logs/20260926-743-x64-untranslatable-return-target.md)
+
+### Confirmed
+
+* How Task 742's death happened: when a `ret` came back to a continuation whose dynamic translation
+  was rejected (`0x01101E59`, `pop edx`), the return thunk's resolver allowed the legacy resume only
+  for a byte-identical first instruction, returned 0, and the VEH refused the thunk's `int3` as
+  `kNoHostFrameToUnwind`. The same situation on an indirect call survives through the VEH's
+  single-step path (HLE and stack bridge) with no identity check.
+* The resolver now uses the indirect call's condition (readable guest code); the legacy resume thunk
+  sets TF and jumps, so the #DB lands before the target runs.
+* A reproduction switch `REPIU_AOT_DYNAMIC_REJECT=<address>|read`, `last_exit_site=`/`last_exit_eip=`
+  in the fault report, and `[repiu-x64-untranslatable] stage= eip= bytes= …` (up to eight) at the
+  refusal points.
+* Linux x64 has no interpreter, so "no translation and a non-identical instruction" (an absolute
+  `cmp`, say) still cannot run; unreachable while dynamic translation works.
+
+### Unresolved
+
+* A single-instruction lowering executor (or an interpreter) would cover that case. Deferred.
+
+## 2026-09-27 Task 744 — `xor edx,edx; mov dl,bl` jump table
+
+작업 로그: [20260927-744](../work-logs/20260927-744-jump-table-low-byte-move-guard.md)
+
+### 확인됨
+
+* census 5위 `0x010F659E`(`jmp cs:[edx*4+table]`, 초당 1,200회)의 원인은 `CS:` 접두어가 아니라 guard
+  전파였습니다. planner의 low-byte guard(`cmp bl,imm; ja`)는 정규화로 `and r32,0xFF`만 알았고, 이
+  Watcom `switch`는 `xor edx,edx; mov dl,bl`로 다른 레지스터에 옮깁니다. 매처와 방출기는 `CS:`를
+  이미 다룹니다.
+* `PropagateLowByteJumpTableGuard`가 `movzx r32,r8`, 자기 자신 `xor`/`sub`(`zeroed_register` 전달),
+  `mov r8,r8'`를 받습니다. attract 30초: 그 지점 0회, 폴트 0.
+* 엔진 쪽 trap 후보는 이것으로 소진: 남은 상위는 `delay()`의 INT 21h AH=2Ch(보정 spin 2초 +
+  초당 6,600회), `lseek`(초당 3,800회), ISR의 batch된 `in`·EOI·`iret`(각 초당 240회).
+
+## English
+
+## 2026-09-27 Task 744 — the `xor edx,edx; mov dl,bl` jump table
+
+Work log: [20260927-744](../work-logs/20260927-744-jump-table-low-byte-move-guard.md)
+
+### Confirmed
+
+* The census's fifth site `0x010F659E` (`jmp cs:[edx*4+table]`, 1,200 a second) was not about the
+  `CS:` prefix but guard propagation: the planner's low-byte guard (`cmp bl,imm; ja`) knew only
+  `and r32,0xFF` as its normalization, while this Watcom `switch` moves into another register with
+  `xor edx,edx; mov dl,bl`. The matcher and emitter already handle `CS:`.
+* `PropagateLowByteJumpTableGuard` accepts `movzx r32,r8`, a self-`xor`/`sub` (carrying
+  `zeroed_register`) and `mov r8,r8'`. 30 s attract: the site zero, no faults.
+* This exhausts the engine-side trap candidates: what remains is `delay()`'s INT 21h AH=2Ch (a
+  two-second calibration spin plus 6,600 a second), `lseek` (3,800 a second) and the ISR's batched
+  `in`, EOI and `iret` (240 a second each).

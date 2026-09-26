@@ -1108,6 +1108,71 @@ void PrintExecutionAttempt(
         // the rest, which separates "the cache emitted a raw in" from "this code
         // was never translated". The total is printed so it can be reconciled
         // against the profiled port I/O count.
+        // Task 741: how often the HLE reentry memo spared a decode.
+        logger.info(
+            "AOT reentry memo hit/miss segment/span/long-mode, generation: "
+            "{}/{} {}/{} {}/{}, {}",
+            attempt.aot_reentry_memo_hits[0], attempt.aot_reentry_memo_misses[0],
+            attempt.aot_reentry_memo_hits[1], attempt.aot_reentry_memo_misses[1],
+            attempt.aot_reentry_memo_hits[2], attempt.aot_reentry_memo_misses[2],
+            attempt.aot_reentry_memo_generation);
+        // Task 741: the breakpoint exceptions by host address, with the VEH
+        // exit that ended each, so a per-kind total of a million has names.
+        {
+            std::vector<std::uint32_t> order;
+            std::uint64_t census_total = 0;
+            for (std::uint32_t index = 0;
+                 index < attempt.breakpoint_site_census_size; ++index)
+            {
+                order.push_back(index);
+                census_total += attempt.breakpoint_site_census[index].count;
+            }
+            std::sort(order.begin(), order.end(),
+                      [&attempt](std::uint32_t left, std::uint32_t right) {
+                          return attempt.breakpoint_site_census[left].count >
+                              attempt.breakpoint_site_census[right].count;
+                      });
+            logger.info(
+                "breakpoint site census distinct/reported/overflow/"
+                "reported-total: {}/{}/{}/{}",
+                attempt.breakpoint_site_census_distinct,
+                attempt.breakpoint_site_census_size,
+                attempt.breakpoint_site_census_overflow, census_total);
+            for (std::uint32_t rank = 0;
+                 rank < 16U && rank < order.size(); ++rank)
+            {
+                const auto& entry =
+                    attempt.breakpoint_site_census[order[rank]];
+                std::string exits;
+                for (std::uint32_t slot = 0; slot < 4U; ++slot)
+                {
+                    if (entry.exit_counts[slot] == 0U)
+                    {
+                        break;
+                    }
+                    if (!exits.empty())
+                    {
+                        exits += ",";
+                    }
+                    exits += repiu::engine::VehExitSiteName(
+                        entry.exit_sites[slot]);
+                    exits += ":";
+                    exits += std::to_string(entry.exit_counts[slot]);
+                }
+                if (entry.exit_overflow != 0U)
+                {
+                    exits += ",other:";
+                    exits += std::to_string(entry.exit_overflow);
+                }
+                logger.info(
+                    "breakpoint site #{} host/guest/cache/count/exits: "
+                    "{}/{}/{}/{}/{}",
+                    rank + 1U, Hex32(entry.host_address),
+                    entry.guest_mapped ? Hex32(entry.guest_address)
+                                       : std::string("unmapped"),
+                    entry.in_cache ? 1U : 0U, entry.count, exits);
+            }
+        }
         {
             std::vector<std::uint32_t> order;
             std::uint64_t census_total = 0;

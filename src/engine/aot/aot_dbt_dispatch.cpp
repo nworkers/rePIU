@@ -3,6 +3,7 @@
 #include "aot_runtime_dispatch.h"
 #include "aot_residency_sample.h"
 #include "execution_internal.h"
+#include "aot_reentry_memo.h"
 #include "guest_memory_access.h"
 
 #include <Zydis.h>
@@ -132,7 +133,7 @@ bool SegmentWriteBlocksResumeEnabled()
     return enabled;
 }
 
-SegmentWriteProbe ProbeGuestInstructionSegmentWrite(ThreadContext* context,
+SegmentWriteProbe ProbeGuestInstructionSegmentWriteUncached(ThreadContext* context,
                                                    std::uint32_t guest_eip)
 {
     const auto* code = reinterpret_cast<const std::uint8_t*>(
@@ -169,7 +170,7 @@ SegmentWriteProbe ProbeGuestInstructionSegmentWrite(ThreadContext* context,
     return SegmentWriteProbe::kNo;
 }
 
-bool IsImmediateHleReentrySpanSafe(ThreadContext* context,
+bool IsImmediateHleReentrySpanSafeUncached(ThreadContext* context,
                                    std::uint32_t guest_entry,
                                    const char** reason)
 {
@@ -255,6 +256,72 @@ bool IsImmediateHleReentrySpanSafe(ThreadContext* context,
 bool ResolveAotDbtPostHleTranslationEnabled(std::string_view setting)
 {
     return setting == "1" || setting == "on" || setting == "true";
+}
+
+// Task 741. Both answers depend only on the guest bytes at the address and
+// the HLE boundary list, so they are remembered per address until a guest
+// code write moves the memo generation.
+SegmentWriteProbe ProbeGuestInstructionSegmentWrite(
+    ThreadContext* context, std::uint32_t guest_eip)
+{
+    if (context == nullptr || !AotReentryMemoEnabled())
+    {
+        return ProbeGuestInstructionSegmentWriteUncached(context, guest_eip);
+    }
+    auto* const entry = LookupAotReentryMemo(context, guest_eip);
+    if (entry == nullptr)
+    {
+        return ProbeGuestInstructionSegmentWriteUncached(context, guest_eip);
+    }
+    if ((entry->computed & 0x01U) != 0U)
+    {
+        CountAotReentryMemo(context, AotReentryMemoKind::kSegmentProbe, true);
+        return static_cast<SegmentWriteProbe>(entry->segment_probe);
+    }
+    const SegmentWriteProbe probe =
+        ProbeGuestInstructionSegmentWriteUncached(context, guest_eip);
+    entry->segment_probe = static_cast<std::uint8_t>(probe);
+    entry->computed |= 0x01U;
+    CountAotReentryMemo(context, AotReentryMemoKind::kSegmentProbe, false);
+    return probe;
+}
+
+bool IsImmediateHleReentrySpanSafe(ThreadContext* context,
+                                   std::uint32_t guest_entry,
+                                   const char** reason)
+{
+    if (context == nullptr || !AotReentryMemoEnabled())
+    {
+        return IsImmediateHleReentrySpanSafeUncached(
+            context, guest_entry, reason);
+    }
+    auto* const entry = LookupAotReentryMemo(context, guest_entry);
+    if (entry == nullptr)
+    {
+        return IsImmediateHleReentrySpanSafeUncached(
+            context, guest_entry, reason);
+    }
+    if ((entry->computed & 0x02U) != 0U)
+    {
+        CountAotReentryMemo(context, AotReentryMemoKind::kSpanSafety, true);
+        if (reason != nullptr)
+        {
+            *reason = entry->span_reason;
+        }
+        return entry->span_safe;
+    }
+    const char* computed_reason = "unknown";
+    const bool safe = IsImmediateHleReentrySpanSafeUncached(
+        context, guest_entry, &computed_reason);
+    entry->span_safe = safe;
+    entry->span_reason = computed_reason;
+    entry->computed |= 0x02U;
+    CountAotReentryMemo(context, AotReentryMemoKind::kSpanSafety, false);
+    if (reason != nullptr)
+    {
+        *reason = computed_reason;
+    }
+    return safe;
 }
 
 bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context,

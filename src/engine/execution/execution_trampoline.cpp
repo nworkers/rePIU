@@ -1,6 +1,8 @@
 #include "repiu/engine/shutdown_recovery_policy.h"
 #include "repiu/engine/execution_trampoline.h"
 #include "native_fast_path.h"
+#include "aot_reentry_memo.h"
+#include "repiu/platform/fault_handler.h"
 #include "native_linear_span.h"
 #include "verified_region_analyzer.h"
 #include "native_phase_sampler.h"
@@ -95,6 +97,11 @@
 
 namespace repiu::engine
 {
+
+// Task 743. Defined beside NoteVehExitSite, used from the anonymous namespace.
+void ReportLinuxX64UntranslatableContinuation(
+    ThreadContext* context, std::uint32_t eip, const char* stage);
+
 
 void RecordFaultRecoveryProvenance(ThreadContext* context,
                                    std::uint32_t source_eip,
@@ -2153,6 +2160,9 @@ bool HandleSingleStepTrace(repiu::platform::GuestCpuContext* win32_context, Thre
                     context,
                     static_cast<std::uint32_t>(win32_context->Eip)))
             {
+                ReportLinuxX64UntranslatableContinuation(
+                    context, static_cast<std::uint32_t>(win32_context->Eip),
+                    "single-step-trace");
                 context->aot_reentry_pending = false;
                 context->aot_legacy_fallback = false;
                 context->enable_single_step_trace = false;
@@ -3499,7 +3509,22 @@ std::uintptr_t LinuxX64EngineResolver(
         context->aot_dynamic_attempt_count.load(std::memory_order_relaxed);
     if (!ResolveAotTransferTarget(context, frame->guest_source, &cache_address))
     {
-        if (CanResumeLinuxX64LegacyTarget(context, frame->guest_source))
+        const bool identical_first_instruction =
+            CanResumeLinuxX64LegacyTarget(context, frame->guest_source);
+        // Task 743. The legacy resume thunk sets TF and jumps, so the #DB
+        // names the target before anything there runs; the VEH's single-step
+        // path then dispatches the HLE and stack-bridge handlers at that EIP
+        // exactly as the indirect-transfer fallback does. Requiring a
+        // byte-identical first instruction here left every other
+        // untranslatable return target to the thunk's INT3, which nothing
+        // handles.
+        if (identical_first_instruction ||
+            (IsGuestInstructionPointer(context, frame->guest_source) &&
+             IsGuestRangeReadable(
+                 context,
+                 reinterpret_cast<const void*>(
+                     static_cast<std::uintptr_t>(frame->guest_source)),
+                 15U)))
         {
             frame->guest_continuation = frame->guest_source;
             frame->guest.eip = frame->guest_source;
@@ -3510,8 +3535,10 @@ std::uintptr_t LinuxX64EngineResolver(
                 "legacy-fallback", frame->guest_source,
                 static_cast<std::uint32_t>(
                     repiu::platform::LinuxX64LegacyResumeThunkAddress()),
-                "byte-identical first instruction", frame->status,
-                frame->guest.esp);
+                identical_first_instruction
+                    ? "byte-identical first instruction"
+                    : "single-step fallback at a non-identical target",
+                frame->status, frame->guest.esp);
             return repiu::platform::LinuxX64LegacyResumeThunkAddress();
         }
         const bool attempted_dynamic_translation =
@@ -3964,8 +3991,8 @@ LegacyResumeCodeMode(const ThreadContext* context,
     return runtime::GuestCodeDefaultOperandSize::k32;
 }
 
-bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
-                                   const std::uint32_t guest_target)
+bool CanResumeLinuxX64LegacyTargetUncached(ThreadContext* context,
+                                           const std::uint32_t guest_target)
 {
 #if defined(__x86_64__)
     constexpr std::size_t kMaximumX86InstructionBytes = 15U;
@@ -3993,6 +4020,48 @@ bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
     (void)guest_target;
     return false;
 #endif
+}
+
+// Task 741. The answer depends on the guest bytes and the code segment's
+// default operand size, so it is remembered per address together with the
+// code mode it was computed under, until a guest code write or a change of
+// the bytes at the address invalidates the entry.
+bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
+                                   const std::uint32_t guest_target)
+{
+    if (context == nullptr || !AotReentryMemoEnabled())
+    {
+        return CanResumeLinuxX64LegacyTargetUncached(context, guest_target);
+    }
+    auto* const entry = LookupAotReentryMemo(context, guest_target);
+    if (entry == nullptr)
+    {
+        return CanResumeLinuxX64LegacyTargetUncached(context, guest_target);
+    }
+    std::uint8_t code_mode = 0U;
+#if defined(__x86_64__)
+    if (const std::optional<runtime::GuestCodeDefaultOperandSize> mode =
+            LegacyResumeCodeMode(context, guest_target);
+        mode.has_value())
+    {
+        code_mode = static_cast<std::uint8_t>(
+            static_cast<std::uint32_t>(*mode) + 1U);
+    }
+#endif
+    if ((entry->computed & 0x04U) != 0U &&
+        entry->long_mode_code_mode == code_mode)
+    {
+        CountAotReentryMemo(
+            context, AotReentryMemoKind::kLongModeIdentity, true);
+        return entry->long_mode_identical;
+    }
+    const bool identical =
+        CanResumeLinuxX64LegacyTargetUncached(context, guest_target);
+    entry->long_mode_identical = identical;
+    entry->long_mode_code_mode = code_mode;
+    entry->computed |= 0x04U;
+    CountAotReentryMemo(context, AotReentryMemoKind::kLongModeIdentity, false);
+    return identical;
 }
 
 // Execution probe/trace + guest-IP helpers promoted to external linkage for
@@ -4092,6 +4161,94 @@ std::uint32_t SingleStepRunBucket(std::uint32_t length)
 // Task 503d-15: takes the event rather than a raw code, so the classification
 // reads the kind and only the "other" bucket, which names what it could not
 // classify, still reads the host's own number.
+// Task 741. Open addressing keyed by the host address: a hash probe of a few
+// slots per breakpoint. The guest mapping runs once per new address, so the
+// lookup cost never repeats on the hot path. Returns null when the table is
+// full and the address is new.
+ThreadContext::BreakpointSiteCensusEntry* FindBreakpointSiteSlot(
+    ThreadContext* context, const std::uint32_t eip, const bool insert)
+{
+    constexpr std::uint32_t kCapacity =
+        ThreadContext::kBreakpointSiteCensusCapacity;
+    static_assert((kCapacity & (kCapacity - 1U)) == 0U,
+                  "the probe mask needs a power-of-two capacity");
+    std::uint32_t index = ((eip >> 1U) * 0x9E3779B1U) >> 23U;
+    for (std::uint32_t probe = 0; probe < kCapacity; ++probe)
+    {
+        auto& entry = context->breakpoint_site_census[index & (kCapacity - 1U)];
+        if (entry.count == 0U)
+        {
+            return insert ? &entry : nullptr;
+        }
+        if (entry.host_address == eip)
+        {
+            return &entry;
+        }
+        ++index;
+    }
+    return nullptr;
+}
+
+void RecordBreakpointSite(ThreadContext* context, const std::uint32_t eip)
+{
+    auto* const slot = FindBreakpointSiteSlot(context, eip, true);
+    if (slot == nullptr)
+    {
+        ++context->breakpoint_site_census_overflow;
+        return;
+    }
+    if (slot->count != 0U)
+    {
+        ++slot->count;
+        return;
+    }
+    auto& entry = *slot;
+    ++context->breakpoint_site_census_size;
+    entry.host_address = eip;
+    entry.count = 1U;
+    entry.in_cache = IsAotCacheAddress(context, eip);
+    if (entry.in_cache)
+    {
+        std::uint32_t guest_address = 0U;
+        entry.guest_mapped = context->aot_placement != nullptr &&
+            FindAotGuestAddress(*context->aot_placement, eip, &guest_address);
+        entry.guest_address = entry.guest_mapped ? guest_address : 0U;
+    }
+    else
+    {
+        entry.guest_address = eip;
+        entry.guest_mapped = true;
+    }
+}
+
+void RecordBreakpointSiteExit(ThreadContext* context, const std::uint32_t eip,
+                              const VehExitSite site)
+{
+    auto* const slot = FindBreakpointSiteSlot(context, eip, false);
+    if (slot != nullptr)
+    {
+        auto& entry = *slot;
+        const auto code = static_cast<std::uint8_t>(site);
+        for (std::uint32_t slot = 0;
+             slot < ThreadContext::kBreakpointSiteExitCapacity; ++slot)
+        {
+            if (entry.exit_counts[slot] == 0U)
+            {
+                entry.exit_sites[slot] = code;
+                entry.exit_counts[slot] = 1U;
+                return;
+            }
+            if (entry.exit_sites[slot] == code)
+            {
+                ++entry.exit_counts[slot];
+                return;
+            }
+        }
+        ++entry.exit_overflow;
+        return;
+    }
+}
+
 void RecordVehExceptionCensus(ThreadContext* context,
                               const repiu::platform::FaultEvent& fault)
 {
@@ -4119,6 +4276,11 @@ void RecordVehExceptionCensus(ThreadContext* context,
     if (fault.kind == repiu::platform::FaultKind::kBreakpoint)
     {
         ++context->veh_breakpoint_exception_count;
+        if (fault.registers != nullptr)
+        {
+            RecordBreakpointSite(
+                context, static_cast<std::uint32_t>(fault.registers->Eip));
+        }
     }
     else if (fault.kind == repiu::platform::FaultKind::kAccessViolation)
     {
@@ -4528,7 +4690,7 @@ void RecordHandledDosInterrupt(ThreadContext* context,
     // Task 523 diagnostic (temporary): the sequence of DOS/DPMI services the
     // guest actually got, so two hosts can be diffed. The last one before a
     // divergence names the call that answered differently.
-    if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+    if (([]() { static const char* const dos_int_trace = std::getenv("REPIU_DOS_INT_TRACE"); return dos_int_trace; }()) != nullptr)
     {
         char line[96] = {};
         const int length = std::snprintf(
@@ -4804,6 +4966,9 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
             break;
         }
     }
+    // Task 741: any completed guest code write may change what the reentry
+    // memo remembered about an address.
+    ++context->aot_reentry_memo_generation;
     if (observed || retired_provenance)
     {
         context->aot_code_write_count.fetch_add(
@@ -5008,6 +5173,39 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
     return consumed_ticks;
 }
 
+// Task 743. Linux x64 has no interpreter: a guest instruction runs either
+// from the cache or, under the single-step bridge, as its own bytes when they
+// mean the same thing in long mode. When neither holds and the block could
+// not be translated, execution cannot continue, and until now the run died
+// as an anonymous SIGTRAP. This names the address and its bytes first.
+void ReportLinuxX64UntranslatableContinuation(
+    ThreadContext* context, const std::uint32_t eip, const char* const stage)
+{
+    static std::atomic<std::uint32_t> reported{0U};
+    if (reported.fetch_add(1U, std::memory_order_relaxed) >= 8U)
+    {
+        return;
+    }
+    const auto* const bytes = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(eip));
+    const bool readable = IsGuestRangeReadable(context, bytes, 8U);
+    std::fprintf(
+        stderr,
+        "[repiu-x64-untranslatable] stage=%s eip=0x%08X bytes=%02X %02X %02X "
+        "%02X %02X %02X %02X %02X legacy_fallback=%u reentry_pending=%u "
+        "dynamic_attempts=%llu: the block has no translation and its first "
+        "instruction is not byte-identical in long mode\n",
+        stage, eip,
+        readable ? bytes[0] : 0U, readable ? bytes[1] : 0U,
+        readable ? bytes[2] : 0U, readable ? bytes[3] : 0U,
+        readable ? bytes[4] : 0U, readable ? bytes[5] : 0U,
+        readable ? bytes[6] : 0U, readable ? bytes[7] : 0U,
+        context->aot_legacy_fallback ? 1U : 0U,
+        context->aot_reentry_pending ? 1U : 0U,
+        static_cast<unsigned long long>(
+            context->aot_dynamic_attempt_count.load(std::memory_order_relaxed)));
+}
+
 void NoteVehExitSite(ThreadContext* context, VehExitSite site)
 {
     if (context == nullptr)
@@ -5015,6 +5213,16 @@ void NoteVehExitSite(ThreadContext* context, VehExitSite site)
         return;
     }
     context->last_veh_exit_site = static_cast<std::uint8_t>(site);
+    // Task 743: published for the unhandled fault report.
+    repiu::platform::repiu_last_veh_exit_site = static_cast<std::uint32_t>(site);
+    repiu::platform::repiu_last_veh_exit_eip = context->last_veh_eip;
+    // Task 741: `last_veh_eip` is this exception's own EIP, set at the choke
+    // point before any handler runs; only breakpoint addresses are in the
+    // table, so a miss costs the scan and nothing else.
+    if (context->breakpoint_site_census_size != 0U)
+    {
+        RecordBreakpointSiteExit(context, context->last_veh_eip, site);
+    }
 }
 
 // Task 410. Constructed at the VEH choke point, before AotHleTranslationScope,
@@ -6528,6 +6736,16 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     // does not happen.
     if (context->use_guest_stack && context->active_call_state == nullptr)
     {
+#if defined(__x86_64__)
+        if (fault.kind == repiu::platform::FaultKind::kSingleStep &&
+            IsGuestInstructionPointer(
+                context, static_cast<std::uint32_t>(win32_context->Eip)))
+        {
+            ReportLinuxX64UntranslatableContinuation(
+                context, static_cast<std::uint32_t>(win32_context->Eip),
+                "unhandled-single-step");
+        }
+#endif
         NoteVehExitSite(context, VehExitSite::kNoHostFrameToUnwind);
         return repiu::platform::FaultDisposition::kNotHandled;
     }

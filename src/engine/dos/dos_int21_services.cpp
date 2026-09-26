@@ -711,7 +711,7 @@ void CaptureDosTermination(repiu::platform::GuestCpuContext* win32_context,
                     sizeof(context->dos_termination_stack));
     }
 
-    if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+    if (([]() { static const char* const dos_int_trace = std::getenv("REPIU_DOS_INT_TRACE"); return dos_int_trace; }()) != nullptr)
     {
         const repiu::runtime::GuestDescriptor* descriptor =
             repiu::runtime::FindDescriptor(context->selector_table,
@@ -1018,7 +1018,7 @@ void RecordDosWrite(const repiu::platform::GuestCpuContext* win32_context,
                     bytes->size() > limit ? " ..." : "");
         }
     }
-    if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr &&
+    if (([]() { static const char* const dos_int_trace = std::getenv("REPIU_DOS_INT_TRACE"); return dos_int_trace; }()) != nullptr &&
         win32_context != nullptr)
     {
         fprintf(stderr,
@@ -1540,7 +1540,7 @@ bool HandleDosResizeMemoryBlock(repiu::platform::GuestCpuContext* win32_context,
             // 32-bit paragraph count.
             win32_context->Ebx = max_paragraphs;
             win32_context->EFlags |= 1U;
-            if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+            if (([]() { static const char* const dos_int_trace = std::getenv("REPIU_DOS_INT_TRACE"); return dos_int_trace; }()) != nullptr)
             {
                 std::fprintf(
                     stderr,
@@ -1566,7 +1566,7 @@ bool HandleDosResizeMemoryBlock(repiu::platform::GuestCpuContext* win32_context,
                     static_cast<std::uint32_t>(requested_end & 0xFFFFFFFFU),
                     allocator_end);
     win32_context->EFlags &= ~1U;
-    if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+    if (([]() { static const char* const dos_int_trace = std::getenv("REPIU_DOS_INT_TRACE"); return dos_int_trace; }()) != nullptr)
     {
         std::fprintf(
             stderr,
@@ -1771,7 +1771,7 @@ bool HandleDosInterrupt21(repiu::platform::GuestCpuContext* win32_context, Threa
             const std::uint32_t byte_count = win32_context->Ecx;
             AppendConsoleOutput(
                 context, text, byte_count, win32_context->Ebx == 2U);
-            if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+            if (([]() { static const char* const dos_int_trace = std::getenv("REPIU_DOS_INT_TRACE"); return dos_int_trace; }()) != nullptr)
             {
                 fprintf(stderr,
                         "[repiu-dos-io] op=console-write eip=0x%08X "

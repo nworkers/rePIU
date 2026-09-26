@@ -230,6 +230,7 @@ add_library(repiu_exe
     src/platform/build_identity.cpp
     src/platform/host_thread.cpp
     src/platform/host_time.cpp
+    src/platform/fault_report_state.cpp
 )
 
 # Task 501 put the execution engine behind if(WIN32) because none of it built

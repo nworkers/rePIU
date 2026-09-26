@@ -392,7 +392,7 @@ bool AppendConsoleOutput(ThreadContext* context,
     // ends any other way never reaches -- and a guest that is failing prints
     // exactly then. Its own message is the best diagnostic available and it
     // was being swallowed by the very failure it describes.
-    if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+    if (([]() { static const char* const dos_int_trace = std::getenv("REPIU_DOS_INT_TRACE"); return dos_int_trace; }()) != nullptr)
     {
         repiu::platform::WriteHostErrorStream("[repiu-guest-out] ", 18U);
         repiu::platform::WriteHostErrorStream(

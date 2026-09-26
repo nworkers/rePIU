@@ -80,6 +80,8 @@ const char* AotInstructionKindName(const repiu::runtime::AotInstructionKind kind
             return "kGuardedSegmentLoad";
         case AotInstructionKind::kGuardedSegmentPop:
             return "kGuardedSegmentPop";
+        case AotInstructionKind::kGuardedSegmentPush:
+            return "kGuardedSegmentPush";
         case AotInstructionKind::kPortIo: return "kPortIo";
     }
     return "kUnknown";
@@ -451,6 +453,10 @@ bool RecordIsEmitted(const repiu::runtime::AotInstructionRecord& record)
             return repiu::runtime::LongModeGuardedSegmentLoadEmittable(record);
         case AotInstructionKind::kGuardedSegmentPop:
             return repiu::runtime::LongModeGuardedSegmentPopEmittable(record);
+        case AotInstructionKind::kGuardedSegmentRead:
+            return repiu::runtime::LongModeGuardedSegmentReadEmittable(record);
+        case AotInstructionKind::kGuardedSegmentPush:
+            return repiu::runtime::LongModeGuardedSegmentPushEmittable(record);
         case AotInstructionKind::kIndirectExit:
             return repiu::runtime::LongModeIndirectCallEmittable(record);
         case AotInstructionKind::kJumpTable:

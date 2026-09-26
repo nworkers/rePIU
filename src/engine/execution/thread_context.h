@@ -429,6 +429,62 @@ struct ThreadContext
         port_io_address_census[kPortIoAddressCensusCapacity] = {};
     std::uint32_t port_io_address_census_size = 0;
     std::uint32_t port_io_address_census_overflow = 0;
+    // Task 741: which host addresses raise breakpoint exceptions, and which
+    // VEH exit ended each. The per-kind census says how many; this says
+    // where. A cache address is mapped to its guest address on first sight;
+    // an arena address is its own guest address. Guest thread only, at the
+    // VEH choke point.
+    //
+    // An open-addressing table rather than a 32-slot list: the first version
+    // filled its 32 slots with start-up sites and put 98% of the run into
+    // overflow. 512 slots keyed by address keep the lookup O(1); the report
+    // copies the 32 busiest out.
+    static constexpr std::uint32_t kBreakpointSiteCensusCapacity = 512U;
+    static constexpr std::uint32_t kBreakpointSiteReportCapacity = 32U;
+    static constexpr std::uint32_t kBreakpointSiteExitCapacity = 4U;
+    struct BreakpointSiteCensusEntry
+    {
+        std::uint32_t host_address = 0;
+        std::uint32_t guest_address = 0;
+        bool in_cache = false;
+        bool guest_mapped = false;
+        std::uint32_t count = 0;
+        std::uint8_t exit_sites[kBreakpointSiteExitCapacity] = {};
+        std::uint32_t exit_counts[kBreakpointSiteExitCapacity] = {};
+        std::uint32_t exit_overflow = 0;
+    };
+    BreakpointSiteCensusEntry
+        breakpoint_site_census[kBreakpointSiteCensusCapacity] = {};
+    std::uint32_t breakpoint_site_census_size = 0;
+    std::uint32_t breakpoint_site_census_overflow = 0;
+    // Task 741: what an HLE reentry asks about a guest address, remembered.
+    // Every HLE reentry decoded the resumed instruction with Zydis three ways
+    // (segment write? span safe up to 64 instructions ahead? identical in
+    // long mode?), and the answers depend only on the guest bytes, the code
+    // segment's default operand size and the HLE boundary list. Direct-mapped
+    // by address. An entry is valid while `aot_reentry_memo_generation` still
+    // matches (it moves on every completed guest code write) and while the
+    // first eight code bytes still read the same; the long-mode answer also
+    // keeps the code mode it was computed under.
+    static constexpr std::uint32_t kAotReentryMemoCapacity = 1024U;
+    struct AotReentryMemoEntry
+    {
+        std::uint32_t guest_eip = 0;
+        std::uint32_t generation = 0;
+        std::uint64_t fingerprint = 0;
+        // bit 0 segment probe, bit 1 span safety, bit 2 long-mode identity.
+        std::uint8_t computed = 0;
+        std::uint8_t segment_probe = 0;
+        // 0 = no mode, otherwise GuestCodeDefaultOperandSize + 1.
+        std::uint8_t long_mode_code_mode = 0;
+        bool span_safe = false;
+        bool long_mode_identical = false;
+        const char* span_reason = nullptr;
+    };
+    AotReentryMemoEntry aot_reentry_memo[kAotReentryMemoCapacity] = {};
+    std::uint32_t aot_reentry_memo_generation = 1;
+    std::uint32_t aot_reentry_memo_hits[3] = {};
+    std::uint32_t aot_reentry_memo_misses[3] = {};
     // Task 407: the delay loop free-runs in the arena with no trap flag, and
     // that state is self-sustaining, so the question is how it is first
     // entered. In steady state the exception before an arena port I/O fault is

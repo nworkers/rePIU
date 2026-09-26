@@ -666,6 +666,30 @@ struct MinimalExecutionAttempt
     PortIoAddressCensusEntry port_io_address_census[32] = {};
     std::uint32_t port_io_address_census_size = 0;
     std::uint32_t port_io_address_census_overflow = 0;
+    // Task 741: where breakpoint exceptions come from. See
+    // ThreadContext::BreakpointSiteCensusEntry.
+    struct BreakpointSiteCensusEntry
+    {
+        std::uint32_t host_address = 0;
+        std::uint32_t guest_address = 0;
+        bool in_cache = false;
+        bool guest_mapped = false;
+        std::uint32_t count = 0;
+        std::uint8_t exit_sites[4] = {};
+        std::uint32_t exit_counts[4] = {};
+        std::uint32_t exit_overflow = 0;
+    };
+    // The 32 busiest, in count order; `distinct` is how many addresses the
+    // whole table held.
+    BreakpointSiteCensusEntry breakpoint_site_census[32] = {};
+    std::uint32_t breakpoint_site_census_size = 0;
+    std::uint32_t breakpoint_site_census_distinct = 0;
+    std::uint32_t breakpoint_site_census_overflow = 0;
+    // Task 741: the HLE reentry memo, by kind (segment probe, span safety,
+    // long-mode identity).
+    std::uint32_t aot_reentry_memo_hits[3] = {};
+    std::uint32_t aot_reentry_memo_misses[3] = {};
+    std::uint32_t aot_reentry_memo_generation = 0;
     // Task 407: how free-running arena execution is entered, recorded once per
     // transition rather than once per steady-state fault.
     struct ArenaPortIoEntryTraceEntry

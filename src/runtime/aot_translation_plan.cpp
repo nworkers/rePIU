@@ -250,6 +250,45 @@ bool ReadGuardedSegmentPopRegister(
     return false;
 }
 
+// Task 742. The four segment pushes the long-mode slot pushes from the shadow.
+// CS and SS are left out: the guest cannot load them the same way and the
+// engine keeps no shadow for CS. A 16-bit push (`66 06`) writes two bytes and
+// is not this shape.
+bool ReadGuardedSegmentPushRegister(
+    const ZydisDecodedInstruction& instruction,
+    const std::uint8_t* bytes,
+    std::uint8_t* segment_register)
+{
+    if (bytes == nullptr || segment_register == nullptr ||
+        instruction.operand_width != 32U)
+    {
+        return false;
+    }
+    if (instruction.length == 1U && bytes[0] == 0x06U)
+    {
+        *segment_register = 0U;
+        return true;
+    }
+    if (instruction.length == 1U && bytes[0] == 0x1EU)
+    {
+        *segment_register = 3U;
+        return true;
+    }
+    if (instruction.length == 2U && bytes[0] == 0x0FU &&
+        bytes[1] == 0xA0U)
+    {
+        *segment_register = 4U;
+        return true;
+    }
+    if (instruction.length == 2U && bytes[0] == 0x0FU &&
+        bytes[1] == 0xA8U)
+    {
+        *segment_register = 5U;
+        return true;
+    }
+    return false;
+}
+
 bool ReadGuardedSegmentLoadRegisters(
     const ZydisDecodedInstruction& instruction,
     const ZydisDecodedOperand* operands,
@@ -443,6 +482,11 @@ struct JumpTableGuard
     std::uint8_t index_register = 0xFFU;
     std::uint32_t entry_count = 0;
     bool requires_low_byte_normalization = false;
+    // Task 744. Set while a low-byte guard waits for its normalization and a
+    // `xor r32,r32` (or `sub r32,r32`) has just zeroed r32: the `mov r8,r8'`
+    // that follows may move the guarded low byte into it, which makes r32 the
+    // index register.
+    std::uint8_t zeroed_register = 0xFFU;
 };
 
 // The emitted slot is `jmp [reg*4+disp32]` + INT3 + N dword entries and the
@@ -553,6 +597,13 @@ bool MatchLowByteJumpTableNormalization(
     return mask == 0xFF;
 }
 
+// Task 744. The four ways Watcom code turns a guarded low byte into a
+// 32-bit table index: `and r32,0xFF` on the guard register; `movzx r32,r8`
+// from it; and the two-instruction `xor r32,r32` (or `sub`) followed by
+// `mov r8,r8'`, which is what pumpitea's switch dispatch at 0x010F659E does
+// (`xor edx,edx; mov dl,bl; jmp cs:[edx*4+table]`). The first pass and the
+// sweep both come through here, so the zeroing register is carried in the
+// guard from one instruction to the next.
 bool PropagateLowByteJumpTableGuard(
     const ZydisDecodedInstruction& instruction,
     const ZydisDecodedOperand* operands,
@@ -560,15 +611,78 @@ bool PropagateLowByteJumpTableGuard(
     const JumpTableGuard& guard,
     std::unordered_map<std::uint32_t, JumpTableGuard>* guards)
 {
-    if (guards == nullptr || !guard.requires_low_byte_normalization ||
-        !MatchLowByteJumpTableNormalization(
-            instruction, operands, guard.index_register))
+    if (guards == nullptr || operands == nullptr ||
+        !guard.requires_low_byte_normalization)
     {
         return false;
     }
-    JumpTableGuard normalized = guard;
-    normalized.requires_low_byte_normalization = false;
-    return guards->emplace(next, normalized).second;
+    if (MatchLowByteJumpTableNormalization(
+            instruction, operands, guard.index_register))
+    {
+        JumpTableGuard normalized = guard;
+        normalized.requires_low_byte_normalization = false;
+        normalized.zeroed_register = 0xFFU;
+        return guards->emplace(next, normalized).second;
+    }
+    if (instruction.operand_count_visible != 2U ||
+        operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        operands[1].type != ZYDIS_OPERAND_TYPE_REGISTER)
+    {
+        return false;
+    }
+    if (instruction.mnemonic == ZYDIS_MNEMONIC_MOVZX)
+    {
+        std::uint8_t destination = 0xFFU;
+        std::uint8_t source_parent = 0xFFU;
+        if (!ReadGuardRegisterId(operands[0].reg.value, &destination) ||
+            !ReadLowByteParentRegisterId(operands[1].reg.value,
+                                         &source_parent) ||
+            source_parent != guard.index_register)
+        {
+            return false;
+        }
+        JumpTableGuard normalized = guard;
+        normalized.requires_low_byte_normalization = false;
+        normalized.index_register = destination;
+        normalized.zeroed_register = 0xFFU;
+        return guards->emplace(next, normalized).second;
+    }
+    if (instruction.mnemonic == ZYDIS_MNEMONIC_XOR ||
+        instruction.mnemonic == ZYDIS_MNEMONIC_SUB)
+    {
+        std::uint8_t destination = 0xFFU;
+        std::uint8_t source = 0xFFU;
+        if (!ReadGuardRegisterId(operands[0].reg.value, &destination) ||
+            !ReadGuardRegisterId(operands[1].reg.value, &source) ||
+            destination != source || destination == guard.index_register)
+        {
+            return false;
+        }
+        JumpTableGuard carried = guard;
+        carried.zeroed_register = destination;
+        return guards->emplace(next, carried).second;
+    }
+    if (instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
+        guard.zeroed_register != 0xFFU)
+    {
+        std::uint8_t destination_parent = 0xFFU;
+        std::uint8_t source_parent = 0xFFU;
+        if (!ReadLowByteParentRegisterId(operands[0].reg.value,
+                                         &destination_parent) ||
+            !ReadLowByteParentRegisterId(operands[1].reg.value,
+                                         &source_parent) ||
+            destination_parent != guard.zeroed_register ||
+            source_parent != guard.index_register)
+        {
+            return false;
+        }
+        JumpTableGuard normalized = guard;
+        normalized.requires_low_byte_normalization = false;
+        normalized.index_register = guard.zeroed_register;
+        normalized.zeroed_register = 0xFFU;
+        return guards->emplace(next, normalized).second;
+    }
+    return false;
 }
 
 bool MatchJumpTableBranch(const ZydisDecodedInstruction& instruction,
@@ -1164,6 +1278,18 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     block.instructions.push_back(std::move(record));
                     ++plan->hle_boundary_count;
                     plan->estimated_emitted_bytes += 48U;
+                    pending.push_back(next);
+                    break;
+                }
+                if (ReadGuardedSegmentPushRegister(
+                        instruction, bytes, &segment_register))
+                {
+                    record.kind = AotInstructionKind::kGuardedSegmentPush;
+                    record.segment_register = segment_register;
+                    record.fallthrough_target = next;
+                    block.instructions.push_back(std::move(record));
+                    ++plan->hle_boundary_count;
+                    plan->estimated_emitted_bytes += 23U;
                     pending.push_back(next);
                     break;
                 }

@@ -138,9 +138,40 @@ bool RunJumpTableGuardProbe()
     const bool dword_guard_preserved = PlansAsJumpTable(
         dword_guard, 5U, true);
 
+    // Task 744. `cmp bl,9; ja; xor edx,edx; mov dl,bl; jmp cs:[edx*4+table]`
+    // and the `movzx edx,bl` form; a move from a register that is not the
+    // guard (`mov dl,cl`) must not normalize.
+    auto make_move_guard = [](const std::vector<std::uint8_t>& normalization) {
+        std::vector<std::uint8_t> bytes = {
+            0x80U, 0xFBU, 0x09U,
+            0x77U, 0x39U};
+        bytes.insert(bytes.end(), normalization.begin(), normalization.end());
+        const std::uint8_t branch[] = {
+            0x2EU, 0xFFU, 0x24U, 0x95U,
+            0U, 0U, 0U, 0U};
+        bytes.insert(bytes.end(), branch, branch + sizeof(branch));
+        const std::uint32_t table_address = kImageBase + kTableOffset;
+        std::memcpy(bytes.data() + bytes.size() - sizeof(table_address),
+                    &table_address, sizeof(table_address));
+        return bytes;
+    };
+    const bool zero_move_supported = PlansAsJumpTable(
+        make_move_guard({0x31U, 0xD2U, 0x88U, 0xDAU}), 9U, true);
+    const bool movzx_supported = PlansAsJumpTable(
+        make_move_guard({0x0FU, 0xB6U, 0xD3U}), 8U, true);
+    const bool foreign_move_rejected = !PlansAsJumpTable(
+        make_move_guard({0x31U, 0xD2U, 0x88U, 0xCAU}), 9U, false);
+
     const bool all = byte_guard_supported && wrong_mask_rejected &&
         wrong_register_rejected && high_byte_rejected &&
-        missing_normalization_rejected && dword_guard_preserved;
+        missing_normalization_rejected && dword_guard_preserved &&
+        zero_move_supported && movzx_supported && foreign_move_rejected;
+    std::cout << "jump_table_zero_move_supported="
+              << (zero_move_supported ? "true" : "false")
+              << "\njump_table_movzx_supported="
+              << (movzx_supported ? "true" : "false")
+              << "\njump_table_foreign_move_rejected="
+              << (foreign_move_rejected ? "true" : "false") << "\n";
     std::cout << "jump_table_byte_guard_supported="
               << (byte_guard_supported ? "true" : "false")
               << "\njump_table_wrong_mask_rejected="

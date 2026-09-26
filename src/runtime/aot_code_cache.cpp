@@ -1062,6 +1062,36 @@ bool LongModeGuardedSegmentLoadEmittableImpl(
         instruction.segment_register == 5U;
 }
 
+// Task 742. Reads and pushes take the shadow selector, so any segment the
+// engine shadows is admissible; ESP is refused as a destination like the load.
+bool LongModeGuardedSegmentReadEmittableImpl(
+    const AotInstructionRecord& instruction)
+{
+    if (instruction.kind != AotInstructionKind::kGuardedSegmentRead ||
+        instruction.gpr_register > 7U || instruction.gpr_register == 4U)
+    {
+        return false;
+    }
+    return instruction.segment_register == 0U ||
+        instruction.segment_register == 2U ||
+        instruction.segment_register == 3U ||
+        instruction.segment_register == 4U ||
+        instruction.segment_register == 5U;
+}
+
+bool LongModeGuardedSegmentPushEmittableImpl(
+    const AotInstructionRecord& instruction)
+{
+    if (instruction.kind != AotInstructionKind::kGuardedSegmentPush)
+    {
+        return false;
+    }
+    return instruction.segment_register == 0U ||
+        instruction.segment_register == 3U ||
+        instruction.segment_register == 4U ||
+        instruction.segment_register == 5U;
+}
+
 bool LongModeGuardedSegmentPopEmittableImpl(
     const AotInstructionRecord& instruction)
 {
@@ -1547,6 +1577,125 @@ bool EmitLongModeGuardedSegmentLoad(
 // instruction still has an effect after the selector is ruled out, because it
 // pops. Success therefore advances guest ESP by four; a mismatch leaves the
 // stack word in place so the HLE can re-execute the original instruction.
+// Task 742. `mov r16/r32, sreg` in long mode: the value is the shadow
+// selector, so the slot is a load from it -- `movzx r32, word [shadow]` for
+// the 32-bit form (a real CPU zeroes the upper half too) and `mov r16, word
+// [shadow]` under a 66 prefix, five bytes before the displacement either way
+// -- then the fallthrough jump and a fallback INT3 that the site contract
+// expects but nothing reaches. Both address offsets of the site name the same
+// slot, so the read-site patcher fills it unchanged.
+bool EmitLongModeGuardedSegmentRead(
+    const AotInstructionRecord& instruction,
+    AotCodeCacheImage* const image,
+    std::size_t* const emitted_instructions)
+{
+    if (image == nullptr || emitted_instructions == nullptr ||
+        !LongModeGuardedSegmentReadEmittableImpl(instruction))
+    {
+        return false;
+    }
+    const bool sixteen_bit = std::find(instruction.bytes.begin(),
+                                       instruction.bytes.end(),
+                                       0x66U) != instruction.bytes.end();
+
+    AotGuardedSegmentReadSite site;
+    site.guest_source = instruction.guest_address;
+    site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
+    site.segment_register = instruction.segment_register;
+    site.gpr_register = instruction.gpr_register;
+
+    image->bytes.push_back(0x67U);
+    if (sixteen_bit)
+    {
+        image->bytes.insert(image->bytes.end(), {0x66U, 0x8BU});
+    }
+    else
+    {
+        image->bytes.insert(image->bytes.end(), {0x0FU, 0xB7U});
+    }
+    image->bytes.push_back(static_cast<std::uint8_t>(
+        0x04U | (instruction.gpr_register << 3U)));
+    image->bytes.push_back(0x25U);
+    site.shadow_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    site.load_shadow_address_offset = site.shadow_address_offset;
+    AppendImmediate32(&image->bytes, 0U);
+    // The 16-bit form is one byte shorter before the address; pad it with a
+    // NOP after the load so both forms keep one layout.
+    if (sixteen_bit)
+    {
+        image->bytes.push_back(0x90U);
+    }
+
+    const std::uint32_t branch_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendRel32(&image->bytes, 0xE9U);
+    image->fixups.push_back({AotFixupKind::kBlockFallthrough,
+                             instruction.guest_address,
+                             instruction.fallthrough_target,
+                             branch_offset + 1U, false});
+    site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xCCU);
+    image->fixups.push_back({AotFixupKind::kHleBoundary,
+                             instruction.guest_address, 0U,
+                             site.fallback_offset, false});
+
+    RecordGuardPrologue(*image, &site);
+    image->guarded_segment_read_sites.push_back(site);
+    ++image->long_mode_guarded_segment_read_count;
+    *emitted_instructions = sixteen_bit ? 4U : 3U;
+    return true;
+}
+
+// Task 742. A 32-bit `push sreg` in long mode: make room on the guest stack
+// (R15 is the guest ESP), load the shadow selector zero-extended into the
+// scratch R14 and store it. Same site shape as the read; `gpr_register` stays
+// 0xFF to say it is a push.
+bool EmitLongModeGuardedSegmentPush(
+    const AotInstructionRecord& instruction,
+    AotCodeCacheImage* const image,
+    std::size_t* const emitted_instructions)
+{
+    if (image == nullptr || emitted_instructions == nullptr ||
+        !LongModeGuardedSegmentPushEmittableImpl(instruction))
+    {
+        return false;
+    }
+    AotGuardedSegmentReadSite site;
+    site.guest_source = instruction.guest_address;
+    site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
+    site.segment_register = instruction.segment_register;
+    site.gpr_register = 0xFFU;
+
+    image->bytes.insert(image->bytes.end(), {0x45U, 0x8DU, 0x7FU, 0xFCU});
+    image->bytes.insert(image->bytes.end(),
+                        {0x67U, 0x44U, 0x0FU, 0xB7U, 0x34U, 0x25U});
+    site.shadow_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    site.load_shadow_address_offset = site.shadow_address_offset;
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x45U, 0x89U, 0x37U});
+
+    const std::uint32_t branch_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendRel32(&image->bytes, 0xE9U);
+    image->fixups.push_back({AotFixupKind::kBlockFallthrough,
+                             instruction.guest_address,
+                             instruction.fallthrough_target,
+                             branch_offset + 1U, false});
+    site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xCCU);
+    image->fixups.push_back({AotFixupKind::kHleBoundary,
+                             instruction.guest_address, 0U,
+                             site.fallback_offset, false});
+
+    RecordGuardPrologue(*image, &site);
+    image->guarded_segment_read_sites.push_back(site);
+    ++image->long_mode_guarded_segment_push_count;
+    *emitted_instructions = 5U;
+    return true;
+}
+
 bool EmitLongModeGuardedSegmentPop(
     const AotInstructionRecord& instruction,
     AotCodeCacheImage* const image,
@@ -2775,6 +2924,18 @@ bool LongModeGuardedSegmentLoadEmittable(
     return LongModeGuardedSegmentLoadEmittableImpl(instruction);
 }
 
+bool LongModeGuardedSegmentReadEmittable(
+    const AotInstructionRecord& instruction)
+{
+    return LongModeGuardedSegmentReadEmittableImpl(instruction);
+}
+
+bool LongModeGuardedSegmentPushEmittable(
+    const AotInstructionRecord& instruction)
+{
+    return LongModeGuardedSegmentPushEmittableImpl(instruction);
+}
+
 bool LongModeGuardedSegmentPopEmittable(
     const AotInstructionRecord& instruction)
 {
@@ -2975,6 +3136,16 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                      (instruction.kind ==
                           AotInstructionKind::kGuardedSegmentPop &&
                       EmitLongModeGuardedSegmentPop(
+                          instruction, image, &emitted_instructions)) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kGuardedSegmentRead &&
+                      options.enable_guarded_segment_read &&
+                      EmitLongModeGuardedSegmentRead(
+                          instruction, image, &emitted_instructions)) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kGuardedSegmentPush &&
+                      options.enable_guarded_segment_read &&
+                      EmitLongModeGuardedSegmentPush(
                           instruction, image, &emitted_instructions)) ||
                      (instruction.kind ==
                           AotInstructionKind::kIndirectExit &&
@@ -3248,8 +3419,29 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                                                  cache_offset, false});
                     }
                     break;
+                case AotInstructionKind::kGuardedSegmentPush:
+                    // Task 742. Valid as it is on an i386 host, which holds
+                    // the guest segments itself; a long-mode image that got
+                    // here had its slot refused and closes with INT3.
+                    if (options.enable_long_mode_emission)
+                    {
+                        image->bytes.push_back(0xCCU);
+                        image->fixups.push_back({AotFixupKind::kHleBoundary,
+                                                 instruction.guest_address, 0U,
+                                                 cache_offset, false});
+                    }
+                    else
+                    {
+                        image->bytes.insert(image->bytes.end(),
+                                            instruction.bytes.begin(),
+                                            instruction.bytes.end());
+                    }
+                    break;
                 case AotInstructionKind::kGuardedSegmentRead:
-                    if (!options.enable_guarded_segment_read ||
+                    // Task 742. The i386 slot reads the host segment register
+                    // and never belongs in a long-mode image.
+                    if (options.enable_long_mode_emission ||
+                        !options.enable_guarded_segment_read ||
                         !EmitGuardedSegmentReadSlot(instruction, image))
                     {
                         image->bytes.push_back(0xCCU);
@@ -3508,6 +3700,7 @@ bool ValidateAotCodeCacheHleCoverage(
                 instruction.kind != AotInstructionKind::kSegmentOverrideMem &&
                 instruction.kind != AotInstructionKind::kGuardedSegmentPop &&
                 instruction.kind != AotInstructionKind::kGuardedSegmentRead &&
+                instruction.kind != AotInstructionKind::kGuardedSegmentPush &&
                 instruction.kind != AotInstructionKind::kGuardedSegmentLoad)
             {
                 continue;
@@ -3844,6 +4037,97 @@ bool ValidateAotCodeCacheHleCoverage(
                     image.bytes[slot + 39U] != 0x58U ||
                     image.bytes[slot + 40U] != 0x9DU ||
                     image.bytes[slot + 41U] != 0xCCU)
+                {
+                    return fail(instruction.guest_address);
+                }
+                continue;
+            }
+            if (instruction.kind == AotInstructionKind::kGuardedSegmentPush &&
+                !image.long_mode_emission_enabled)
+            {
+                // Task 742: copied verbatim on i386.
+                continue;
+            }
+            if (image.long_mode_emission_enabled &&
+                (instruction.kind == AotInstructionKind::kGuardedSegmentRead ||
+                 instruction.kind == AotInstructionKind::kGuardedSegmentPush))
+            {
+                // Task 742. The long-mode read slot: load from the shadow at
+                // +0 (9 bytes, or 10 with the 16-bit NOP pad; the
+                // displacement at +5), jump at +9/+10, INT3 after it. The
+                // push slot: `lea r15d,[r15-4]`, the zero-extended shadow
+                // load into r14d (displacement at +10), the store, jump at
+                // +17, INT3 at +22.
+                const bool is_push =
+                    instruction.kind == AotInstructionKind::kGuardedSegmentPush;
+                const auto site = std::find_if(
+                    image.guarded_segment_read_sites.begin(),
+                    image.guarded_segment_read_sites.end(),
+                    [&instruction](const AotGuardedSegmentReadSite& candidate) {
+                        return candidate.guest_source == instruction.guest_address;
+                    });
+                if (site == image.guarded_segment_read_sites.end() ||
+                    site->cache_offset != map->cache_offset)
+                {
+                    return fail(instruction.guest_address);
+                }
+                const std::uint32_t slot = site->cache_offset;
+                const bool sixteen_bit = !is_push &&
+                    std::find(instruction.bytes.begin(),
+                              instruction.bytes.end(), 0x66U) !=
+                        instruction.bytes.end();
+                const std::uint32_t shadow_offset = is_push ? slot + 10U : slot + 5U;
+                const std::uint32_t jump_offset =
+                    is_push ? slot + 17U : (sixteen_bit ? slot + 10U : slot + 9U);
+                const std::uint32_t fallback_offset = jump_offset + 5U;
+                const auto fallthrough_fixup = std::find_if(
+                    image.fixups.begin(), image.fixups.end(),
+                    [&instruction, jump_offset](const AotCodeCacheFixup& fixup) {
+                        return fixup.kind == AotFixupKind::kBlockFallthrough &&
+                            fixup.guest_source == instruction.guest_address &&
+                            fixup.guest_target == instruction.fallthrough_target &&
+                            fixup.cache_patch_offset == jump_offset + 1U &&
+                            fixup.resolved;
+                    });
+                if (fallthrough_fixup == image.fixups.end() ||
+                    fallback_offset + 1U > image.bytes.size() ||
+                    map->emitted_length != fallback_offset + 1U - slot ||
+                    site->shadow_address_offset != shadow_offset ||
+                    site->load_shadow_address_offset != shadow_offset ||
+                    site->fallback_offset != fallback_offset ||
+                    image.bytes[jump_offset] != 0xE9U ||
+                    image.bytes[fallback_offset] != 0xCCU)
+                {
+                    return fail(instruction.guest_address);
+                }
+                if (is_push)
+                {
+                    if (image.bytes[slot] != 0x45U ||
+                        image.bytes[slot + 1U] != 0x8DU ||
+                        image.bytes[slot + 2U] != 0x7FU ||
+                        image.bytes[slot + 3U] != 0xFCU ||
+                        image.bytes[slot + 4U] != 0x67U ||
+                        image.bytes[slot + 5U] != 0x44U ||
+                        image.bytes[slot + 6U] != 0x0FU ||
+                        image.bytes[slot + 7U] != 0xB7U ||
+                        image.bytes[slot + 8U] != 0x34U ||
+                        image.bytes[slot + 9U] != 0x25U ||
+                        image.bytes[slot + 14U] != 0x45U ||
+                        image.bytes[slot + 15U] != 0x89U ||
+                        image.bytes[slot + 16U] != 0x37U)
+                    {
+                        return fail(instruction.guest_address);
+                    }
+                    continue;
+                }
+                const std::uint8_t expected_modrm = static_cast<std::uint8_t>(
+                    0x04U | (instruction.gpr_register << 3U));
+                if (image.bytes[slot] != 0x67U ||
+                    image.bytes[slot + 1U] != (sixteen_bit ? 0x66U : 0x0FU) ||
+                    image.bytes[slot + 2U] != (sixteen_bit ? 0x8BU : 0xB7U) ||
+                    image.bytes[slot + 3U] != expected_modrm ||
+                    image.bytes[slot + 4U] != 0x25U ||
+                    (sixteen_bit && image.bytes[slot + 9U] != 0x90U))
                 {
                     return fail(instruction.guest_address);
                 }

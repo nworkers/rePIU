@@ -1267,6 +1267,62 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         std::memcpy(destination.message, source.message,
                     sizeof(destination.message));
     }
+    // Task 741: the reentry memo counters.
+    for (std::uint32_t kind = 0; kind < 3U; ++kind)
+    {
+        attempt->aot_reentry_memo_hits[kind] =
+            context.aot_reentry_memo_hits[kind];
+        attempt->aot_reentry_memo_misses[kind] =
+            context.aot_reentry_memo_misses[kind];
+    }
+    attempt->aot_reentry_memo_generation =
+        context.aot_reentry_memo_generation;
+    // Task 741: the 32 busiest of the hashed table, in count order.
+    static_assert(
+        sizeof(attempt->breakpoint_site_census) /
+            sizeof(attempt->breakpoint_site_census[0]) ==
+            ThreadContext::kBreakpointSiteReportCapacity,
+        "breakpoint site census report capacities must match");
+    std::vector<std::uint32_t> breakpoint_site_order;
+    for (std::uint32_t index = 0;
+         index < ThreadContext::kBreakpointSiteCensusCapacity; ++index)
+    {
+        if (context.breakpoint_site_census[index].count != 0U)
+        {
+            breakpoint_site_order.push_back(index);
+        }
+    }
+    std::sort(breakpoint_site_order.begin(), breakpoint_site_order.end(),
+              [&context](std::uint32_t left, std::uint32_t right) {
+                  return context.breakpoint_site_census[left].count >
+                      context.breakpoint_site_census[right].count;
+              });
+    attempt->breakpoint_site_census_size = std::min<std::uint32_t>(
+        static_cast<std::uint32_t>(breakpoint_site_order.size()),
+        ThreadContext::kBreakpointSiteReportCapacity);
+    attempt->breakpoint_site_census_distinct =
+        context.breakpoint_site_census_size;
+    attempt->breakpoint_site_census_overflow =
+        context.breakpoint_site_census_overflow;
+    for (std::uint32_t rank = 0;
+         rank < attempt->breakpoint_site_census_size; ++rank)
+    {
+        const auto& source =
+            context.breakpoint_site_census[breakpoint_site_order[rank]];
+        auto& destination = attempt->breakpoint_site_census[rank];
+        destination.host_address = source.host_address;
+        destination.guest_address = source.guest_address;
+        destination.in_cache = source.in_cache;
+        destination.guest_mapped = source.guest_mapped;
+        destination.count = source.count;
+        for (std::uint32_t slot = 0;
+             slot < ThreadContext::kBreakpointSiteExitCapacity; ++slot)
+        {
+            destination.exit_sites[slot] = source.exit_sites[slot];
+            destination.exit_counts[slot] = source.exit_counts[slot];
+        }
+        destination.exit_overflow = source.exit_overflow;
+    }
     static_assert(
         sizeof(attempt->port_io_address_census) /
             sizeof(attempt->port_io_address_census[0]) ==

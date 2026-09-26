@@ -547,6 +547,10 @@ void ReportUnhandledFault(const int signal_number,
     WriteNamedHex64(line, &length, " last_r10=", g_last_resumed_r10);
     WriteNamedHex64(line, &length, " last_r14=", g_last_resumed_r14);
     WriteNamedHex64(line, &length, " last_r15=", g_last_resumed_r15);
+    WriteNamedHex64(line, &length, " last_exit_site=",
+                    repiu_last_veh_exit_site);
+    WriteNamedHex64(line, &length, " last_exit_eip=",
+                    repiu_last_veh_exit_eip);
     WriteNamedHex64(line, &length, " last_eip=", g_last_resumed_guest_eip);
     WriteNamedHex64(line, &length, " last_esp=", g_last_resumed_guest_esp);
     WriteNamedHex64(line, &length, " first_low_signal=",

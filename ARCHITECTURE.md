@@ -4386,3 +4386,82 @@ dispatch includes POP FS/GS so that both prologue sequences and epilogue POP run
 cleanly at the HLE boundary.
 
 ---
+
+# HLE 재진입 메모와 breakpoint 지점 census (Task 741)
+
+AOT cache 안의 HLE boundary(INT3)에서 돌아오는 재진입은 재개 지점의 guest 명령을 세 방향으로
+판단합니다: segment register를 쓰는가(`ProbeGuestInstructionSegmentWrite`), 다음 control transfer까지
+HLE boundary 없이 이어지는가(`IsImmediateHleReentrySpanSafe`, 최대 64 명령), long mode에서 바이트가
+동일한가(`CanResumeLinuxX64LegacyTarget`). 셋 다 Zydis 디코드이고 답은 guest 바이트, code segment의
+default operand size, HLE boundary 목록에만 의존하므로 `ThreadContext::AotReentryMemoEntry`(1,024칸
+direct-mapped)에 주소별로 기억합니다. 항목은 guest 코드 쓰기가 완료될 때마다 오르는 세대와 주소의
+첫 8바이트 지문이 맞는 동안만 유효하고, long mode 답은 계산 당시의 code mode도 함께 보관합니다.
+`REPIU_AOT_REENTRY_MEMO=0`이 메모를 끕니다. 같은 작업이 넣은 breakpoint 지점 census는 VEH 초입에서
+host EIP별로 breakpoint 예외를 세고(512칸 open addressing) exit site를 누적하며, 최종 보고가 상위
+32개를 `host/guest/cache/count/exits`로 찍습니다. 어느 guest 지점이 trap을 내는지 묻는 첫 도구입니다.
+
+# HLE reentry memo and breakpoint site census (Task 741)
+
+A reentry from an HLE boundary (INT3) inside the AOT cache judges the guest instruction it resumes at
+three ways: does it write a segment register (`ProbeGuestInstructionSegmentWrite`), does it reach the
+next control transfer without an HLE boundary (`IsImmediateHleReentrySpanSafe`, up to 64
+instructions), and are its bytes identical in long mode (`CanResumeLinuxX64LegacyTarget`). All three
+are Zydis decodes whose answers depend only on the guest bytes, the code segment's default operand
+size and the HLE boundary list, so they are remembered per address in
+`ThreadContext::AotReentryMemoEntry` (1,024 direct-mapped slots). An entry stays valid while the
+generation, which moves on every completed guest code write, and the eight-byte fingerprint of the
+address still match; the long-mode answer also keeps the code mode it was computed under.
+`REPIU_AOT_REENTRY_MEMO=0` turns the memo off. The breakpoint site census from the same task counts
+breakpoint exceptions by host EIP at the VEH entry (512-slot open addressing), accumulates the exit
+site, and the final report prints the 32 busiest as `host/guest/cache/count/exits`: the first
+instrument that answers which guest site is trapping.
+
+# long mode의 segment 읽기·push 슬롯 (Task 742)
+
+Linux x64 AOT cache에서 `mov r16/r32, sreg`(`kGuardedSegmentRead`)와 32비트 `push es/ds/fs/gs`
+(`kGuardedSegmentPush`)는 guard 없는 슬롯으로 방출됩니다. 두 명령의 값은 guest 눈에 보이는 selector이고
+엔진이 `shadow_selectors->selectors[seg]`에 유지하므로(guest의 segment 쓰기마다 갱신, guarded load는
+shadow와 같은 값만 통과), 슬롯은 그 shadow를 읽습니다: read는 `movzx r32, word [shadow]`(16비트 형식은
+`mov r16, word [shadow]`), push는 `lea r15d,[r15-4]; movzx r14d, word [shadow]; mov [r15], r14d`. site는
+`AotGuardedSegmentReadSite`를 재사용하며 `PatchAotGuardedSegmentReadSites`가 shadow 주소를 채우고,
+shadow가 없는 segment의 슬롯은 INT3로 닫힙니다. i386 이미지는 read를 host segment register 비교
+슬롯으로, push를 원본 바이트 복사로 방출하며, long-mode 이미지에는 i386 read 슬롯을 방출하지 않습니다.
+
+# Long-mode segment read and push slots (Task 742)
+
+In the Linux x64 AOT cache, `mov r16/r32, sreg` (`kGuardedSegmentRead`) and a 32-bit `push
+es/ds/fs/gs` (`kGuardedSegmentPush`) are emitted as guard-free slots. Both produce the guest-visible
+selector, which the engine keeps in `shadow_selectors->selectors[seg]` (updated on every guest segment
+write; the guarded load admits only a value equal to the shadow), so the slots read that shadow: the
+read as `movzx r32, word [shadow]` (`mov r16, word [shadow]` for the 16-bit form), the push as `lea
+r15d,[r15-4]; movzx r14d, word [shadow]; mov [r15], r14d`. The site reuses `AotGuardedSegmentReadSite`,
+`PatchAotGuardedSegmentReadSites` fills in the shadow address, and a slot for a segment without a
+shadow closes with INT3. i386 images emit the read as the host-segment-register compare slot and copy
+the push verbatim; the i386 read slot is never emitted into a long-mode image.
+
+# Linux x64에서 번역되지 않은 대상으로의 return (Task 743)
+
+`RepiuLinuxX64ReturnThunk`가 부르는 `LinuxX64EngineResolver`는 return 대상이 cache에 없고 동적
+번역도 실패하면 `RepiuLinuxX64LegacyResumeThunk`를 돌려줍니다(대상이 읽을 수 있는 guest 코드인 한).
+그 thunk는 guest 레지스터를 복원하고 TF를 켠 채 `jmp`하므로 #DB가 대상에서 아무것도 실행하기 전에
+나고, VEH의 단일 스텝 경로가 간접 call의 legacy fallback과 같이 HLE·stack bridge로 이어갑니다. 첫
+명령이 long mode에서 byte-identical일 것을 요구하던 이전 규칙은 그 밖의 대상에서 thunk의 `int3`로
+죽게 했습니다. 번역도 없고 동일하지도 않은 명령에 이르면 여전히 실행할 수 없고, 그때는
+`[repiu-x64-untranslatable] stage= eip= bytes= …`를 남기고 `[repiu-fault] unhandled …`로 끝납니다.
+그 보고에는 `NoteVehExitSite`가 platform 전역에 쓴 마지막 VEH exit site(`last_exit_site=`)가 붙습니다.
+`REPIU_AOT_DYNAMIC_REJECT=<guest 주소>|read`는 worker가 그 동적 이미지를 거절하게 해 이 경로를
+재현합니다.
+
+# Returning to an untranslated target on Linux x64 (Task 743)
+
+`LinuxX64EngineResolver`, called from `RepiuLinuxX64ReturnThunk`, returns
+`RepiuLinuxX64LegacyResumeThunk` when the return target is not in the cache and dynamic translation
+fails, as long as the target is readable guest code. That thunk restores the guest registers and jumps
+with TF set, so the #DB lands at the target before anything there runs, and the VEH's single-step path
+continues through the HLE and stack-bridge handlers as the indirect call's legacy fallback does. The
+earlier rule, a byte-identical first instruction in long mode, sent every other target to the thunk's
+`int3`. An instruction with no translation and no long-mode identity still cannot run; the run then
+ends in `[repiu-fault] unhandled …` after `[repiu-x64-untranslatable] stage= eip= bytes= …`, and the
+report carries the last VEH exit site (`last_exit_site=`) that `NoteVehExitSite` publishes to a
+platform global. `REPIU_AOT_DYNAMIC_REJECT=<guest address>|read` makes the worker reject those dynamic
+images to reproduce the path.

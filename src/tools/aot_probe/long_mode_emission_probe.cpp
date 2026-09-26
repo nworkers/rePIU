@@ -502,6 +502,140 @@ bool ProbeLongModeSegmentOverrideCoverage()
 // compares the saved guest-stack selector, and restores flags on both exits.
 // It must validate as a slot rather than being mistaken for the i386 layout or
 // accepted as arbitrary non-INT3 bytes.
+// Task 742. The long-mode read and push slots: `mov eax,ds`, `mov bx,ds` and
+// `push es` each get one read site, the slot bytes the design names, and pass
+// the coverage check; a corrupted fallback byte is rejected; a 16-bit
+// `push es` is not admitted as a push.
+bool ProbeLongModeSegmentReadPush()
+{
+    struct Case
+    {
+        const char* name;
+        std::vector<std::uint8_t> code;
+        std::uint32_t base;
+        runtime::AotInstructionKind kind;
+        std::vector<std::uint8_t> head;
+        std::uint32_t shadow_offset;
+        std::uint32_t fallback_offset;
+        std::uint8_t gpr;
+    };
+    const Case cases[] = {
+        {"mov_eax_ds", {0x8CU, 0xD8U, 0xC3U}, 0x00127000U,
+         runtime::AotInstructionKind::kGuardedSegmentRead,
+         {0x67U, 0x0FU, 0xB7U, 0x04U, 0x25U}, 5U, 14U, 0U},
+        {"mov_bx_ds", {0x66U, 0x8CU, 0xDBU, 0xC3U}, 0x00128000U,
+         runtime::AotInstructionKind::kGuardedSegmentRead,
+         {0x67U, 0x66U, 0x8BU, 0x1CU, 0x25U}, 5U, 15U, 3U},
+        {"push_es", {0x06U, 0xC3U}, 0x00129000U,
+         runtime::AotInstructionKind::kGuardedSegmentPush,
+         {0x45U, 0x8DU, 0x7FU, 0xFCU, 0x67U, 0x44U, 0x0FU, 0xB7U, 0x34U,
+          0x25U},
+         10U, 22U, 0xFFU},
+    };
+    bool all = true;
+    for (const Case& probe_case : cases)
+    {
+        runtime::RelocatedRuntimeImage runtime_image;
+        runtime_image.valid = true;
+        runtime_image.relocated_image_base = probe_case.base;
+        runtime_image.relocated_entry_linear_address = probe_case.base;
+        runtime::RelocatedRuntimeObject object;
+        object.relocated_base_address = probe_case.base;
+        object.memory = probe_case.code;
+        object.memory.resize(32U, 0x90U);
+        object.virtual_size =
+            static_cast<std::uint32_t>(object.memory.size());
+        runtime_image.objects.push_back(std::move(object));
+
+        AotTranslationPlan plan;
+        AotCodeCacheImage image;
+        AotCodeCacheBuildOptions options;
+        options.enable_long_mode_emission = true;
+        options.enable_guarded_segment_read = true;
+        const bool plan_built = runtime::BuildAotTranslationPlanFromEntry(
+            runtime_image, probe_case.base, &plan);
+        const bool classified = plan_built && !plan.blocks.empty() &&
+            !plan.blocks[0].instructions.empty() &&
+            plan.blocks[0].instructions[0].kind == probe_case.kind;
+        const bool image_built = classified &&
+            runtime::BuildAotCodeCacheImage(plan, options, &image) &&
+            image.valid;
+        const bool site_ready = image_built &&
+            image.guarded_segment_read_sites.size() == 1U;
+        bool bytes_ok = false;
+        bool coverage = false;
+        bool corruption_rejected = false;
+        if (site_ready)
+        {
+            const runtime::AotGuardedSegmentReadSite& site =
+                image.guarded_segment_read_sites[0];
+            const std::uint32_t slot = site.cache_offset;
+            bytes_ok = slot + probe_case.head.size() <= image.bytes.size() &&
+                std::equal(probe_case.head.begin(), probe_case.head.end(),
+                           image.bytes.begin() + slot) &&
+                site.shadow_address_offset == slot + probe_case.shadow_offset &&
+                site.load_shadow_address_offset == site.shadow_address_offset &&
+                site.fallback_offset == slot + probe_case.fallback_offset &&
+                site.gpr_register == probe_case.gpr &&
+                image.bytes[site.fallback_offset] == 0xCCU;
+            coverage = runtime::ValidateAotCodeCacheHleCoverage(plan, image);
+            runtime::AotCodeCacheImage broken = image;
+            broken.bytes[site.fallback_offset] = 0x90U;
+            std::uint32_t failure_guest = 0U;
+            corruption_rejected = !runtime::ValidateAotCodeCacheHleCoverage(
+                                      plan, broken, &failure_guest) &&
+                failure_guest == probe_case.base;
+        }
+        const bool ok = site_ready && bytes_ok && coverage && corruption_rejected;
+        if (site_ready && !bytes_ok)
+        {
+            const std::uint32_t slot = image.guarded_segment_read_sites[0].cache_offset;
+            std::cout << "long_mode_segment_" << probe_case.name << "_slot=";
+            for (std::uint32_t i = 0; i < 16U && slot + i < image.bytes.size(); ++i)
+            {
+                std::cout << std::hex << static_cast<unsigned>(image.bytes[slot + i]) << std::dec << " ";
+            }
+            std::cout << "shadow=" << image.guarded_segment_read_sites[0].shadow_address_offset - slot
+                      << " fallback=" << image.guarded_segment_read_sites[0].fallback_offset - slot
+                      << " gpr=" << static_cast<unsigned>(image.guarded_segment_read_sites[0].gpr_register) << "\n";
+        }
+        std::cout << "long_mode_segment_" << probe_case.name
+                  << "_classified=" << (classified ? "true" : "false")
+                  << ",site=" << (site_ready ? "true" : "false")
+                  << ",bytes=" << (bytes_ok ? "true" : "false")
+                  << ",coverage=" << (coverage ? "true" : "false")
+                  << ",corruption_rejected="
+                  << (corruption_rejected ? "true" : "false") << "\n";
+        all = all && ok;
+    }
+
+    // A 16-bit push writes two bytes: not the push slot's shape.
+    {
+        runtime::RelocatedRuntimeImage runtime_image;
+        runtime_image.valid = true;
+        runtime_image.relocated_image_base = 0x0012A000U;
+        runtime_image.relocated_entry_linear_address = 0x0012A000U;
+        runtime::RelocatedRuntimeObject object;
+        object.relocated_base_address = 0x0012A000U;
+        object.memory = {0x66U, 0x06U, 0xC3U};
+        object.memory.resize(32U, 0x90U);
+        object.virtual_size =
+            static_cast<std::uint32_t>(object.memory.size());
+        runtime_image.objects.push_back(std::move(object));
+        AotTranslationPlan plan;
+        const bool plan_built = runtime::BuildAotTranslationPlanFromEntry(
+            runtime_image, 0x0012A000U, &plan);
+        const bool not_push = plan_built && !plan.blocks.empty() &&
+            !plan.blocks[0].instructions.empty() &&
+            plan.blocks[0].instructions[0].kind !=
+                runtime::AotInstructionKind::kGuardedSegmentPush;
+        std::cout << "long_mode_segment_push16_refused="
+                  << (not_push ? "true" : "false") << "\n";
+        all = all && not_push;
+    }
+    return all;
+}
+
 bool ProbeLongModeSegmentGuardCoverage()
 {
     runtime::RelocatedRuntimeImage pop_runtime;
@@ -1602,6 +1736,7 @@ bool RunLongModeEmissionProbe()
     const bool segment_override_coverage_ok =
         ProbeLongModeSegmentOverrideCoverage();
     const bool segment_guard_coverage_ok = ProbeLongModeSegmentGuardCoverage();
+    const bool segment_read_push_ok = ProbeLongModeSegmentReadPush();
     const bool conditional_fallthrough_ok =
         ProbeConditionalBranchFallthrough();
     const bool unresolved_fallthrough_ok =
@@ -1623,6 +1758,7 @@ bool RunLongModeEmissionProbe()
         segment_read_gpr16_ok &&
         segment_override_coverage_ok &&
         segment_guard_coverage_ok &&
+        segment_read_push_ok &&
         conditional_fallthrough_ok &&
         unresolved_fallthrough_ok &&
         indirect_fallback_stack_ok &&

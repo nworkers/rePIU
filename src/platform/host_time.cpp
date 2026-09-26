@@ -71,21 +71,35 @@ LocalWallClock ReadLocalWallClock()
     const auto now = std::chrono::system_clock::now();
     const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
 
-    std::tm parts{};
+    // Task 741. The calendar conversion is the expensive part (a lock and the
+    // time-zone rules), and the guest asks for the time far more often than
+    // once a second: Watcom's delay() calibrates itself by calling INT 21h
+    // AH=2Ch in a tight loop until the seconds change, and pumpitea made
+    // 226,000 such calls a second. The broken-down time of one second is the
+    // same for every reading inside it, so it is converted once per second
+    // and per thread; only the millisecond part below is read every time.
+    thread_local std::time_t cached_seconds = -1;
+    thread_local std::tm cached_parts{};
+    thread_local bool cached_valid = false;
+    if (seconds != cached_seconds)
+    {
+        cached_seconds = seconds;
+        std::tm converted{};
 #if defined(_WIN32)
-    if (localtime_s(&parts, &seconds) != 0)
+        cached_valid = localtime_s(&converted, &seconds) == 0;
+#else
+        cached_valid = localtime_r(&seconds, &converted) != nullptr;
+#endif
+        cached_parts = converted;
+    }
+    if (!cached_valid)
     {
         // The defaults are the DOS epoch, which is what the guest sees if the
         // host cannot say what day it is. Reporting a plausible-looking wrong
         // date would be worse.
         return wall_clock;
     }
-#else
-    if (localtime_r(&seconds, &parts) == nullptr)
-    {
-        return wall_clock;
-    }
-#endif
+    const std::tm& parts = cached_parts;
 
     wall_clock.year = static_cast<std::uint16_t>(parts.tm_year + 1900);
     wall_clock.month = static_cast<std::uint16_t>(parts.tm_mon + 1);

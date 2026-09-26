@@ -39,6 +39,11 @@
 namespace repiu::platform
 {
 
+// Task 743. The last VEH exit site (a `VehExitSite` code) and the EIP it
+// resumed at, for the unhandled fault report. Set by the engine.
+extern volatile std::uint32_t repiu_last_veh_exit_site;
+extern volatile std::uint32_t repiu_last_veh_exit_eip;
+
 enum class FaultKind : std::uint8_t
 {
     // A memory access that could not be performed -- and, on both hosts, how a

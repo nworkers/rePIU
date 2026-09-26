@@ -202,7 +202,7 @@ void TraceGuestSegmentEvent(const char* event,
                             std::uint16_t selector,
                             std::uint32_t address_or_register)
 {
-    if (std::getenv("REPIU_DOS_INT_TRACE") == nullptr &&
+    if (([]() { static const char* const dos_int_trace = std::getenv("REPIU_DOS_INT_TRACE"); return dos_int_trace; }()) == nullptr &&
         std::getenv("REPIU_DPMI_SEGMENT_TRACE") == nullptr)
     {
         return;
@@ -3399,7 +3399,7 @@ void TraceDosInterrupt21Registers(
     const repiu::platform::GuestCpuContext& win32_context,
     const ThreadContext& context)
 {
-    if (std::getenv("REPIU_DOS_INT_TRACE") == nullptr)
+    if (([]() { static const char* const dos_int_trace = std::getenv("REPIU_DOS_INT_TRACE"); return dos_int_trace; }()) == nullptr)
     {
         return;
     }
@@ -3551,7 +3551,7 @@ bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
             const std::uint32_t byte_count = win32_context->Ecx;
             AppendConsoleOutput(
                 context, text, byte_count, win32_context->Ebx == 2U);
-            if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+            if (([]() { static const char* const dos_int_trace = std::getenv("REPIU_DOS_INT_TRACE"); return dos_int_trace; }()) != nullptr)
             {
                 fprintf(stderr,
                         "[repiu-dos-io] op=console-write eip=0x%08X "
