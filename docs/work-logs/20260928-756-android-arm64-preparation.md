@@ -71,6 +71,9 @@ x64 실행 모델(Task 546)이 확정한 "게스트 주소 `uint32_t`, 호스트
 4. 단계는 0(이 작업), 1(빌드 구성, Linux aarch64 먼저), 2(인터프리터), 3(Android 호스트: GLES,
    오디오, 입력, 자산), 4(arm64 DBT, 측정 뒤).
 5. 사용자 결정 항목 13개를 설계에 표로 두었습니다. Stage 1 시작에는 1, 4, 5, 6, 8번이 필요합니다.
+6. 사용자 질문에 따라 기존 x86 CPU 라이브러리(Unicorn, Bochs, DOSBox 계열, FEX, Box64 등)를 검토했고,
+   라이선스와 경계 계약 때문에 본체는 자체 작성하고 SoftFloat 같은 부품만 받는다는 결론을 설계에
+   보충했습니다. Linux aarch64 실행 환경 후보 표도 함께 넣었습니다.
 
 ## 만든 문서
 
@@ -166,6 +169,10 @@ because the HLE uses guest addresses as host pointers.
 4. Stages: 0 (this task), 1 (build configuration, Linux aarch64 first), 2 (interpreter), 3 (Android
    host: GLES, audio, input, assets), 4 (arm64 DBT, after measuring).
 5. Thirteen items for the user are tabled in the design. Items 1, 4, 5, 6 and 8 gate Stage 1.
+6. At the user's question, existing x86 CPU libraries (Unicorn, Bochs, the DOSBox family, FEX, Box64 and
+   others) were reviewed; the design gained a supplement concluding that the body is written in-house
+   for license and boundary-contract reasons and only parts such as SoftFloat are taken, plus a table
+   of Linux aarch64 environment candidates.
 
 ## Documents created
 

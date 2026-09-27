@@ -111,6 +111,56 @@ B가 필요한지는 **측정 뒤에** 정합니다. 게스트는 1999년의 DOS
 CPU보다 수십 배 빠르므로, 인터프리터로 플레이 가능한 속도가 나올 가능성이 있습니다. 이것은
 **추정**이고, Stage 2가 끝나면 숫자로 바뀝니다.
 
+### 결정 1의 보충: 기존 라이브러리를 인터프리터로 쓸 수 없는 이유
+
+"x86 인터프리터를 직접 쓰지 않고 기존 라이브러리를 쓸 수 있는가"를 검토했습니다. 답은 **본체는
+없고, 부품은 있다**입니다. 아래 라이브러리 세부는 도입 전에 각 저장소에서 다시 확인해야 합니다.
+
+첫 번째 필터는 라이선스입니다. AGENTS.md가 GPL, LGPL, AGPL을 금지하고 헌장이 DOSBox 계열 통합을
+금지하므로, 잘 알려진 x86 CPU 코어가 거의 다 빠집니다.
+
+| 후보 | 라이선스 | 판정 |
+|---|---|---|
+| Unicorn, QEMU TCG | GPL-2.0 | 제외 |
+| Bochs CPU | LGPL-2.1 | 제외 |
+| DOSBox, DOSBox-X, DOSBox Staging | GPL-2.0 | 제외. 헌장에서도 금지 |
+| 86Box, PCem, Halfix | GPL | 제외 |
+| libx86emu | BSD 계열 | 라이선스는 통과하나 x87이 없고 실모드 BIOS 코드용 |
+| v86 | BSD-2 | Rust로 wasm을 겨냥한 PC 에뮬레이터. 웹 Stage 4의 참고는 되나 C++ 라이브러리가 아님 |
+| **Box64 (box32 모드)** | **MIT** | 라이선스 통과. 아래 구조 문제 |
+| **FEX-Emu (FEXCore)** | **MIT** | 라이선스 통과. 아래 구조 문제 |
+
+두 번째 필터는 구조입니다. FEX와 Box64는 **Linux 사용자 프로세스를 돌리는 에뮬레이터**로, 게스트가
+평탄한 메모리의 ELF이고 `int 0x80`은 시스템 호출이며 세그먼트는 TLS용 FS/GS 정도만 뜻이 있다고
+가정합니다. rePIU의 게스트는 그 가정을 여러 곳에서 깹니다.
+
+| rePIU의 게스트가 하는 것 | FEX와 Box64 |
+|---|---|
+| base가 다른 selector들(DOS 저지대, 비디오 메모리, DPMI 할당)을 rePIU의 selector 테이블로 해석 | Linux 평탄 모델. 32비트 세그먼트 base는 제한적으로만 |
+| 16비트 코드 조각(DOS/16M stub, far call과 far return) | 16비트 코드 세그먼트 없음 |
+| `INT 21h`, `INT 31h`, `INT 2Fh`, `INT 33h`가 HLE 경계, `in`/`out`이 포트 I/O HLE | SIGSEGV 또는 Linux 시스템 호출 |
+| IRQ0 주입(타이머 tick, `cli` hold, 핸들러 복귀 판정), JAMMA 입력 replay, SMC 감지가 실행 루프 안에 있음 | 비동기 인터럽트 주입 개념 없음 |
+| Linux x64에서 기존 backend와 차등 검증 | FEX는 arm64 JIT만 남긴 것으로 기억함(확인 필요). Box64 인터프리터의 x86 호스트 빌드도 확인 필요 |
+
+CPU 코어를 떼어내 위 경계들을 다시 붙이는 일은 320개 명령 형태를 Zydis 디코드 위에 직접 쓰는
+일과 크기가 비슷하거나 더 클 것으로 봅니다. **추정**입니다. 두 프로젝트는 수십만 줄이고 CPU 코어가
+자기 런타임 구조체와 얽혀 있어, 실제로 재지는 않았습니다. 코드의 대부분을 차지하는 것은 명령
+의미 자체가 아니라 프로젝트 고유의 경계 계약이고, 그것은 어떤 라이브러리에도 없습니다.
+
+그래도 부품은 받습니다.
+
+| 부품 | 라이브러리 | 라이선스 | 비고 |
+|---|---|---|---|
+| x86 디코드 | Zydis | MIT | 이미 벤더링 |
+| **x87 80비트 부동소수점** | Berkeley SoftFloat 3 (`extF80`) | BSD-3 | 인터프리터에서 가장 틀리기 쉬운 부분. 결정 목록 3의 권고 |
+| Stage 4의 arm64 코드 방출 | vixl (Arm 공식) 또는 asmjit | BSD-3 / zlib | 인코딩 표를 손으로 쓰지 않게 함 |
+| 참고 구현 | FEX의 32비트 세그먼트와 x87 처리, Box64의 box32 저주소 매핑 | MIT | 읽는 데 제약이 없고, 필요한 함수는 고지 유지 조건으로 옮겨 올 수 있음 |
+
+**결론: 인터프리터 본체는 자체 작성, 80비트 부동소수점은 SoftFloat.** FEXCore 임베딩은 Stage 4(속도)
+후보로만 남기며, 그때도 세그먼트, 16비트 코드, INT 경계, IRQ 주입은 우리 쪽에서 풀어야 합니다.
+`src/engine/cpu_emul/`의 4,000줄이 이미 45개 mnemonic을 같은 게스트 레지스터 파일 위에서 다루고
+있으므로 맨땅도 아닙니다.
+
 ### 결정 2: 인터프리터는 웹 Stage 3과 하나입니다
 
 웹 frontier는 Stage 3(플랫폼 중립 인터프리터)을 다음 단위로 지목한 채 보류 중입니다. Android arm64가
@@ -181,6 +231,18 @@ Stage 3의 GLES 이식은 Stage 2와 독립이며 데스크톱 Linux에서도 �
 크로스 빌드**를 먼저 세우는 것을 권고합니다. Android에서는 디버거 연결, 로그, 파일 접근이 모두
 비싸고, 인터프리터의 정확성 문제는 Linux에서 잡는 것이 몇 배 싸기 때문입니다. 실행 환경은 실제
 aarch64 보드 또는 QEMU user-mode입니다.
+
+Linux aarch64 실행 환경 후보입니다. 첫 줄이 권고 조합입니다.
+
+| 환경 | 얻는 것 | 못 얻는 것 | 어울리는 단계 |
+|---|---|---|---|
+| **WSL의 크로스 컴파일 + `qemu-user-static` (binfmt)** | 지금 바로. 이 문서의 측정이 이미 여기까지 왔음. probe와 census 실행 | 10~20배 느려 성능 수치 없음. GPU 없음 | Stage 1, Stage 2의 정확성 |
+| **GitHub Actions `ubuntu-24.04-arm` runner** | 네이티브 arm64 빌드와 probe를 CI에서. 공개 저장소는 무료 | GPU 없음 | Stage 1부터 계속 |
+| **Raspberry Pi 5 (8 GB)** | 실제 arm64 Linux, Mesa v3d의 GLES 3.1, **기본 16 KB 페이지 커널**, 중급 안드로이드 기기와 비슷한 CPU 등급 | 데스크톱 GL 4.x는 없음(GLES 이식을 검증하기에는 오히려 맞음) | Stage 2 성능, Stage 3 GLES |
+| **Android 기기의 Termux** | 실제 Android 커널과 SELinux 도메인에서 `mmap` 저주소 배치 시험 | zygote와 ART가 없는 프로세스라 앱과 주소 공간이 다름 | Stage 1 probe의 예비 시험 |
+| 클라우드 arm64 (Oracle Ampere A1 무료 tier, AWS Graviton, Hetzner CAX) | 빠른 빌드와 장시간 차등 검증 | GPU 없음 | Stage 2 |
+| Apple Silicon Mac의 Linux VM (UTM, OrbStack) | 빠른 arm64, virtio-gpu GL | 이미 가지고 있을 때만 | Stage 2, 3 |
+
 
 ### 결정 5: 플랫폼 헤더가 arm64와 Android에서 성립하는가
 
@@ -365,6 +427,58 @@ Whether B is needed is settled **after measuring**. The guest is a DOS game from
 arm64 core is tens of times faster than that era's CPUs, so an interpreter may reach playable speed.
 That is an **estimate**, and Stage 2 turns it into a number.
 
+### Supplement to Decision 1: why an existing library is not the interpreter
+
+Whether an existing library could stand in for a hand-written x86 interpreter was examined. The
+answer is **no library for the body, yes for some parts**. The library details below must be
+re-checked against each repository before adoption.
+
+The first filter is licensing. AGENTS.md forbids GPL, LGPL and AGPL, and the charter forbids
+integrating the DOSBox family, so almost every well-known x86 CPU core drops out.
+
+| Candidate | License | Verdict |
+|---|---|---|
+| Unicorn, QEMU TCG | GPL-2.0 | excluded |
+| Bochs CPU | LGPL-2.1 | excluded |
+| DOSBox, DOSBox-X, DOSBox Staging | GPL-2.0 | excluded, and forbidden by the charter |
+| 86Box, PCem, Halfix | GPL | excluded |
+| libx86emu | BSD-style | passes on license, but has no x87 and targets real-mode BIOS code |
+| v86 | BSD-2 | a PC emulator in Rust aimed at wasm. A reference for web Stage 4, not a C++ library |
+| **Box64 (box32 mode)** | **MIT** | passes on license; structural problems below |
+| **FEX-Emu (FEXCore)** | **MIT** | passes on license; structural problems below |
+
+The second filter is structure. FEX and Box64 are **emulators of Linux user processes**: the guest is
+an ELF in flat memory, `int 0x80` is a system call, and segments matter only as FS/GS for TLS.
+rePIU's guest breaks those assumptions in several places.
+
+| What rePIU's guest does | FEX and Box64 |
+|---|---|
+| Selectors with different bases (DOS low memory, video memory, DPMI allocations), resolved through rePIU's selector table | Linux flat model; 32-bit segment bases only in a limited form |
+| 16-bit code fragments (the DOS/16M stub, far calls and far returns) | no 16-bit code segments |
+| `INT 21h`, `INT 31h`, `INT 2Fh`, `INT 33h` are HLE boundaries; `in`/`out` are port-I/O HLE | SIGSEGV or a Linux system call |
+| IRQ0 injection (timer ticks, the `cli` hold, handler-return detection), JAMMA input replay and SMC detection live inside the execution loop | no notion of asynchronous interrupt injection |
+| Differential testing against the existing backends on Linux x64 | FEX is remembered to have kept only its arm64 JIT (to verify); an x86-host build of Box64's interpreter is also to verify |
+
+Extracting a CPU core and reattaching those boundaries is expected to be about the size of writing
+the 320 instruction forms directly on top of Zydis, or larger. That is an **estimate**: both
+projects run to hundreds of thousands of lines with the CPU core woven into their own runtime
+structures, and it was not measured. Most of the code is not instruction semantics but the project's
+own boundary contract, and no library has that.
+
+Parts are still taken.
+
+| Part | Library | License | Note |
+|---|---|---|---|
+| x86 decoding | Zydis | MIT | already vendored |
+| **x87 80-bit floating point** | Berkeley SoftFloat 3 (`extF80`) | BSD-3 | the easiest part of an interpreter to get wrong; the recommendation in decision item 3 |
+| arm64 code emission in Stage 4 | vixl (Arm's own) or asmjit | BSD-3 / zlib | avoids a hand-written encoding table |
+| Reference implementations | FEX's 32-bit segment and x87 handling, Box64's box32 low-address mapping | MIT | free to read, and individual functions can be carried over under the notice condition |
+
+**Conclusion: the interpreter body is written in-house, and 80-bit floating point comes from
+SoftFloat.** Embedding FEXCore stays a Stage 4 (speed) candidate only, and even then segments, 16-bit
+code, INT boundaries and IRQ injection are ours to solve. It is not a blank page either: the 4,000
+lines in `src/engine/cpu_emul/` already handle 45 mnemonics on the same guest register file.
+
 ### Decision 2: the interpreter is one with web Stage 3
 
 The web frontier is on hold with Stage 3, the platform-neutral interpreter, named as its next unit.
@@ -423,6 +537,18 @@ build system and the core's portability are proven on the real target first. Sta
 standing up a **Linux aarch64 cross build** before Android. On Android, debugger attachment, logs and
 file access are all expensive, and the interpreter's correctness problems are several times cheaper
 to catch on Linux. The execution environment is a real aarch64 board or QEMU user mode.
+
+Candidates for the Linux aarch64 execution environment. The first line is the recommended pair.
+
+| Environment | What it gives | What it lacks | Fits |
+|---|---|---|---|
+| **Cross compile in WSL + `qemu-user-static` (binfmt)** | Available now; this document's measurement already got this far. Runs the probes and the census | 10 to 20 times slower, so no performance numbers. No GPU | Stage 1, Stage 2 correctness |
+| **GitHub Actions `ubuntu-24.04-arm` runner** | Native arm64 build and probes in CI, free for public repositories | No GPU | Stage 1 onward |
+| **Raspberry Pi 5 (8 GB)** | Real arm64 Linux, GLES 3.1 through Mesa v3d, **a 16 KB page kernel by default**, a CPU tier close to a mid-range Android device | No desktop GL 4.x (which suits verifying the GLES port) | Stage 2 performance, Stage 3 GLES |
+| **Termux on an Android device** | Tests low-address `mmap` placement under the real Android kernel and SELinux domain | The process has no zygote or ART, so its address space differs from an app's | A preliminary for the Stage 1 probe |
+| Cloud arm64 (Oracle Ampere A1 free tier, AWS Graviton, Hetzner CAX) | Fast builds and long differential runs | No GPU | Stage 2 |
+| A Linux VM on an Apple Silicon Mac (UTM, OrbStack) | Fast arm64, GL through virtio-gpu | Only if already owned | Stages 2 and 3 |
+
 
 ### Decision 5: do the platform headers hold on arm64 and Android
 
