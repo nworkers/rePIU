@@ -67,6 +67,7 @@ flowchart LR
 * [Linux x86-64 fault context에서 실제로 관측되는 게스트 상태](linux-x64-fault-context.md)
 * [RES/PTX resource loading analysis](res-ptx-resource-loading.md)
 * [웹(WebAssembly) 이식 frontier / Web port frontier](web-port-frontier.md)
+* [Android arm64 이식 frontier / Android arm64 port frontier](android-arm64-port-frontier.md)
 
 The DOS/4G DLL loader analysis also records the [DOS/32A behavioral cross-reference and clean-room boundary](dll-loader-int21-ff00.md#dos32a-교차-확인과-적용-한계).
 

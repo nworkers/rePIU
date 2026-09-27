@@ -12,6 +12,7 @@ flowchart TD
     CPU["x86 segmentation and width"] --> HLE["Exception-driven HLE"]
     CPU --> LONG["32-bit encodings in long mode"]
     LONG --> DYNAREC
+    ARM["AArch64 / Android host constraints"] --> DYNAREC
     LE["LE format and relocation"] --> HLE
     SIG["POSIX signal handler state"] --> HLE
     LOWMEM --> HLE
@@ -46,6 +47,7 @@ flowchart TD
 * [Glide primitive와 면 culling](glide-primitives-and-culling.md)
 * [YMZ280B PCM/ADPCM 디코더](ymz280b-pcm-adpcm-decoder.md)
 * [CAT702 PIU 직렬 보안 장치](cat702-piu-security-device.md)
+* [AArch64와 Android 호스트 제약](aarch64-and-android-host-constraints.md)
 
 # rePIU Technical Knowledge Base Index
 
@@ -73,3 +75,4 @@ include source links.
 * [Glide primitives and face culling](glide-primitives-and-culling.md)
 * [YMZ280B PCM/ADPCM decoder](ymz280b-pcm-adpcm-decoder.md)
 * [CAT702 PIU serial security device](cat702-piu-security-device.md)
+* [AArch64 and Android host constraints](aarch64-and-android-host-constraints.md)

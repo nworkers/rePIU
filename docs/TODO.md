@@ -2,7 +2,7 @@
 
 ## 현재 상태
 
-2026-08-31 기준 활성 항목은 둘입니다. **Linux x64 host 이식이 진행 중**이고, 웹 이식
+2026-09-28 기준 활성 항목은 셋입니다. **Android arm64 이식이 Stage 0(준비)을 마치고 결정을 기다립니다.** **Linux x64 host 이식이 진행 중**이고, 웹 이식
 Stage 3~5는 **보류 중**입니다 — 보류 이유는 우선순위이며 아래 항목에 적혀 있습니다.
 
 Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 history 정리는 사용자
@@ -46,6 +46,16 @@ Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 hist
   **그리고 Stage 3은 Worker 실행을 전제로 설계합니다** — CHD가 플레이 내내 열려 있어야 하고
   브라우저에서 동기 파일 I/O는 Worker 안에서만 성립하기 때문입니다(설계 513 결정 7).
 
+- **Android arm64 이식 — Stage 0 완료, 결정 대기(2026-09-28).** 상태는
+  [Android arm64 이식 frontier](analysis/android-arm64-port-frontier.md), 단계 계획과 사용자
+  결정 항목 13개는 [Task 756 설계](design/20260928-756-android-arm64-execution.md)가 정본입니다.
+  **한 줄로:** aarch64 크로스 빌드에서 `repiu_exe` 오브젝트 183개 중 **178개가 컴파일**되고
+  실패한 다섯은 전부 호스트 CPU 전용 파일이지만, arm64에는 복사할 수 있는 게스트 바이트가 없어
+  **웹 Stage 3과 같은 플랫폼 중립 인터프리터가 필요합니다.** 인터프리터는 두 이식이 하나를
+  공유합니다. **Stage 1(빌드 구성) 시작 조건:** 설계의 결정 항목 1(실행 방식), 4(게스트 메모리
+  모델), 5(Linux aarch64 먼저인가), 6(ABI 범위), 8(minSdk와 NDK)에 대한 답. x87 표현(3번)은
+  Stage 2 이전까지.
+
 ## 이번 정리에서 닫힌 이전 항목
 
 - **Task 492 최초 live 검증:** 입력 edge와 due queue에는 유실이 없었지만 IF gate 때문에
@@ -72,7 +82,7 @@ Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 hist
 
 ## Current Status
 
-As of 2026-08-28 there is one item, Stages 3 through 5 of the web port, and it is **on hold** --
+As of 2026-09-28 there are three items. **The Android arm64 port has finished Stage 0 (preparation) and awaits decisions.** Stages 3 through 5 of the web port are **on hold** --
 the Linux performance axis comes first. A 120-second user run
 completed final validation
 of Tasks 492 through 495: JAMMA input timing, IRQ0 replay, 2P numpad aliases, and history pruning.
@@ -101,6 +111,16 @@ units in [`work-orders/`](work-orders/), and completed results and verification 
   file later means writing the interpreter twice.
   **And design Stage 3 for running in a Worker**: the CHD has to stay open throughout play, and
   synchronous file I/O in a browser holds only inside a Worker (design 513, Decision 7).
+
+- **Android arm64 port -- Stage 0 done, awaiting decisions (2026-09-28).** The state lives in the
+  [Android arm64 port frontier](analysis/android-arm64-port-frontier.md); the stage plan and the
+  thirteen items for the user are in the [Task 756 design](design/20260928-756-android-arm64-execution.md).
+  **In one line:** in an aarch64 cross build **178 of `repiu_exe`'s 183 objects compile** and all five
+  failures are host-CPU-only files, but arm64 has no guest byte it can copy, so **a platform-neutral
+  interpreter, the same as web Stage 3, is required.** The two ports share one interpreter.
+  **Stage 1 (build configuration) starts once** the design's decision items 1 (execution approach),
+  4 (guest memory model), 5 (Linux aarch64 first), 6 (ABI scope) and 8 (minSdk and NDK) are answered.
+  The x87 representation (item 3) is due before Stage 2.
 
 ## Previous Entries Closed by This Cleanup
 
