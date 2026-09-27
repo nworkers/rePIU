@@ -1128,6 +1128,8 @@ void RecoverToHost(repiu::platform::GuestCpuContext* context, ThreadContext* thr
 
 bool HandlePrivilegedTrapInstruction(repiu::platform::GuestCpuContext* win32_context,
                                      ThreadContext* context);
+bool HandleAsciiAdjustInstruction(repiu::platform::GuestCpuContext* win32_context,
+                                  ThreadContext* context);
 bool HandleSelectorLimitInstruction(repiu::platform::GuestCpuContext* win32_context,
                                     ThreadContext* context);
 struct AotPlacementPlan;
@@ -1439,6 +1441,9 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
         }
         case 0xFAU: case 0xFBU:
             if (context->enable_privileged_trap_hle && HandlePrivilegedTrapInstruction(win32_context, context)) return true;
+            break;
+        case 0xD4U: case 0xD5U:
+            if (HandleAsciiAdjustInstruction(win32_context, context)) return true;
             break;
         case 0xABU:
             if (context->enable_segment_load_hle && HandleRepStosdInstruction(win32_context, context)) return true;
@@ -2334,6 +2339,75 @@ bool HandleOriginalFatalBreakpoint(const repiu::platform::FaultEvent& fault,
 
 
 
+// Task 751. `AAM imm8` and `AAD imm8`, which long mode does not have. The
+// cache leaves them as a boundary, and nothing answered it: Watcom's number
+// formatting divides by ten with `aam`, and pumpitpc died there at its first
+// score. AAM: AH = AL / imm8, AL = AL % imm8. AAD: AL = AL + AH * imm8, AH = 0.
+// Both set SF, ZF and PF from AL and leave OF, AF and CF undefined, which here
+// means untouched. A zero divisor is a divide error on the real machine and is
+// declined rather than invented.
+bool HandleAsciiAdjustInstruction(
+    repiu::platform::GuestCpuContext* const win32_context,
+    ThreadContext* const context)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return false;
+    }
+    const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Eip));
+    if (!IsGuestRangeReadable(context, instruction, 2U) ||
+        (instruction[0] != 0xD4U && instruction[0] != 0xD5U))
+    {
+        return false;
+    }
+    const std::uint32_t base = instruction[1];
+    const std::uint32_t al = win32_context->Eax & 0xFFU;
+    const std::uint32_t ah = (win32_context->Eax >> 8U) & 0xFFU;
+    std::uint32_t new_al = 0U;
+    std::uint32_t new_ah = 0U;
+    if (instruction[0] == 0xD4U)
+    {
+        if (base == 0U)
+        {
+            return false;
+        }
+        new_ah = al / base;
+        new_al = al % base;
+    }
+    else
+    {
+        new_al = (al + ah * base) & 0xFFU;
+    }
+    win32_context->Eax =
+        (win32_context->Eax & 0xFFFF0000U) | (new_ah << 8U) | new_al;
+    std::uint32_t parity = new_al;
+    parity ^= parity >> 4U;
+    parity ^= parity >> 2U;
+    parity ^= parity >> 1U;
+    constexpr std::uint32_t kParity = 0x00000004U;
+    constexpr std::uint32_t kZero = 0x00000040U;
+    constexpr std::uint32_t kSign = 0x00000080U;
+    std::uint32_t eflags =
+        win32_context->EFlags & ~(kParity | kZero | kSign);
+    if ((parity & 1U) == 0U)
+    {
+        eflags |= kParity;
+    }
+    if (new_al == 0U)
+    {
+        eflags |= kZero;
+    }
+    if ((new_al & 0x80U) != 0U)
+    {
+        eflags |= kSign;
+    }
+    win32_context->EFlags = eflags;
+    RecordHandledHleTrap(win32_context, context, instruction[0]);
+    win32_context->Eip += 2U;
+    return true;
+}
+
 bool HandlePrivilegedTrapInstruction(repiu::platform::GuestCpuContext* win32_context,
                                      ThreadContext* context)
 {
@@ -2349,6 +2423,12 @@ bool HandlePrivilegedTrapInstruction(repiu::platform::GuestCpuContext* win32_con
         RecordHandledHleTrap(win32_context, context, *instruction);
         win32_context->EFlags &= ~kEFlagsInterruptEnable;
         ++win32_context->Eip;
+        // Task 751: the edit above does not survive the return to user mode.
+        if (GuestCliHoldEnabled())
+        {
+            NoteGuestCli(&context->pic_timer_in_service,
+                         GuestCliHoldClockNanoseconds());
+        }
         return true;
     }
     if (*instruction == 0xFB)
@@ -2356,6 +2436,11 @@ bool HandlePrivilegedTrapInstruction(repiu::platform::GuestCpuContext* win32_con
         RecordHandledHleTrap(win32_context, context, *instruction);
         win32_context->EFlags |= kEFlagsInterruptEnable;
         ++win32_context->Eip;
+        if (GuestCliHoldEnabled())
+        {
+            NoteGuestSti(&context->pic_timer_in_service,
+                         GuestCliHoldClockNanoseconds());
+        }
         // Task 735. A pending IRQ0 is taken as soon as IF is set again, which
         // for a timer handler is its closing `sti` after the EOI. This is where
         // a tick owed during a long host call is caught up, now that the
@@ -4991,8 +5076,42 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
     return true;
 }
 
+// Task 751. One clock for every reading of the guest's `cli` hold.
+std::uint64_t GuestCliHoldClockNanoseconds()
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+bool CanEnterTimerInterruptHandler(ThreadContext* const context)
+{
+#if defined(__x86_64__)
+    if (context == nullptr || context->aot_placement == nullptr)
+    {
+        return true;
+    }
+    const DpmiInterruptVectorShadow& shadow =
+        context->dpmi_interrupt_vectors[0x08];
+    if (!shadow.valid)
+    {
+        // Nothing to enter; the injection itself accounts for it.
+        return true;
+    }
+    std::uint32_t cache_address = 0U;
+    return FindAotCacheAddress(*context->aot_placement, shadow.offset,
+                               &cache_address) ||
+        CanResumeLinuxX64LegacyTarget(context, shadow.offset);
+#else
+    (void)context;
+    return true;
+#endif
+}
+
 std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_context,
-                                      ThreadContext* context)
+                                      ThreadContext* context,
+                                      const TimerInjectionSite site)
 {
     // Task 735. An emulated `sti` asks for the next attempt, wherever the
     // dispatcher makes it; an attempt with nothing owed still consumes it.
@@ -5040,6 +5159,16 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
         return 0U;
     }
 
+    // Task 751. The test above sees only what the host context carries; the
+    // guest's `cli` is kept by the engine.
+    if (GuestCliHoldEnabled() &&
+        GuestCliBlocksInjection(&context->pic_timer_in_service,
+                                GuestCliHoldClockNanoseconds()))
+    {
+        RecordTimerTickDeferred(&context->timer_tick_delivery);
+        return 0U;
+    }
+
     // Task 735. The IF test above cannot see a guest `cli`: user mode keeps IF
     // set in the host context whatever the guest asked for. The PIC's
     // in-service bit is what keeps IRQ0 out of its own handler on the real
@@ -5050,6 +5179,21 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
         PicTimerBlocksInjection(&context->pic_timer_in_service,
                                 static_cast<std::uint32_t>(win32_context->Esp),
                                 at_sti))
+    {
+        RecordTimerTickDeferred(&context->timer_tick_delivery);
+        return 0U;
+    }
+
+    // Task 751. Last of the waits, because a false answer counts a delivery.
+    // The checks that remain below only fail for an address the guest's code
+    // selectors do not cover, which a handler's return target is not.
+    // 838.0965 ns is one count of the PIT's 1,193,182 Hz input.
+    const std::uint64_t tick_period_ns =
+        static_cast<std::uint64_t>(context->pit_channel0.snapshot().divisor) *
+        838096ULL / 1000ULL;
+    if (PostReturnChainBlocksInjection(&context->pic_timer_in_service, site,
+                                       GuestCliHoldClockNanoseconds(),
+                                       tick_period_ns))
     {
         RecordTimerTickDeferred(&context->timer_tick_delivery);
         return 0U;
@@ -5128,8 +5272,10 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
     const std::uint32_t interrupt_frame_esp = win32_context->Esp - 12U;
     NotePicTimerInjected(&context->pic_timer_in_service, interrupt_frame_esp,
                          at_sti);
+    NoteTimerInjectionTime(&context->pic_timer_in_service,
+                           GuestCliHoldClockNanoseconds());
     context->jamma_input_timeline.BeginTimerInterrupt(
-        win32_context->Esp, interrupt_frame_esp);
+        win32_context->Esp, interrupt_frame_esp, eip);
     context->timer_interrupt_pending.store(keep_armed,
                                            std::memory_order_relaxed);
     timer_guard.Release();
@@ -6294,6 +6440,16 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     if (iretd.has_value() && *iretd)
     {
         NoteVehExitSite(context, VehExitSite::kHleChainPrivileged);
+        // Task 751. The handler has returned, so the next owed tick may go
+        // in, as it does after an `iret` handled from the cache (Task 747).
+        // This is what drains the ticks a `cli` section held back: each
+        // handler's return takes the next one, without nesting, and no
+        // more than `kPostReturnChainLimit` in a row.
+        if (CanEnterTimerInterruptHandler(context))
+        {
+            InjectPendingInterrupts(win32_context, context,
+                                    TimerInjectionSite::kAfterHandlerReturn);
+        }
 #if defined(__x86_64__)
         if (context->aot_placement != nullptr &&
             static_cast<std::uint32_t>(win32_context->Eip) != iretd_eip)
@@ -6321,8 +6477,42 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     {
         // Task 735. An emulated `sti` may make an owed tick deliverable; the
         // DOS HLE chain below injects at the same point.
-        InjectPendingInterrupts(win32_context, context);
+        //
+        // Task 751. On Linux x64 this returned to the handler's guest address
+        // whatever it was, and a handler beginning with `pusha` died as an
+        // illegal instruction. It was rare while ticks went in elsewhere
+        // first; once the guest's `cli` holds them back, the closing `sti` is
+        // where they arrive. So the tick goes in only when the handler can be
+        // entered, and the entry goes through the cache as the `iret` above.
+        const std::uint32_t privileged_resume_eip =
+            static_cast<std::uint32_t>(win32_context->Eip);
+        if (CanEnterTimerInterruptHandler(context))
+        {
+            InjectPendingInterrupts(win32_context, context);
+        }
         NoteVehExitSite(context, VehExitSite::kHleChainPrivileged);
+#if defined(__x86_64__)
+        if (context->aot_placement != nullptr &&
+            static_cast<std::uint32_t>(win32_context->Eip) !=
+                privileged_resume_eip)
+        {
+            const bool resumed = TryResumeAotAfterHandledHle(
+                win32_context,
+                context,
+                privileged_resume_eip,
+                AotHleResumeOrigin::kHandledGuestBoundary);
+            if (!resumed &&
+                !CanResumeLinuxX64LegacyTarget(
+                    context,
+                    static_cast<std::uint32_t>(win32_context->Eip)))
+            {
+                win32_context->EFlags &= ~0x00000100U;
+                return repiu::platform::FaultDisposition::kNotHandled;
+            }
+        }
+#else
+        (void)privileged_resume_eip;
+#endif
         return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_privileged_trap_hle &&

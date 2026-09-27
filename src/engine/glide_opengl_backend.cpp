@@ -13,6 +13,9 @@
 // SDL is this project's cross-platform layer, so these need no guard. They had
 // one because nothing had ever compiled this file anywhere else, and on Linux
 // it removed every GL declaration the file uses.
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 
@@ -47,6 +50,40 @@ namespace repiu::engine {
 
 // Task 748. Wraps the player so the backend header needs only a forward
 // declaration.
+// Task 752. WSL hands the GPU to Linux only through Mesa's D3D12 driver, and
+// Mesa picks llvmpipe unless told otherwise, so a machine with a GPU drew in
+// software. Chosen when the paravirtual GPU device and the driver are both
+// there and the user has not chosen for themselves; `REPIU_WSL_D3D12=0` keeps
+// Mesa's own choice.
+bool SelectWslD3d12Driver() {
+#if defined(__linux__)
+  const char *const choice = std::getenv("REPIU_WSL_D3D12");
+  if (choice != nullptr && choice[0] == '0') {
+    return false;
+  }
+  if (std::getenv("GALLIUM_DRIVER") != nullptr ||
+      std::getenv("MESA_LOADER_DRIVER_OVERRIDE") != nullptr ||
+      std::getenv("LIBGL_ALWAYS_SOFTWARE") != nullptr) {
+    return false;
+  }
+  if (access("/dev/dxg", F_OK) != 0) {
+    return false;
+  }
+  static const char *const kDrivers[] = {
+      "/usr/lib/x86_64-linux-gnu/dri/d3d12_dri.so",
+      "/usr/lib/i386-linux-gnu/dri/d3d12_dri.so",
+      "/usr/lib64/dri/d3d12_dri.so",
+      "/usr/lib/dri/d3d12_dri.so",
+  };
+  for (const char *const driver : kDrivers) {
+    if (access(driver, R_OK) == 0) {
+      return setenv("GALLIUM_DRIVER", "d3d12", 0) == 0;
+    }
+  }
+#endif
+  return false;
+}
+
 class SdlInputScriptPlayerHandle {
 public:
   SdlInputScriptPlayer player;
@@ -264,8 +301,35 @@ void GlideOpenGlBackend::SetBiosKeyboard(hle::BiosKeyboard *keyboard) {
   bios_keyboard_ = keyboard;
 }
 
+namespace {
+
+// Task 754. See repiu/engine/event_clock.h.
+bool EventClockUsesSteady() {
+  static const bool steady =
+      ResolveEventClockUsesSteady(std::getenv("REPIU_EVENT_CLOCK"));
+  return steady;
+}
+
+std::uint64_t SteadyClockNanoseconds() {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+} // namespace
+
 std::uint64_t GlideOpenGlBackend::EventClockNanoseconds() const {
-  return SDL_GetTicksNS();
+  return EventClockUsesSteady() ? SteadyClockNanoseconds() : SDL_GetTicksNS();
+}
+
+std::uint64_t GlideOpenGlBackend::EventTimestampNanoseconds(
+    std::uint64_t sdl_timestamp) const {
+  if (!EventClockUsesSteady()) {
+    return sdl_timestamp;
+  }
+  return TranslateEventTimestamp(sdl_timestamp, SDL_GetTicksNS(),
+                                 SteadyClockNanoseconds());
 }
 
 void GlideOpenGlBackend::SetExecutionBackend(
@@ -983,6 +1047,7 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
   const int window_width = static_cast<int>(logical_width * window_scale_);
   const int window_height = static_cast<int>(logical_height * window_scale_);
 
+  glide_swap_interval_policy_.wsl_d3d12_selected = SelectWslD3d12Driver();
   if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
     dummy_mode_ = true;
     logical_width_ = logical_width;
@@ -1033,12 +1098,30 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
     return true;
   }
+  {
+    // Task 752: say what draws. A software renderer here is why a frame's
+    // present takes 11 ms where the GPU takes 5.
+    const char *const renderer =
+        reinterpret_cast<const char *>(glGetString(GL_RENDERER));
+    std::snprintf(glide_swap_interval_policy_.gl_renderer,
+                  sizeof(glide_swap_interval_policy_.gl_renderer), "%s",
+                  renderer != nullptr ? renderer : "unknown");
+    fprintf(stderr, "[repiu-glide] GL renderer: %s%s" "\n",
+            glide_swap_interval_policy_.gl_renderer,
+            glide_swap_interval_policy_.wsl_d3d12_selected
+                ? " (Mesa D3D12 chosen for WSL)"
+                : "");
+  }
 
   window_ = window;
   // Task 748: a scripted keyboard, if one was asked for.
   input_script_ = std::make_unique<SdlInputScriptPlayerHandle>();
   if (!input_script_->player.StartFromEnvironment(SDL_GetWindowID(window))) {
     input_script_.reset();
+  }
+  if (jamma_input_timeline_ != nullptr) {
+    jamma_input_timeline_->ServeLiveReadsFromLatestState(input_script_ !=
+                                                         nullptr);
   }
   render_context_ = render_context;
   logical_width_ = logical_width;
@@ -1163,6 +1246,35 @@ void GlideOpenGlBackend::PumpEvents() {
   if (dummy_mode_ || window_ == nullptr) {
     return;
   }
+  // Task 754: the two clocks, compared a second at a time.
+  glide_swap_interval_policy_.event_clock_steady = EventClockUsesSteady();
+  if (host_clock_divergence_.Sample(SDL_GetTicksNS(),
+                                    SteadyClockNanoseconds())) {
+    fprintf(stderr,
+            "[repiu-clock] the steady clock ran %.2f%% %s than SDL's raw "
+            "clock over the last second: the system is slewing its "
+            "monotonic clock (time synchronisation). Timer ticks follow "
+            "the %s clock; audio follows the steady clock\n",
+            static_cast<double>(
+                host_clock_divergence_.snapshot().worst_window_ppm < 0
+                    ? -host_clock_divergence_.snapshot().worst_window_ppm
+                    : host_clock_divergence_.snapshot().worst_window_ppm) /
+                10000.0,
+            host_clock_divergence_.snapshot().worst_window_ppm < 0
+                ? "faster"
+                : "slower",
+            EventClockUsesSteady() ? "steady" : "raw");
+  }
+  {
+    const HostClockDivergenceSnapshot clocks =
+        host_clock_divergence_.snapshot();
+    glide_swap_interval_policy_.clock_windows = clocks.windows;
+    glide_swap_interval_policy_.clock_windows_over_limit =
+        clocks.windows_over_limit;
+    glide_swap_interval_policy_.clock_total_ppm = clocks.total_ppm;
+    glide_swap_interval_policy_.clock_worst_window_ppm =
+        clocks.worst_window_ppm;
+  }
   SDL_Event event{};
   while (SDL_PollEvent(&event)) {
     if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
@@ -1173,22 +1285,25 @@ void GlideOpenGlBackend::PumpEvents() {
       if (event.type == SDL_EVENT_KEY_DOWN) {
         JammaInputKey key;
         if (FindJammaInputForPress(event.key.key, event.key.mod, &key)) {
-          jamma_input_timeline_->RecordKeyEdge(event.key.timestamp, key, true);
+          jamma_input_timeline_->RecordKeyEdge(
+              EventTimestampNanoseconds(event.key.timestamp), key, true);
         }
       } else {
         const std::uint16_t released = JammaInputMaskForKeycode(event.key.key);
+        const std::uint64_t released_at =
+            EventTimestampNanoseconds(event.key.timestamp);
         for (std::uint32_t index = 0;
              index < repiu::input::kJammaInputKeyCount; ++index) {
           const auto key = static_cast<JammaInputKey>(index);
           if ((released & JammaInputKeyMask(key)) != 0U) {
-            jamma_input_timeline_->RecordKeyEdge(event.key.timestamp, key,
-                                                 false);
+            jamma_input_timeline_->RecordKeyEdge(released_at, key, false);
           }
         }
       }
     } else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST &&
                jamma_input_timeline_ != nullptr) {
-      jamma_input_timeline_->RecordAllReleased(event.common.timestamp);
+      jamma_input_timeline_->RecordAllReleased(
+          EventTimestampNanoseconds(event.common.timestamp));
     }
     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
       HandleSdlBiosKeyboardFocusLost(bios_keyboard_);
@@ -1277,15 +1392,23 @@ void GlideOpenGlBackend::PaceSwapAfterPresent(
     return;
   }
   const auto now = present_end;
-  if (!swap_pacing_deadline_valid_ ||
-      swap_pacing_deadline_ + swap_pacing_period_ < now) {
+  // Task 752. This used to resynchronise whenever the frame was late at all
+  // (`deadline + period < now` compares against this frame's own deadline)
+  // and then slept a whole period from now, so a frame 1 ms over its period
+  // became a 33 ms frame and a screen whose frames take 17 ms ran at half
+  // rate. A late frame is now simply not held; the deadlines go on
+  // accumulating so the frames after it make the time up, and only a frame
+  // more than a period late starts the schedule again, from now.
+  const auto deadline = swap_pacing_deadline_ + swap_pacing_period_;
+  if (!swap_pacing_deadline_valid_ || deadline + swap_pacing_period_ < now) {
     if (swap_pacing_deadline_valid_) {
       ++glide_swap_interval_policy_.resyncs;
     }
     swap_pacing_deadline_ = now;
     swap_pacing_deadline_valid_ = true;
+  } else {
+    swap_pacing_deadline_ = deadline;
   }
-  swap_pacing_deadline_ += swap_pacing_period_;
   if (swap_pacing_deadline_ <= now) {
     ++glide_swap_interval_policy_.late_swaps;
     const auto late = std::chrono::duration_cast<std::chrono::microseconds>(

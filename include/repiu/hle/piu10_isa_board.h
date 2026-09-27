@@ -63,6 +63,10 @@ private:
         std::uint8_t state_ = 0;
         std::uint8_t bit_ = 0;
         std::uint8_t data_out_ = 1;
+        // Task 751. `REPIU_PIU10_CAT702_TRACE=1`: the bits of one
+        // transaction, clocked in and driven out, printed when select rises.
+        std::string trace_in_;
+        std::string trace_out_;
     };
 
     std::uint16_t ReadFlashWord(std::uint32_t address) const;

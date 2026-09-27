@@ -30,6 +30,7 @@
 #include "dos_console_device_probe.h"
 #include "dos_file_handle_cache_probe.h"
 #include "env_toggle_probe.h"
+#include "event_clock_probe.h"
 #include "far_jump_probe.h"
 #include "far_return_probe.h"
 #include "final_execution_report_probe.h"
@@ -96,6 +97,8 @@ constexpr CoreProbe kCoreProbes[] = {
     {"dos_file_handle_cache", &repiu::tools::RunDosFileHandleCacheProbe},
     {"dos_console_device", &repiu::tools::RunDosConsoleDeviceProbe},
     {"pit_timer", &repiu::tools::RunPitTimerProbe},
+    // Task 754. Pure arithmetic over two clock readings.
+    {"event_clock", &repiu::tools::RunEventClockProbe},
     {"segment_push", &repiu::tools::RunSegmentPushProbe},
     {"glide_lfb_region", &repiu::tools::RunGlideLfbRegionProbe},
     {"jump_table_guard", &repiu::tools::RunJumpTableGuardProbe},

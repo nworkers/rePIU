@@ -28,6 +28,12 @@ struct JammaInputTimelineSnapshot
     std::uint64_t replay_missing_due_count = 0;
     std::uint64_t replay_frame_retire_count = 0;
     std::uint64_t replay_frame_overflow_count = 0;
+    // Task 753. How a replay frame left other than by the stack test: by its
+    // handler's return, or by age. And the reads the latest recorded state
+    // answered because a scripted keyboard asked it to.
+    std::uint64_t replay_frame_end_count = 0;
+    std::uint64_t replay_frame_stale_count = 0;
+    std::uint64_t latest_state_read_count = 0;
     std::uint32_t history_size = 0;
     std::uint32_t history_peak_size = 0;
     std::uint32_t due_size = 0;
@@ -39,6 +45,11 @@ class JammaInputTimeline
 public:
     static constexpr std::uint32_t kHistoryCapacity = 256U;
     static constexpr std::uint32_t kDueCapacity = 64U;
+    // Task 753. A replay frame that this many later interrupts have begun
+    // after is no handler still running; it is one the stack test never got
+    // to retire. 64 is the tick backlog's bound, so a whole backlog draining
+    // inside one handler would still not reach it.
+    static constexpr std::uint64_t kReplayFrameStaleBegins = 64U;
 
     void Reset(std::uint64_t timestamp_nanoseconds,
                std::uint16_t pressed_mask);
@@ -50,9 +61,21 @@ public:
     bool EnqueueTimerTick(std::uint64_t due_timestamp_nanoseconds);
     void ClearTimerTicks();
     bool BeginTimerInterrupt(std::uint32_t pre_interrupt_esp,
-                             std::uint32_t interrupt_frame_esp);
+                             std::uint32_t interrupt_frame_esp,
+                             std::uint32_t interrupted_eip = 0U);
+    // Task 753. The handler's return, seen where the engine executes the
+    // `iret` itself: `interrupt_frame_esp` is ESP at that `iret`. Only a
+    // return popping a frame an interrupt pushed ends anything, so the `iret`
+    // of a chained handler or of a software interrupt is ignored. Returns
+    // whether a frame ended.
+    bool EndTimerInterrupt(std::uint32_t interrupt_frame_esp);
     bool TryReplayPressedMask(std::uint32_t current_esp,
                               std::uint16_t* pressed_mask);
+    // Task 753. A scripted keyboard pushes events, which SDL's keyboard state
+    // array does not follow, so with one running a read outside every handler
+    // is answered from the latest recorded state instead.
+    void ServeLiveReadsFromLatestState(bool enabled);
+    bool TryLatestPressedMask(std::uint16_t* pressed_mask);
 
     JammaInputTimelineSnapshot Snapshot() const;
 
@@ -67,12 +90,15 @@ private:
     {
         std::uint64_t timestamp_nanoseconds = 0;
         std::uint32_t interrupt_frame_esp = 0;
+        std::uint32_t interrupted_eip = 0;
+        std::uint64_t begin_index = 0;
     };
 
     std::uint16_t StateAtLocked(std::uint64_t timestamp_nanoseconds);
     void RecordStateLocked(std::uint64_t timestamp_nanoseconds,
                            std::uint16_t pressed_mask);
     void RetireReplayFramesLocked(std::uint32_t current_esp);
+    void RetireStaleReplayFramesLocked();
     void PruneHistoryLocked();
 
     std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
@@ -103,7 +129,16 @@ private:
     std::uint64_t replay_missing_due_count_ = 0;
     std::uint64_t replay_frame_retire_count_ = 0;
     std::uint64_t replay_frame_overflow_count_ = 0;
+    std::uint64_t replay_frame_end_count_ = 0;
+    std::uint64_t replay_frame_stale_count_ = 0;
+    std::uint64_t latest_state_read_count_ = 0;
+    std::atomic<bool> serve_live_reads_{false};
 };
+
+// Task 753. `REPIU_JAMMA_REPLAY_FRAME_END=0` leaves replay frames to the
+// stack test and the age rule, as before the handler's return was used.
+bool ResolveJammaReplayFrameEnd(const char* value);
+bool JammaReplayFrameEndEnabled();
 
 std::uint16_t CaptureCurrentJammaPressedMask();
 

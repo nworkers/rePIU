@@ -47,6 +47,11 @@ struct GlideSwapIntervalPolicySnapshot
     // vsync: whether it is on, its period, and how many swaps it paced for
     // how long in total.
     char failure[96] = {};
+    // Task 752. What draws: the GL renderer the context reports, and whether
+    // the engine chose Mesa's D3D12 driver for it (WSL offers the GPU only
+    // through that driver, and Mesa does not pick it by itself).
+    char gl_renderer[96] = {};
+    bool wsl_d3d12_selected = false;
     double refresh_rate_hz = 0.0;
     bool pacing_active = false;
     std::uint32_t pacing_period_us = 0;
@@ -65,6 +70,13 @@ struct GlideSwapIntervalPolicySnapshot
     // the ticks injected inside those waits.
     std::uint64_t wait_tick_swaps = 0;
     std::uint64_t wait_tick_injections = 0;
+    // Task 754: how far SDL's clock ran from the steady clock, a second at a
+    // time, and which of the two the timer ticks followed.
+    bool event_clock_steady = true;
+    std::uint64_t clock_windows = 0;
+    std::uint64_t clock_windows_over_limit = 0;
+    std::int64_t clock_total_ppm = 0;
+    std::int64_t clock_worst_window_ppm = 0;
 };
 
 }  // namespace repiu::engine

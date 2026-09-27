@@ -1,0 +1,32 @@
+# ROM set survey: five SERVICE credits, then both players' center pads and a few
+# direction pads, so any title gets past its title screen and into a selection.
+# Times in ms from the moment the Glide window opened.
+14000 F2 150
+16000 F2 150
+18000 F2 150
+20000 F2 150
+22000 F2 150
+25000 Keypad5 150
+25500 S 150
+28000 Keypad5 150
+28500 S 150
+31000 Keypad5 150
+31500 S 150
+34000 Keypad9 150
+36000 Keypad9 150
+38000 Keypad5 150
+38500 S 150
+41000 Keypad5 150
+41500 S 150
+44000 Keypad5 150
+44500 S 150
+47000 Keypad7 150
+48000 Keypad9 150
+49000 Keypad1 150
+50000 Keypad3 150
+51000 Keypad5 150
+53000 Keypad7 150
+54000 Keypad9 150
+55000 Keypad1 150
+56000 Keypad3 150
+57000 Keypad5 150

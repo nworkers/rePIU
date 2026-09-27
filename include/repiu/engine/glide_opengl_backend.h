@@ -12,6 +12,7 @@
 #include "repiu/engine/glide_opengl_shader.h"
 #include "repiu/engine/glide_setter_phase_timing.h"
 #include "repiu/engine/glide_swap_interval_policy.h"
+#include "repiu/engine/event_clock.h"
 #include "repiu/engine/glide_texture_census.h"
 #include "repiu/runtime/execution_backend.h"
 
@@ -81,6 +82,8 @@ public:
     void SetJammaInputTimeline(JammaInputTimeline* timeline);
     void SetBiosKeyboard(hle::BiosKeyboard* keyboard);
     std::uint64_t EventClockNanoseconds() const;
+    // Task 754: an SDL event's timestamp on the clock above.
+    std::uint64_t EventTimestampNanoseconds(std::uint64_t sdl_timestamp) const;
 
     // `origin` is the GrOriginLocation_t passed to grSstWinOpen:
     // GR_ORIGIN_UPPER_LEFT is 0 and GR_ORIGIN_LOWER_LEFT is 1. It selects the
@@ -406,6 +409,7 @@ private:
 
     std::thread::id host_thread_id_;
     JammaInputTimeline* jamma_input_timeline_ = nullptr;
+    HostClockDivergenceMeter host_clock_divergence_;
     hle::BiosKeyboard* bios_keyboard_ = nullptr;
     // Mutable so the async snapshot accessors can stay const: they only read
     // counters this lock protects.

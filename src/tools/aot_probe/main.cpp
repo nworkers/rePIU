@@ -14,6 +14,7 @@
 #include "native_linear_span_probe.h"
 #include "plan_build_benchmark_probe.h"
 #include "pit_timer_probe.h"
+#include "event_clock_probe.h"
 #include "piu10_isa_board_probe.h"
 #include "retired_trap_profile_probe.h"
 #include "single_step_hotspot_profile_probe.h"
@@ -683,6 +684,7 @@ int main(int argc, char** argv)
         std::strcmp(argv[1], "--jamma-input-timeline") == 0)
     {
         return repiu::tools::RunPitTimerProbe() &&
+            repiu::tools::RunEventClockProbe() &&
             repiu::tools::RunTimerTickDeliveryProbe() &&
             repiu::tools::RunJammaInputTimelineProbe() ? 0 : 1;
     }
@@ -1160,6 +1162,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunPitTimerProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunEventClockProbe())
     {
         return 1;
     }

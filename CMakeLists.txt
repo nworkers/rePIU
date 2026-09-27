@@ -625,6 +625,7 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/linux_x64_transfer_failure_provenance_probe.cpp
     src/tools/aot_probe/nvram_path_probe.cpp
     src/tools/aot_probe/pit_timer_probe.cpp
+    src/tools/aot_probe/event_clock_probe.cpp
     src/tools/aot_probe/segment_push_probe.cpp
     src/engine/telemetry/final_execution_report.cpp
     src/engine/telemetry/linux_x64_transfer_failure_provenance.cpp
@@ -806,6 +807,7 @@ if(WIN32)
         src/tools/aot_probe/native_linear_span_probe.cpp
         src/tools/aot_probe/plan_build_benchmark_probe.cpp
         src/tools/aot_probe/pit_timer_probe.cpp
+        src/tools/aot_probe/event_clock_probe.cpp
         src/tools/aot_probe/piu10_isa_board_probe.cpp
         src/tools/aot_probe/retired_trap_profile_probe.cpp
         src/tools/aot_probe/single_step_hotspot_profile_probe.cpp

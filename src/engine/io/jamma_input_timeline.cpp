@@ -4,6 +4,8 @@
 #include <SDL3/SDL_keyboard.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 namespace repiu::engine {
@@ -23,7 +25,27 @@ private:
   std::atomic_flag *lock_;
 };
 
+// Task 753: `REPIU_JAMMA_TIMELINE_TRACE=1` names each replay frame the age
+// rule retires, which is how a frame the stack test cannot reach is found.
+bool TimelineTraceEnabled() {
+  static const bool enabled = []() {
+    const char *const value = std::getenv("REPIU_JAMMA_TIMELINE_TRACE");
+    return value != nullptr && value[0] != '0' && value[0] != 0;
+  }();
+  return enabled;
+}
+
 } // namespace
+
+bool ResolveJammaReplayFrameEnd(const char *value) {
+  return value == nullptr || value[0] != '0';
+}
+
+bool JammaReplayFrameEndEnabled() {
+  static const bool enabled =
+      ResolveJammaReplayFrameEnd(std::getenv("REPIU_JAMMA_REPLAY_FRAME_END"));
+  return enabled;
+}
 
 void JammaInputTimeline::Reset(std::uint64_t timestamp_nanoseconds,
                                     std::uint16_t pressed_mask) {
@@ -49,6 +71,9 @@ void JammaInputTimeline::Reset(std::uint64_t timestamp_nanoseconds,
   replay_missing_due_count_ = 0;
   replay_frame_retire_count_ = 0;
   replay_frame_overflow_count_ = 0;
+  replay_frame_end_count_ = 0;
+  replay_frame_stale_count_ = 0;
+  latest_state_read_count_ = 0;
 }
 
 void JammaInputTimeline::RecordStateLocked(
@@ -122,9 +147,11 @@ void JammaInputTimeline::ClearTimerTicks() {
 }
 
 bool JammaInputTimeline::BeginTimerInterrupt(
-    std::uint32_t pre_interrupt_esp, std::uint32_t interrupt_frame_esp) {
+    std::uint32_t pre_interrupt_esp, std::uint32_t interrupt_frame_esp,
+    std::uint32_t interrupted_eip) {
   TimelineLock lock(&lock_);
   RetireReplayFramesLocked(pre_interrupt_esp);
+  RetireStaleReplayFramesLocked();
   if (due_size_ == 0U) {
     ++replay_missing_due_count_;
     return false;
@@ -139,11 +166,31 @@ bool JammaInputTimeline::BeginTimerInterrupt(
     --replay_frame_depth_;
     ++replay_frame_overflow_count_;
   }
-  replay_frames_[replay_frame_depth_++] = {replay_timestamp,
-                                           interrupt_frame_esp};
   ++replay_begin_count_;
+  replay_frames_[replay_frame_depth_++] = {replay_timestamp,
+                                           interrupt_frame_esp,
+                                           interrupted_eip,
+                                           replay_begin_count_};
   PruneHistoryLocked();
   return true;
+}
+
+bool JammaInputTimeline::EndTimerInterrupt(
+    std::uint32_t interrupt_frame_esp) {
+  TimelineLock lock(&lock_);
+  // From the top: the frame this return pops, and with it whatever nested
+  // above it and never came to a stack test.
+  for (std::uint32_t index = replay_frame_depth_; index != 0U; --index) {
+    if (replay_frames_[index - 1U].interrupt_frame_esp !=
+        interrupt_frame_esp) {
+      continue;
+    }
+    replay_frame_end_count_ += replay_frame_depth_ - (index - 1U);
+    replay_frame_depth_ = index - 1U;
+    PruneHistoryLocked();
+    return true;
+  }
+  return false;
 }
 
 void JammaInputTimeline::RetireReplayFramesLocked(
@@ -154,6 +201,37 @@ void JammaInputTimeline::RetireReplayFramesLocked(
     --replay_frame_depth_;
     ++replay_frame_retire_count_;
   }
+}
+
+// Task 753. The stack test retires a frame only when the guest is seen above
+// it. A tick delivered at a stack level the guest does not come back to --
+// while a load ran in a function the game's loop is not called from, say --
+// left its frame at the bottom for the rest of the run, and every read
+// outside a handler was then answered with the keys as they were at that
+// tick: pumpit8 read a SERVICE press 60 times a second for 35 seconds.
+void JammaInputTimeline::RetireStaleReplayFramesLocked() {
+  std::uint32_t kept = 0U;
+  for (std::uint32_t index = 0; index < replay_frame_depth_; ++index) {
+    const ReplayFrame frame = replay_frames_[index];
+    if (replay_begin_count_ - frame.begin_index > kReplayFrameStaleBegins) {
+      ++replay_frame_stale_count_;
+      if (TimelineTraceEnabled()) {
+        std::fprintf(stderr,
+                     "[repiu-jamma-timeline] stale frame retired "
+                     "frame_esp=0x%08X interrupted_eip=0x%08X begin=%llu "
+                     "begins_since=%llu depth=%u\n",
+                     static_cast<unsigned>(frame.interrupt_frame_esp),
+                     static_cast<unsigned>(frame.interrupted_eip),
+                     static_cast<unsigned long long>(frame.begin_index),
+                     static_cast<unsigned long long>(replay_begin_count_ -
+                                                     frame.begin_index),
+                     static_cast<unsigned>(replay_frame_depth_));
+      }
+      continue;
+    }
+    replay_frames_[kept++] = frame;
+  }
+  replay_frame_depth_ = kept;
 }
 
 void JammaInputTimeline::PruneHistoryLocked() {
@@ -223,6 +301,7 @@ bool JammaInputTimeline::TryReplayPressedMask(
   }
   TimelineLock lock(&lock_);
   RetireReplayFramesLocked(current_esp);
+  RetireStaleReplayFramesLocked();
   PruneHistoryLocked();
   if (replay_frame_depth_ == 0U) {
     return false;
@@ -230,6 +309,21 @@ bool JammaInputTimeline::TryReplayPressedMask(
   *pressed_mask = StateAtLocked(
       replay_frames_[replay_frame_depth_ - 1U].timestamp_nanoseconds);
   ++replay_read_count_;
+  return true;
+}
+
+void JammaInputTimeline::ServeLiveReadsFromLatestState(bool enabled) {
+  serve_live_reads_.store(enabled, std::memory_order_relaxed);
+}
+
+bool JammaInputTimeline::TryLatestPressedMask(std::uint16_t *pressed_mask) {
+  if (pressed_mask == nullptr ||
+      !serve_live_reads_.load(std::memory_order_relaxed)) {
+    return false;
+  }
+  TimelineLock lock(&lock_);
+  *pressed_mask = latest_pressed_mask_;
+  ++latest_state_read_count_;
   return true;
 }
 
@@ -249,6 +343,9 @@ JammaInputTimelineSnapshot JammaInputTimeline::Snapshot() const {
   result.replay_missing_due_count = replay_missing_due_count_;
   result.replay_frame_retire_count = replay_frame_retire_count_;
   result.replay_frame_overflow_count = replay_frame_overflow_count_;
+  result.replay_frame_end_count = replay_frame_end_count_;
+  result.replay_frame_stale_count = replay_frame_stale_count_;
+  result.latest_state_read_count = latest_state_read_count_;
   result.history_size = history_size_;
   result.history_peak_size = history_peak_size_;
   result.due_size = due_size_;

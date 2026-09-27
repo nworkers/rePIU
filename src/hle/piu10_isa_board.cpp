@@ -3,6 +3,8 @@
 // CAT702 PIU state transitions and PIU10 register semantics are adapted from
 // MAME's BSD-3-Clause xtom3d_piu10.cpp and cat702.cpp implementations.
 
+#include <cstdio>
+#include <cstdlib>
 #include <utility>
 
 namespace repiu::hle
@@ -16,6 +18,13 @@ constexpr std::array<std::uint8_t, 8> kInitialSbox = {
 int Bit(std::uint32_t value, unsigned index)
 {
     return static_cast<int>((value >> index) & 1U);
+}
+
+bool Cat702TraceEnabled()
+{
+    static const bool enabled =
+        std::getenv("REPIU_PIU10_CAT702_TRACE") != nullptr;
+    return enabled;
 }
 
 }  // namespace
@@ -105,6 +114,19 @@ void Piu10IsaBoard::Cat702Piu::WriteSelect(int state)
     else
     {
         data_out_ = 1;
+        if (Cat702TraceEnabled() && !trace_in_.empty())
+        {
+            static unsigned transaction = 0U;
+            if (++transaction <= 600U)
+            {
+                std::fprintf(stderr,
+                             "[repiu-cat702] #%u bits=%zu in=%s out=%s\n",
+                             transaction, trace_in_.size(), trace_in_.c_str(),
+                             trace_out_.c_str());
+            }
+        }
+        trace_in_.clear();
+        trace_out_.clear();
     }
     select_ = state;
 }
@@ -124,6 +146,11 @@ void Piu10IsaBoard::Cat702Piu::WriteClock(int state)
             ApplySbox(kInitialSbox);
         }
         data_out_ = static_cast<std::uint8_t>(Bit(state_, bit_));
+        if (Cat702TraceEnabled())
+        {
+            trace_in_.push_back(data_in_ != 0 ? '1' : '0');
+            trace_out_.push_back(data_out_ != 0 ? '1' : '0');
+        }
     }
     clock_ = state;
 }

@@ -271,6 +271,9 @@ struct PortIoObservation
     std::uint64_t jamma_timeline_frame_retire_count = 0;
     std::uint64_t jamma_timeline_frame_overflow_count = 0;
     std::uint32_t jamma_timeline_active_frame_depth = 0;
+    std::uint64_t jamma_timeline_frame_end_count = 0;
+    std::uint64_t jamma_timeline_frame_stale_count = 0;
+    std::uint64_t jamma_timeline_latest_state_read_count = 0;
     PortIoTraceEntry trace[kPortIoTraceCapacity];
 };
 

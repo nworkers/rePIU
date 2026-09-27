@@ -4516,3 +4516,71 @@ The PIU10 MP3 playback clock (`Piu10Mp3AudioOut::Impl::PlaybackPosition`) advanc
 previous value at the PCM rate and slews, with a four second time constant (±2%), to the pulled count
 less half a device buffer. It never passes the pulled count and never runs backwards. The frame-sync
 toggles and the decode gate are driven by it.
+
+# 타이머 주입의 규칙, 입력 replay 프레임, 호스트 시계 (Tasks 751–754)
+
+타이머 tick의 주입(`InjectPendingInterrupts`)은 다음을 차례로 확인하고, 하나라도 막으면 tick을 미룹니다.
+(1) 호스트 컨텍스트의 IF. (2) 게스트의 `cli` hold(`GuestCliBlocksInjection`): user mode는 IF를 내릴 수 없으므로
+`cli` HLE가 세우고 `sti` HLE나 주입 프레임을 꺼내는 `iret`(`NoteGuestIret`)가 내리며, 100 ms가 지나면
+만료됩니다. (3) PIC의 in-service 모델(`PicTimerBlocksInjection`): 주입 프레임 스택(`handler_frames`)으로
+중첩을 한 단계로 제한하고, 핸들러가 돌아오기 전의 `sti` 연쇄를 막습니다. (4) 반환 직후의 연쇄와 차례
+(`PostReturnChainBlocksInjection`): 연쇄는 3개·주기 1 ms 이상, 인터럽트된 코드는 직전 핸들러가 쓴 시간만큼
+차례를 받습니다. 주입한 뒤 핸들러로 들어갈 수 있는지는 `CanEnterTimerInterruptHandler`가 확인하고 Linux
+x64는 cache로 재개합니다. Win32는 게스트의 `iret`이 네이티브로 실행돼 반환을 볼 수 없으므로 (3)의 중첩
+제한과 (4)가 꺼져 있습니다. 상태는 `PicTimerInService`(`pic_timer_in_service.h`)에 있습니다.
+
+입력 타임라인(`JammaInputTimeline`)은 tick이 주입될 때 그 tick의 예정 시각을 replay 프레임으로
+쌓고(`BeginTimerInterrupt`), 입력 포트 읽기(`ReadJammaPort8`)에 그 시각의 키 상태를 돌려줍니다. 프레임은 세
+가지로 회수됩니다: 읽기나 다음 주입의 ESP가 프레임보다 높을 때(스택 비교), 핸들러의 `iret`이 그 ESP의
+프레임을 꺼낼 때(`EndTimerInterrupt`, `HandleIretdInstruction`에서 호출), 이후 주입이
+`kReplayFrameStaleBegins`(64)를 넘었을 때(나이). 프레임이 없으면 읽기는 SDL의 키보드 상태로 가고, 입력
+스크립트가 돌 때만 타임라인의 최신 상태로 갑니다(`ServeLiveReadsFromLatestState`; 밀어 넣은 이벤트는 SDL의
+키보드 상태를 바꾸지 않음).
+
+tick 스케줄(`PitIrqSchedule`)과 입력 타임라인의 시계는 `GlideOpenGlBackend::EventClockNanoseconds`이고
+`steady_clock`을 돌려줍니다. MP3 재생 시계·swap 페이서·사운드 서버가 같은 시계(Linux의 `CLOCK_MONOTONIC`)를
+따르기 때문입니다. SDL 이벤트의 timestamp는 SDL의 시계(Linux의 `CLOCK_MONOTONIC_RAW`) 값이므로
+`TranslateEventTimestamp`가 이벤트의 나이를 재서 옮깁니다. 두 시계는 `HostClockDivergenceMeter`가 이벤트
+펌프에서 1초 창으로 비교합니다(`event_clock.h`). **엔진에 새 시간 의존 경로를 넣을 때는 `steady_clock`을
+쓰십시오**: 게스트가 음악과 맞춰야 하는 것이 SDL의 시계를 따르면 WSL2처럼 `CLOCK_MONOTONIC`이 slew되는
+호스트에서 음악과 어긋납니다.
+
+swap 페이서(`PaceSwapAfterPresent`)는 이 프레임의 마감(직전 마감 + 주기)보다 한 주기 넘게 늦었을 때만
+재동기하고, 늦은 프레임은 자지 않습니다. 창을 열기 전에 `SelectWslD3d12Driver`가 WSL의 D3D12 드라이버를
+고릅니다(`/dev/dxg`와 `d3d12_dri.so`가 있고 사용자가 드라이버를 고르지 않았을 때).
+
+# The rules of timer injection, input replay frames, and the host clock (Tasks 751–754)
+
+Injecting a timer tick (`InjectPendingInterrupts`) checks the following in order, and any of them defers
+the tick. (1) IF in the host context. (2) The guest's `cli` hold (`GuestCliBlocksInjection`): user mode
+cannot clear IF, so the `cli` HLE raises it and the `sti` HLE or the `iret` popping an injected frame
+(`NoteGuestIret`) lowers it, and it expires after 100 ms. (3) The PIC's in-service model
+(`PicTimerBlocksInjection`): the stack of injected frames (`handler_frames`) bounds nesting at one level,
+and a chain at `sti` before the handler has returned is refused. (4) The chain after a return and the
+turn (`PostReturnChainBlocksInjection`): a chain is at most 3 and at periods of 1 ms or more, and the
+interrupted code gets a turn as long as the last handler took. Whether the handler can be entered after
+an injection is checked by `CanEnterTimerInterruptHandler`, and Linux x64 resumes through the cache.
+Win32 runs the guest's `iret` natively and cannot see the return, so the nesting bound of (3) and all of
+(4) are off there. The state lives in `PicTimerInService` (`pic_timer_in_service.h`).
+
+The input timeline (`JammaInputTimeline`) pushes a replay frame with a tick's due time when the tick is
+injected (`BeginTimerInterrupt`) and answers input port reads (`ReadJammaPort8`) with the keys at that
+time. A frame is retired in three ways: by a read's or the next injection's ESP being above it (the stack
+test), by the handler's `iret` popping the frame at its ESP (`EndTimerInterrupt`, called from
+`HandleIretdInstruction`), and by more than `kReplayFrameStaleBegins` (64) later injections (age). With
+no frame a read goes to SDL's keyboard state, and to the timeline's latest state only while an input
+script runs (`ServeLiveReadsFromLatestState`; pushed events do not change SDL's keyboard state).
+
+The clock of the tick schedule (`PitIrqSchedule`) and of the input timeline is
+`GlideOpenGlBackend::EventClockNanoseconds`, which returns `steady_clock`, because the MP3 playback
+clock, the swap pacer and the sound server follow that clock (`CLOCK_MONOTONIC` on Linux). An SDL
+event's timestamp is of SDL's clock (`CLOCK_MONOTONIC_RAW` on Linux), so `TranslateEventTimestamp` moves
+it by the event's age. `HostClockDivergenceMeter` compares the two clocks in the event pump in windows of
+a second (`event_clock.h`). **Use `steady_clock` for any new time-dependent path in the engine**:
+whatever the guest must keep in time with the music parts from it, on a host that slews
+`CLOCK_MONOTONIC` as WSL2 does, if it follows SDL's clock.
+
+The swap pacer (`PaceSwapAfterPresent`) resynchronises only when more than a period behind this frame's
+deadline (the previous deadline plus a period), and a late frame is not held. Before the window opens
+`SelectWslD3d12Driver` chooses WSL's D3D12 driver (when `/dev/dxg` and `d3d12_dri.so` exist and the user
+chose no driver).

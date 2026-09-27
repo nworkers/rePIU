@@ -18980,3 +18980,227 @@ Work log: [750](../work-logs/20260928-750-timer-ticks-during-the-swap-wait.md)
   site is not `call rel32` waits without injection.
 * Win32 pumpitea drops 380 ticks in 15 s, vsync on or off, at odds with 747's note; not investigated.
 * The tick storm at a wayland start (748) is not investigated.
+
+## 2026-09-28 Task 751 — 롬셋 전수 조사, 게스트 `cli` 보존, tick 폭주의 기전
+
+작업 로그: [751](../work-logs/20260928-751-guest-cli-hold-and-romset-survey.md)
+
+### 확인됨
+
+* 22개 프로필 60초 조사(`scripts/survey_romsets.sh`): CHD 없음 6개, Linux x64는 pumpitpc가, Win32는
+  pumpitp3·pumpipx3가 죽음. 수정 뒤 Linux x64는 16개 모두 완주.
+* 엔진은 게스트의 `cli`를 보존하지 못하고 있었다(user mode는 IF를 못 내림). 게임이 `cli`로 감싼 CAT702
+  통신 한가운데 tick이 주입돼 ISR이 보드의 destination 레지스터를 바꿨다. cli hold(`cli` → `sti` 또는 주입
+  프레임의 `iret`, 100 ms 밸브)로 해결. 키와 알고리즘은 처음부터 맞았다(`scripts/cat702_table_check.py`,
+  100/100).
+* tick 폭주(748)의 기전: 에뮬레이트된 핸들러(55 µs)가 51.9 kHz 단계의 주기(19 µs)보다 느려, 핸들러 안의
+  safe point·닫는 `sti`·`iret` 뒤 주입이 끝없이 이어지면 게임이 PIT를 240 Hz로 되돌리지 못한다. 주입 프레임
+  스택으로 중첩을 한 단계로 묶고, 직전 핸들러가 쓴 시간만큼 인터럽트된 코드에 차례를 주어 32회 시작 중 0회.
+* 함정: ISR이 체인하는 옛 INT 8 핸들러의 `iret`는 ISR 몸통 안에서 실행된다 — 주입 프레임 주소와 일치하는
+  `iret`만 반환이다. 게스트 `pushfd`가 만든 프레임의 IF는 항상 1이라 믿을 수 없다.
+* `aam`/`aad`는 long mode에 없고 cache가 경계로 남긴다. Watcom 숫자 포맷이 쓴다. HLE 추가.
+* x64에서 주입 뒤 재개는 cache에 번역이 있을 때만 가능하다(`pusha`로 시작하는 ISR). privileged 체인과
+  planner-HLE 주입 모두 `CanEnterTimerInterruptHandler`를 거친다.
+
+### 남은 것
+
+* Win32 pumpitp3·pumpipx3의 "unable to find entry point in DLL"(간헐). Win32는 `iret`가 native라 중첩·차례
+  규칙이 꺼져 있다.
+* INT 21h AH=08h 없음. 부팅 검사 구간의 tick 폐기(pumpitpc·pumpitpr 약 450).
+
+## English
+
+## 2026-09-28 Task 751 — the ROM set survey, keeping the guest's `cli`, and how the tick storm works
+
+Work log: [751](../work-logs/20260928-751-guest-cli-hold-and-romset-survey.md)
+
+### Confirmed
+
+* The 22 profiles surveyed for 60 s (`scripts/survey_romsets.sh`): six without a CHD; pumpitpc died on
+  Linux x64, pumpitp3 and pumpipx3 on Win32. After the fixes all 16 run on Linux x64.
+* The engine was not keeping the guest's `cli` (user mode cannot clear IF). A tick went into the middle of
+  the CAT702 transaction the game wraps in `cli`, and the ISR moved the board's destination register. The
+  cli hold (`cli` to `sti` or the injected frame's `iret`, with a 100 ms valve) fixes it. The key and the
+  algorithm were right all along (`scripts/cat702_table_check.py`, 100/100).
+* How the tick storm (748) works: an emulated handler (55 µs) is slower than the 51.9 kHz stage's period
+  (19 µs), so when injections at safe points inside the handler, at its closing `sti` and after its `iret`
+  follow each other without end, the game never sets the PIT back to 240 Hz. Nesting is bounded to one
+  level by the stack of injected frames and the interrupted code gets a turn as long as the last handler
+  took: none in 32 starts.
+* Pitfall: the `iret` of the previous INT 8 handler an ISR chains to runs inside the ISR's body; only an
+  `iret` at the injected frame's address is a return. The IF in a frame made by a guest `pushfd` is always
+  set and cannot be trusted.
+* `aam`/`aad` do not exist in long mode and the cache leaves them as a boundary; Watcom's number
+  formatting uses them. An HLE was added.
+* On x64 an injection can be resumed only when the handler has a translation in the cache (an ISR that
+  begins with `pusha`); the privileged chain and the planner-HLE injection both go through
+  `CanEnterTimerInterruptHandler`.
+
+### Unresolved
+
+* "unable to find entry point in DLL" in pumpitp3 and pumpipx3 on Win32 (intermittent). Win32's `iret` is
+  native, so the nesting and turn rules are off there.
+* No INT 21h AH=08h. Ticks dropped during the start-up check (pumpitpc and pumpitpr, about 450).
+
+## 2026-09-28 Task 752 — pumpit8의 fps: 페이서가 늦은 프레임을 붙잡았고, WSL은 소프트웨어로 그리고 있었다
+
+작업 로그: [752](../work-logs/20260928-752-wsl-gpu-driver-and-pacer-late-frames.md)
+
+### 확인됨
+
+* Task 745 페이서의 재동기 조건(`deadline + period < now`)은 이 프레임 자신의 마감과 비교하고 있어, 조금이라도
+  늦은 프레임을 `now`부터 한 주기 더 재웠다(33 ms 프레임). 흔적: `late-swaps`는 늘 0, `resyncs`만 누적, 긴
+  프레임의 `sleep_us`가 정확히 16,672. "한 주기 넘게 늦음"으로 고치고 늦은 프레임은 자지 않는다.
+* WSL은 GPU를 Mesa D3D12 드라이버로만 내주고 Mesa는 llvmpipe를 고른다. `/dev/dxg`와 `d3d12_dri.so`가 있으면
+  엔진이 `GALLIUM_DRIVER=d3d12`를 고른다(`REPIU_WSL_D3D12=0`으로 끔). pumpit8 선택 화면 present 11 ms → 5 ms.
+* 측정법: `REPIU_GLIDE_LONG_FRAME_LOG=2`는 모든 프레임을 sleep·guest·present로 찍는다(값이 µs 문턱). 5초
+  단위 중앙값이 어느 쪽이 주기를 넘기는지 바로 보여 준다.
+* pumpit8·pumpitp2의 마지막 20초 fps 중앙값 39 → 60. 나머지 14개는 불변.
+
+### 남은 것
+
+* 보고된 pumpit8의 오디오 노이즈·노트 튐은 미재현(사용자 확인 대기). 곡 선택의 미리듣기 로드 0.5초 정지.
+
+## English
+
+## 2026-09-28 Task 752 — pumpit8's fps: the pacer held late frames, and WSL was drawing in software
+
+Work log: [752](../work-logs/20260928-752-wsl-gpu-driver-and-pacer-late-frames.md)
+
+### Confirmed
+
+* The resynchronisation test of Task 745's pacer (`deadline + period < now`) compared against this frame's
+  own deadline, so a frame late by anything slept one more period from `now` (a 33 ms frame). Its traces:
+  `late-swaps` always 0 while `resyncs` accumulated, and long frames whose `sleep_us` was exactly 16,672.
+  The test is now "more than a period late" and a late frame is not held.
+* WSL offers the GPU only through Mesa's D3D12 driver and Mesa picks llvmpipe. With `/dev/dxg` and
+  `d3d12_dri.so` present the engine chooses `GALLIUM_DRIVER=d3d12` (`REPIU_WSL_D3D12=0` turns it off).
+  pumpit8's selection screens present in 5 ms instead of 11.
+* The measurement: `REPIU_GLIDE_LONG_FRAME_LOG=2` prints every frame as sleep, guest and present (the
+  value is a µs threshold); medians per 5 s show at once which of them crosses the period.
+* pumpit8's and pumpitp2's median fps over the last 20 s went from 39 to 60; the other 14 are unchanged.
+
+### Unresolved
+
+* The reported audio noise and arrow jumps in pumpit8 are not reproduced (awaiting the user). The
+  half-second stall per preview in song selection.
+
+## 2026-09-28 Task 753 — pumpit8의 입력: 회수되지 않는 replay 프레임이 옛 시각의 키로 답했다
+
+작업 로그: [753](../work-logs/20260928-753-input-replay-frame-end.md)
+
+### 확인됨
+
+* 사용자의 pumpit8 로그(wayland, D3D12, 진짜 vsync)에서 프레임·MP3·tick은 정상이었고, 게스트가 읽은 SERVICE
+  누름이 1,897회(실제 edge 76개)였다. 줄의 순서는 "옛 상태"와 "지금 상태"의 교대였다.
+* 입력 타임라인의 replay 프레임은 스택 비교(읽기·다음 주입의 ESP가 프레임보다 높음)로만 회수됐다. 게스트가
+  다시 올라오지 않는 높이에서 주입된 tick의 프레임은 바닥에 남고, 핸들러 밖의 읽기는 그 시각의 키로 답을
+  받는다. 흔적: `history-pruned` < `edges`, `active-depth` ≥ 1, 한 키의 PRESSED가 프레임 수만큼.
+* 수정: 핸들러의 `iret`(`HandleIretdInstruction`)에서 그 ESP의 프레임을 끝낸다(`EndTimerInterrupt`). 복귀를
+  볼 수 없는 Win32는 나이(이후 64회 넘는 주입)로 회수한다. `REPIU_JAMMA_REPLAY_FRAME_END=0`은 복귀 경로를
+  끄고, `REPIU_JAMMA_TIMELINE_TRACE=1`은 나이로 회수되는 프레임의 ESP와 주입 당시 EIP를 찍는다.
+* 입력 스크립트가 돌 때 핸들러 밖의 읽기는 타임라인의 최신 상태로 답한다(밀어 넣은 이벤트는 SDL 키보드
+  상태를 바꾸지 않는다).
+* pumpit8 스크립트 실행: 읽힌 누름이 스크립트와 같아짐(SERVICE 5, P2 34/25/25/25/25), 프레임 28,342개 모두
+  복귀로 끝남. 16개 롬셋 모두 읽힌 누름 수 = 스크립트.
+* **주의**: Task 748~752의 입력 스크립트 실행은 이 결함 아래에서 돌았다. 그 실행들의 진행 단계와 fps는
+  유효하지만, 게스트가 받은 입력은 스크립트보다 많았다.
+
+### 남은 것
+
+* 사용자가 본 증상과의 인과는 미확인(사용자 확인 대기). 플레이 중 present 23~43 ms 프레임(x11 6개, wayland
+  13개 / 70초)은 호스트 표시 쪽으로 미조사. pumpit2a의 예산 종료 시점 segfault 1회(재실행 5회에서는 없음).
+
+## English
+
+## 2026-09-28 Task 753 — pumpit8's input: a replay frame never retired answered with the keys of an old time
+
+Work log: [753](../work-logs/20260928-753-input-replay-frame-end.md)
+
+### Confirmed
+
+* In the user's pumpit8 log (wayland, D3D12, real vsync) the frames, the MP3 feed and the ticks were
+  normal, and the guest read a SERVICE press 1,897 times (76 real edges). The lines alternated between an
+  old state and the present one.
+* The input timeline's replay frames were retired by the stack test alone (a read's or the next
+  injection's ESP above the frame's). The frame of a tick injected at a level the guest does not come
+  back to stays at the bottom, and reads outside a handler are answered with the keys at its time. Its
+  traces: `history-pruned` < `edges`, `active-depth` of 1 or more, one key's PRESSED as many times as
+  there are frames.
+* The fix: the handler's `iret` (`HandleIretdInstruction`) ends the frame at its ESP
+  (`EndTimerInterrupt`). Win32, which cannot see the return, retires by age (more than 64 later
+  injections). `REPIU_JAMMA_REPLAY_FRAME_END=0` turns the return path off, and
+  `REPIU_JAMMA_TIMELINE_TRACE=1` prints the ESP and the interrupted EIP of each frame retired by age.
+* While an input script runs, reads outside a handler are answered from the timeline's latest state
+  (pushed events do not change SDL's keyboard state).
+* pumpit8's scripted run: the presses read are the script's (SERVICE 5, P2 34/25/25/25/25), and all
+  28,342 frames ended by return. In all 16 ROM sets the presses read equal the script's.
+* **Note**: the scripted runs of Tasks 748–752 ran under this defect. Their progress and fps stand, but
+  the guest received more input than the script held.
+
+### Unresolved
+
+* The link to what the user saw is not confirmed (awaiting the user). Frames presenting in 23–43 ms
+  during play (6 on x11, 13 on wayland in 70 s) are on the host's display side and not investigated. One
+  segfault of pumpit2a at the end of its budget (not seen in 5 reruns).
+
+## 2026-09-28 Task 754 — pumpit8의 노트 되돌아감: tick과 오디오가 서로 다른 시계를 따랐다
+
+작업 로그: [754](../work-logs/20260928-754-tick-clock-follows-the-audio-clock.md)
+
+### 확인됨
+
+* Task 753 빌드에서도 증상이 남았다(음악이 느려졌다 돌아오고 노트가 뒤로 돌아감). 753의 입력 결함은 실재했지만
+  이 증상의 원인이 아니었다.
+* 사용자 로그에서 PIT는 240.048 Hz 그대로인데 tick이 초당 241~246에서 증상 구간에 257~264로 뛰었다. MP3
+  공급은 초당 16 KB 그대로.
+* 엔진의 시계가 둘이었다: tick 스케줄·입력 타임라인은 SDL(`CLOCK_MONOTONIC_RAW`), 나머지와 오디오는
+  `CLOCK_MONOTONIC`. 이 머신의 WSL에서 Windows 성능 카운터 대비 RAW는 ±0.001%, MONOTONIC은 창마다
+  −0.8~−7.1%(`adjtimex`의 tick이 9595~10000으로 움직임; 누가 바꾸는지는 미확인, `systemd-timesyncd`는 아닌
+  것으로 보임).
+* 수정: tick 스케줄과 입력 타임라인을 `steady_clock`으로, SDL 이벤트의 timestamp는 나이를 재서 옮긴다.
+  `REPIU_EVENT_CLOCK=sdl`이 이전 동작. 어긋남은 `[repiu-clock]` 경고와 최종 보고 `host clock …` 줄로 보인다.
+* 수정 후 pumpit8 80초: 시계가 평균 3.2%·최악 9.1% 어긋난 실행에서 tick 초당 239.5~240.7.
+* **측정 주의**: fps·tick 속도·census의 `elapsed_ms`는 `CLOCK_MONOTONIC`으로 잰다. WSL이 시계를 늦추는 동안
+  잰 값은 1~9% 높게 나온다. 시계를 의심할 때는 `host clock …` 줄을 먼저 본다.
+
+### 남은 것
+
+* **사용자 확인(2026-09-28)**: 노트가 튀는 증상은 사라짐. 음악이 느려졌다 돌아오는 증상은 남았고 WSL을 다시
+  시작해도 그대로였다.
+* **후속**: 음악 자체의 속도는 WSL의 문제로 남겨 두고 실기(실제 Linux 머신)에서 확인한다. 실기에서 `host clock
+  raw-against-steady …` 줄의 마지막 값이 0인데도 음악이 느려지면 원인은 시계가 아니므로 다시 조사한다.
+
+## English
+
+## 2026-09-28 Task 754 — pumpit8's arrows going back: ticks and audio followed different clocks
+
+Work log: [754](../work-logs/20260928-754-tick-clock-follows-the-audio-clock.md)
+
+### Confirmed
+
+* The symptom remained on the Task 753 build (the music slowing and coming back, the arrows going back).
+  753's input defect was real but was not its cause.
+* In the user's log the PIT stayed at 240.048 Hz while ticks went from 241–246 a second to 257–264 where
+  the symptom was. The MP3 feed stayed at 16 KB a second.
+* The engine had two clocks: SDL's (`CLOCK_MONOTONIC_RAW`) for the tick schedule and the input timeline,
+  `CLOCK_MONOTONIC` for the rest and for the audio. On this machine's WSL, against the Windows performance
+  counter, RAW is within ±0.001% and MONOTONIC −0.8% to −7.1% by window (`adjtimex`'s tick moving
+  between 9595 and 10000; who changes it is not established, and it does not look like
+  `systemd-timesyncd`).
+* The fix: the tick schedule and the input timeline follow `steady_clock`, and an SDL event's timestamp is
+  translated by its age. `REPIU_EVENT_CLOCK=sdl` is the old behaviour. A divergence shows as the
+  `[repiu-clock]` warning and the final report's `host clock …` line.
+* pumpit8 for 80 s after the fix: 239.5–240.7 ticks a second in a run whose clocks parted by 3.2% on
+  average and 9.1% at worst.
+* **A caution for measurements**: fps, tick rates and the census's `elapsed_ms` are measured with
+  `CLOCK_MONOTONIC`. Figures taken while WSL slows that clock read 1–9% high. When the clock is in doubt,
+  read the `host clock …` line first.
+
+### Unresolved
+
+* **The user's confirmation (2026-09-28)**: the arrows no longer jump. The music slowing and coming back
+  remains, and restarting WSL left it as it was.
+* **Follow-up**: the music's own speed is left as WSL's problem and is to be checked on real hardware (an
+  actual Linux machine). If the music slows there while the last value of the `host clock
+  raw-against-steady …` line is 0, the clock is not the cause and it is to be investigated again.

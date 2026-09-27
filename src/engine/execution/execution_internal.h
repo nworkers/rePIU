@@ -1,3 +1,4 @@
+#include "repiu/engine/pic_timer_in_service.h"
 #include "repiu/platform/guest_cpu_context.h"
 #pragma once
 
@@ -52,8 +53,18 @@ bool ResolveSegmentLinearRange(ThreadContext* context, std::uint16_t selector,
 bool IsGuestInstructionPointer(const ThreadContext* context, std::uint32_t eip);
 // Returns the number of expired PIT ticks consumed by a successful injection.
 // Zero means no interrupt was injected.
-std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_context,
-                                      ThreadContext* context);
+// Task 751.
+std::uint64_t GuestCliHoldClockNanoseconds();
+// Task 751. Whether an IRQ0 injected now could be entered. On Linux x64 the
+// handler runs only from the cache or, under the single-step bridge, as bytes
+// that mean the same in long mode; a handler that is neither (a `pusha` first,
+// before its translation exists) has to wait for a later attempt. Elsewhere
+// the handler runs as it is, so the answer is always yes.
+bool CanEnterTimerInterruptHandler(ThreadContext* context);
+std::uint32_t InjectPendingInterrupts(
+    repiu::platform::GuestCpuContext* win32_context,
+    ThreadContext* context,
+    TimerInjectionSite site = TimerInjectionSite::kOrdinary);
 
 bool DispatchGuestHleInstruction(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context);

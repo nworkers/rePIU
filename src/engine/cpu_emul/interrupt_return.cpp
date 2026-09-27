@@ -1,6 +1,9 @@
 #include "interrupt_return.h"
 
+#include "execution_internal.h"
 #include "guest_memory_access.h"
+#include "repiu/engine/jamma_input_timeline.h"
+#include "repiu/engine/pic_timer_in_service.h"
 #include "repiu/runtime/selector_table.h"
 #include "thread_context.h"
 
@@ -122,6 +125,18 @@ std::optional<bool> HandleIretdInstruction(
     registers->Eip = target_linear;
     registers->SegCs = target_selector;
     registers->EFlags = values[2] | 0x00000002U;
+    // Task 751: the return of an injected frame ends its handler, and with it
+    // whatever `cli` the handler left standing.
+    NoteGuestIret(&context->pic_timer_in_service,
+                  static_cast<std::uint32_t>(registers->Esp),
+                  GuestCliHoldClockNanoseconds());
+    // Task 753: and the input the handler was shown stops being what reads
+    // outside it are answered with.
+    if (JammaReplayFrameEndEnabled())
+    {
+        context->jamma_input_timeline.EndTimerInterrupt(
+            static_cast<std::uint32_t>(registers->Esp));
+    }
     registers->Esp += kIretdFrameBytes;
     return true;
 }

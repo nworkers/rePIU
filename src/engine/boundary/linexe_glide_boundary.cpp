@@ -1190,7 +1190,19 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
         std::strncpy(context->linexe_get_proc_name,
                      context->linexe_bridge_stack_text[12],
                      sizeof(context->linexe_get_proc_name) - 1U);
-    }    if (service == repiu::hle::LinexeService::kGetProcedureAddress &&
+        // Task 751. A name the export plan does not have is what the guest
+        // reports as "unable to find entry point in DLL"; say which.
+        if (glide_export == nullptr)
+        {
+            std::fprintf(stderr,
+                         "[repiu-linexe] get-proc miss name=%s after=%u"
+                         " found" "\n",
+                         context->linexe_bridge_stack_text[12],
+                         static_cast<unsigned>(
+                             context->linexe_get_proc_count));
+        }
+    }
+    if (service == repiu::hle::LinexeService::kGetProcedureAddress &&
         context->linexe_bridge_stack[11] == kVirtualGlideModuleHandle &&
         glide_export != nullptr)
     {

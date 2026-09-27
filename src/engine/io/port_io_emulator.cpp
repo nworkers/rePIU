@@ -244,6 +244,13 @@ static std::uint8_t ReadJammaPort8(ThreadContext *context,
                                 current_esp, &replay_pressed_mask)) {
     return ScanJammaPort8(port, &replay_pressed_mask);
   }
+  // Task 753: a scripted keyboard's keys are in the timeline, not in SDL's
+  // keyboard state.
+  if (context != nullptr &&
+      context->jamma_input_timeline.TryLatestPressedMask(
+          &replay_pressed_mask)) {
+    return ScanJammaPort8(port, &replay_pressed_mask);
+  }
   const std::uint64_t interval = JammaSnapshotIntervalMicroseconds();
   if (interval == 0U || port < kPortPiuJammaBase || port > kPortPiuJammaEnd) {
     return ScanJammaPort8(port);

@@ -2472,7 +2472,26 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
                 // `iret` the EOI has cleared the in-service bit and IF is
                 // restored, so the next tick goes in here without nesting,
                 // as it would on the real machine.
-                InjectPendingInterrupts(win32_context, context);
+                //
+                // Task 751: only when the handler can be entered; a failed
+                // resume below has nowhere to go.
+                //
+                // An injection right after an `iret` is one of a chain, which
+                // is bounded so that the interrupted code still runs.
+                if (CanEnterTimerInterruptHandler(context))
+                {
+                    const auto* const handled =
+                        reinterpret_cast<const std::uint8_t*>(
+                            static_cast<std::uintptr_t>(guest_address));
+                    const bool after_iret =
+                        IsGuestRangeReadable(context, handled, 1U) &&
+                        handled[0] == 0xCFU;
+                    InjectPendingInterrupts(
+                        win32_context, context,
+                        after_iret
+                            ? TimerInjectionSite::kAfterHandlerReturn
+                            : TimerInjectionSite::kOrdinary);
+                }
                 bool resumed = false;
                 if (static_cast<std::uint32_t>(win32_context->Eip) !=
                     guest_address)

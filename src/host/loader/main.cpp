@@ -3386,6 +3386,28 @@ void PrintExecutionAttempt(
             in_service.blocked_sti_chain_total,
             in_service.cleared_by_eoi_total,
             in_service.retired_by_stack_total, in_service.active);
+        // Task 751: the guest's own `cli`, which the host context cannot hold.
+        logger.info(
+            "guest cli hold cli/sti/blocked/expired/max-hold-us/"
+            "held-at-end: {}/{}/{}/{}/{}/{}",
+            in_service.cli_total, in_service.sti_total,
+            in_service.blocked_by_cli_total,
+            in_service.cli_hold_expired_total,
+            in_service.cli_hold_max_ns / 1000U, in_service.cli_hold);
+        logger.info(
+            "timer IRQ0 after-return delivered/blocked: {}/{}",
+            in_service.post_return_delivered_total,
+            in_service.blocked_post_return_total);
+        logger.info(
+            "timer IRQ0 nesting return-seen/blocked-nested/depth-at-end: "
+            "{}/{}/{}",
+            in_service.handler_return_seen, in_service.blocked_nested_total,
+            in_service.handler_depth);
+        logger.info(
+            "timer IRQ0 turn blocked/last-handler-us/handler-max-us: {}/{}/{}",
+            in_service.blocked_by_turn_total,
+            in_service.last_handler_ns / 1000U,
+            in_service.handler_max_ns / 1000U);
     }
     logger.info("INT 8 chain HLE count/source/pointer/target: {}/{}/{}/{}:{}",
                 attempt.timer_interrupt_chain_hle_count,
@@ -3542,6 +3564,11 @@ void PrintExecutionAttempt(
             swap_policy.effective_valid
                 ? std::to_string(swap_policy.effective_interval)
                 : std::string("unknown"));
+        // Task 752: what draws.
+        logger.info("Glide GL renderer/wsl-d3d12-chosen: {}/{}",
+                    swap_policy.gl_renderer[0] != '\0'
+                        ? swap_policy.gl_renderer : "none",
+                    swap_policy.wsl_d3d12_selected ? "true" : "false");
         // Task 745: the refusal's reason and the pacing that stood in for it.
         if (swap_policy.override_requested)
         {
@@ -3565,6 +3592,16 @@ void PrintExecutionAttempt(
             logger.info(
                 "Glide swap wait ticks swaps/injections: {}/{}",
                 swap_policy.wait_tick_swaps, swap_policy.wait_tick_injections);
+            // Task 754: SDL's raw clock against the steady clock, and which
+            // of them the timer ticks followed.
+            logger.info(
+                "host clock raw-against-steady tick-clock/total-ppm/"
+                "worst-second-ppm/seconds/seconds-over-0.5%: {}/{}/{}/{}/{}",
+                swap_policy.event_clock_steady ? "steady" : "raw",
+                swap_policy.clock_total_ppm,
+                swap_policy.clock_worst_window_ppm,
+                swap_policy.clock_windows,
+                swap_policy.clock_windows_over_limit);
         }
     }
     logger.info("Glide gate ordinal/name/argument bytes: {}/{}/{}",
@@ -3969,6 +4006,13 @@ void PrintExecutionAttempt(
         attempt.port_io.jamma_timeline_frame_retire_count,
         attempt.port_io.jamma_timeline_frame_overflow_count,
         attempt.port_io.jamma_timeline_active_frame_depth);
+    // Task 753: how replay frames left other than by the stack test.
+    logger.info(
+        "JAMMA timeline frames ended-by-return/retired-stale/"
+        "latest-state-reads: {}/{}/{}",
+        attempt.port_io.jamma_timeline_frame_end_count,
+        attempt.port_io.jamma_timeline_frame_stale_count,
+        attempt.port_io.jamma_timeline_latest_state_read_count);
     logger.info("port I/O input/output/handled/unhandled: {}/{}/{}/{}",
                 attempt.port_io.input_count, attempt.port_io.output_count,
                 attempt.port_io.handled_count, attempt.port_io.unhandled_count);

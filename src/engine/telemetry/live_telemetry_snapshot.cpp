@@ -2485,6 +2485,12 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         jamma_timeline.replay_frame_overflow_count;
     attempt->port_io.jamma_timeline_active_frame_depth =
         jamma_timeline.replay_frame_depth;
+    attempt->port_io.jamma_timeline_frame_end_count =
+        jamma_timeline.replay_frame_end_count;
+    attempt->port_io.jamma_timeline_frame_stale_count =
+        jamma_timeline.replay_frame_stale_count;
+    attempt->port_io.jamma_timeline_latest_state_read_count =
+        jamma_timeline.latest_state_read_count;
     attempt->dos_path = context.dos_path;
     attempt->dos_file_io = context.dos_file_io;
     attempt->dos_file_io.read_count = context.dos_file_system.file_read_count;
