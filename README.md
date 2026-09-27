@@ -252,7 +252,13 @@ CHD가 둘 이상). 어떤 디스크가 왜 안 되는지 목록에서 바로 �
 
 vsync와 사운드 게인은 런처에서 바꿔 `cfg\repiu.ini`에 저장합니다. **같은 의미의 환경
 변수가 설정돼 있으면 환경 변수가 이깁니다** — 측정 스크립트와 진단 절차가 계속 우선권을
-갖습니다.
+갖습니다. 인자를 주고 실행할 때도(`repiu pumpitea`) 같은 `cfg\repiu.ini`를 먼저 읽어
+적용하며, 로그의 `Launcher settings read from …` 줄이 어느 값이 파일에서 왔고 어느 값이 환경
+변수에서 왔는지 말합니다. 드라이버가 swap interval을 거부하면(WSLg의 llvmpipe가 그렇습니다)
+엔진이 디스플레이 주사율에 맞춰 swap 간격을 직접 맞추고, 최종 보고의 `Glide swap pacing …`
+줄에 거부 사유와 함께 찍습니다. 진짜 vsync는 Wayland 컴포지터 아래 `SDL_VIDEO_DRIVER=wayland`가
+받습니다(WSLg는 소켓이 `/mnt/wslg/runtime-dir`에 있으므로 `XDG_RUNTIME_DIR`를 그리 줘야 창이 열립니다;
+로그의 `swap interval override … applied/effective: true/1/true/1`이 확인입니다).
 
 게임을 끝내면 런처로 돌아오므로 다른 롬셋을 이어서 고를 수 있습니다. 종료는 런처의
 Quit입니다.
@@ -266,7 +272,14 @@ one in the same process. Every catalog entry is listed, and the ones that cannot
 with the reason — missing `roms\<id>.zip`, missing PIU10 entries, missing `roms\<id>\`, no CHD,
 or more than one CHD — so it is clear why a disc is unavailable. Vertical sync and sound gain are
 edited there and stored in `cfg\repiu.ini`; an environment variable of the same meaning always
-wins, so measurement scripts keep control. Finishing a game returns to the launcher so another ROM set can be chosen, and Quit ends the
+wins, so measurement scripts keep control. A run started with arguments (`repiu pumpitea`) reads
+and applies the same `cfg\repiu.ini` first, and the log's `Launcher settings read from …` line says
+which value came from the file and which from the environment. When the driver refuses the swap
+interval (WSLg's llvmpipe does), the engine paces the swaps itself at the display's refresh rate
+and says so, with the reason, in the final report's `Glide swap pacing …` line. Real vsync comes from
+`SDL_VIDEO_DRIVER=wayland` under a Wayland compositor (on WSLg the socket lives in
+`/mnt/wslg/runtime-dir`, so `XDG_RUNTIME_DIR` must point there for the window to open; the log's
+`swap interval override … applied/effective: true/1/true/1` confirms it). Finishing a game returns to the launcher so another ROM set can be chosen, and Quit ends the
 session. Passing any argument keeps today's behavior exactly and **ends the process when the game
 ends**, since the return loop exists only for a standalone run; `REPIU_LAUNCHER=0` skips the
 launcher for automation that runs the binary bare.*
@@ -342,6 +355,11 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 
 * **`REPIU_DUMP_TEXTURE_BMP`**: `1`로 설정하면 Glide를 통해 로딩되는 텍스처를 디코딩하여 `build/texture_dumps/` 경로에 32비트 BGRA BMP 파일로 자동 저장합니다.
 * **`REPIU_GLIDE_TEX_DIAG`**: 활성화하면 텍스처 업로드 시점의 원본 포맷과 dimensions 정보를 stderr 로그로 출력합니다 (최대 16회).
+* **`REPIU_GLIDE_LONG_FRAME_LOG`**: `1`이면 주기 1.5배(vblank 하나 놓침)를 넘긴 프레임마다, 더 큰 값이면 그 마이크로초를 넘긴 프레임마다 stderr에 `[repiu-glide-swap] long-frame … frame_us= sleep_us= guest_us= present_us=` 한 줄을 찍습니다(직전 페이서 sleep / 게스트 구간 / present). 페이싱 여부와 무관하며, `REPIU_PIU10_MP3_CENSUS_MS=20`과 같은 축에서 읽습니다(Task 748).
+* **`REPIU_GLIDE_SWAP_WAIT_TICKS`**: `grBufferSwap` 게이트가 present(vblank 대기나 페이싱)를 기다리는 동안에도 밀린 타이머 tick을 주입해 ISR을 돌립니다. 실제 기계가 vblank 대기 중에도 IRQ0을 받는 것과 같고, 없으면 게스트가 MP3 frame 경계를 0–16 ms 늦게 봐 노트가 16/33 ms 걸음으로 움직입니다. **Linux x64 전용이며 기본 켜짐**이고 `0`으로 끕니다(Win32에서는 첫 주입 뒤 진행이 멈춰 아직 제공하지 않습니다). 최종 보고의 `Glide swap wait ticks swaps/injections` 줄이 횟수를 말하고, `REPIU_GLIDE_SWAP_WAIT_LOG=1`은 tick을 전달하지 못한 대기를 처음 몇 번 찍습니다(Task 750).
+* **`REPIU_PIU10_MP3_POSITION_TRACE`**: `1`이면 MP3 frame-sync 토글마다 `[repiu-mp3-pos] toggle seq= t_us= pos_ms= frame_ms= lag_ms= queued_ms=`, 게스트가 새 값을 처음 읽을 때마다 `[repiu-mp3-pos] seen seq= t_us= delay_us= reads=`를 stderr에 찍습니다. 게스트가 세는 곡 위치를 이벤트 단위로 호스트 시계와 나란히 보는 용도입니다(Task 749).
+* **`REPIU_INPUT_SCRIPT`**: `<ms> <키 이름> [hold ms]` 줄(`#` 주석)로 된 파일을 주면 Glide 창이 열린 순간부터 재어 SDL 키 이벤트를 밀어 넣는 스크립트 키보드입니다. 실제 키보드와 같은 펌프·바인딩을 지나며 창 포커스에 의존하지 않습니다. 예: `scripts/input_scripts/pumpitea_play.txt`(SERVICE 5회 → 시작 → 곡 선택 → 확정).
+* **`REPIU_DOS_ASSET_TRACE`**: 설정하면 DOS 파일 열기·읽기·seek을 stderr에 찍습니다(열기 200·읽기 120·seek 120건까지, 실패와 short read는 항상). 값이 `all`이면 상한을 없앱니다(무겁습니다: ftell 폴링이 초당 수천 줄).
 * **`REPIU_EXECUTION_BACKEND`**: 실행 backend를 `legacy` 또는 `dynamic`으로 고릅니다. 기본값은 `dynamic`이며, `legacy`는 회귀 대조군으로 남아 있습니다. 그 밖의 값(옛 이름 `aot`, `aot-dbt` 포함)은 오류로 종료합니다.
 * **`REPIU_EXECUTION_TIMEOUT_MS`**: 게스트 프로그램의 최대 실행 시간(밀리초)을 제한합니다. `0`으로 세팅 시 제한을 해제(무제한)합니다. **기본값은 `0`(무제한)** 이므로, 상한이 필요한 자동화는 값을 명시하십시오.
 * **`REPIU_AOT_INDIRECT_CACHE_SLOTS`**: AOT 간접 call/jump inline cache를 `1` 또는 `4`슬롯으로 선택합니다. 기본값은 `4`이며, 통제 A/B 진단용 옵션입니다.
@@ -360,6 +378,11 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 *rePIU supports the following environment variables for diagnosing runtime behavior and troubleshooting:*
 * *`REPIU_DUMP_TEXTURE_BMP`: Set to `1` to decode and dump loaded Glide textures as 32-bit BGRA BMP files under `build/texture_dumps/`.*
 * *`REPIU_GLIDE_TEX_DIAG`: Enable to print source format and dimension info of uploaded textures to stderr (up to 16 occurrences).*
+* *`REPIU_GLIDE_LONG_FRAME_LOG`: `1` prints one stderr line per frame longer than one and a half periods (a missed vblank), a larger value per frame longer than that many microseconds, `[repiu-glide-swap] long-frame … frame_us= sleep_us= guest_us= present_us=` (the previous pace's sleep, the guest's share, the present). Independent of pacing, and on the same axis as `REPIU_PIU10_MP3_CENSUS_MS=20` (Task 748).*
+* *`REPIU_GLIDE_SWAP_WAIT_TICKS`: injects owed timer ticks, running the ISR, while the `grBufferSwap` gate waits for the present (a vblank wait or pacing), as the real machine takes IRQ0 during its vblank wait. Without it the guest sees an MP3 frame boundary 0–16 ms late and the arrows move in 16/33 ms steps. **Linux x64 only, on by default**; `0` turns it off (on Win32 the run stalls after the first injection, so it is not offered there yet). The final report's `Glide swap wait ticks swaps/injections` line counts them, and `REPIU_GLIDE_SWAP_WAIT_LOG=1` names the first few waits that could not deliver a tick (Task 750).*
+* *`REPIU_PIU10_MP3_POSITION_TRACE`: `1` prints one stderr line per MP3 frame-sync toggle, `[repiu-mp3-pos] toggle seq= t_us= pos_ms= frame_ms= lag_ms= queued_ms=`, and one per guest read that first sees the new value, `[repiu-mp3-pos] seen seq= t_us= delay_us= reads=`, so the song position the guest counts can be read event by event next to the host clock (Task 749).*
+* *`REPIU_INPUT_SCRIPT`: a scripted keyboard. Names a file of `<ms> <key name> [hold ms]` lines (`#` comments), timed from the moment the Glide window opened and pushed as SDL key events through the same pump and bindings as a real keyboard, independent of window focus. Example: `scripts/input_scripts/pumpitea_play.txt` (five SERVICE credits, start, pick a song, confirm).*
+* *`REPIU_DOS_ASSET_TRACE`: when set, prints DOS file opens, reads and seeks to stderr (up to 200 opens, 120 reads and 120 seeks; failures and short reads always). The value `all` lifts the caps (heavy: the ftell polling is thousands of lines a second).*
 * *`REPIU_EXECUTION_BACKEND`: Selects the execution backend, `legacy` or `dynamic`. The default is `dynamic`; `legacy` remains available as the regression control. Any other value, including the retired `aot` and `aot-dbt` names, exits with an error.*
 * *`REPIU_EXECUTION_TIMEOUT_MS`: Limits the maximum execution time of the guest program in milliseconds. Set to `0` to disable the timeout. **The default is `0`, meaning no limit**, so automation that needs a bound must state one.*
 * *`REPIU_AOT_INDIRECT_CACHE_SLOTS`: Selects `1` or `4` entries for AOT indirect call/jump inline caches. The default is `4`; this is primarily for controlled A/B diagnostics.*

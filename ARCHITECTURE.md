@@ -4465,3 +4465,54 @@ ends in `[repiu-fault] unhandled …` after `[repiu-x64-untranslatable] stage= e
 report carries the last VEH exit site (`last_exit_site=`) that `NoteVehExitSite` publishes to a
 platform global. `REPIU_AOT_DYNAMIC_REJECT=<guest address>|read` makes the worker reject those dynamic
 images to reproduce the path.
+
+# swap 대기와 타이머 tick, MP3 재생 시계 (Tasks 745–750)
+
+`grBufferSwap` 게이트는 Linux x64에서 present를 호스트 스레드에 게시하고(`PostBufferSwap`) 게스트 스레드가
+`WaitForPendingSwaps`로 기다립니다. 호스트 스레드의 present는 드라이버의 vsync이거나, 드라이버가 swap
+interval을 거부했을 때의 페이싱(`PaceSwapAfterPresent`: 주사율 기준 마감 누적, 한 주기 이상 밀리면 재동기)
+입니다. 기다리는 동안 tick이 밀리면 `ContinueGlideSwapWait`가 반환 주소를 pop한 ESP에 인터럽트 프레임을
+쌓고 EIP를 게이트에 도달한 `call`의 주소로 둔 채 `InjectPendingInterrupts`를 부릅니다. ISR의 `iret`는
+`call`을 다시 실행하고, 게이트는 `ThreadContext::glide_swap_wait_active`를 보고 계속 기다리며, present가
+끝났을 때만 호출자에게 반환합니다. 반환 목표가 게이트가 아니라 호출부인 이유는 게이트의 세그먼트(LINEXE
+0x0080) 디스크립터가 실행 가능으로 표시돼 있지 않아 프레임의 CS 조회가 거절하기 때문입니다. 호출부는
+`FindGlideGateCallSite`가 `call rel32` → 게이트 또는 import thunk(`jmp rel32`, `jmp dword ptr [m32]`)로
+검증하며, 검증되지 않으면 주입 없이 기다립니다. direct dispatch resolver는
+`glide_gate_interrupt_injected`일 때 ESP = 진입 + 4 − 12를 받아들입니다.
+
+tick을 무장하는 코드(`PitIrqSchedule::Poll`, BIOS tick, JAMMA timeline, `timer_interrupt_pending`)는 호스트
+폴 루프가 `ThreadContext::timer_tick_arm`에 등록하는 callable이고, 호스트 루프와 게스트의 대기 루프가
+`timer_tick_arm_mutex` 아래에서 부릅니다. 호스트 루프는 present를 실행하는 스레드이므로 게스트가 기다리는
+동안에는 게스트가 무장합니다. HLE 재진입(`HandleAotReentry`의 planner-HLE 분기)도 처리 뒤 주입을 시도해
+`iret` 직후 밀린 tick이 중첩 없이 빠집니다(Task 747).
+
+PIU10 MP3의 재생 시계(`Piu10Mp3AudioOut::Impl::PlaybackPosition`)는 자기 이전 값에서 PCM 속도로 진행하며
+가져간 count − 장치 버퍼 절반을 목표로 4초 시정수(±2%)로 슬루합니다. 가져간 count를 넘지 않고 뒤로 가지
+않습니다. frame-sync 토글과 decode 게이트가 이 시계로 구동됩니다.
+
+# The swap wait and timer ticks, and the MP3 playback clock (Tasks 745–750)
+
+On Linux x64 the `grBufferSwap` gate posts the present to the host thread (`PostBufferSwap`) and the
+guest thread waits with `WaitForPendingSwaps`. The host thread's present is the driver's vsync or, when
+the driver refused the swap interval, pacing (`PaceSwapAfterPresent`: deadlines accumulated from the
+refresh rate, resynchronised when more than a period behind). When a tick is owed during the wait,
+`ContinueGlideSwapWait` pushes an interrupt frame on the ESP with the return address popped, leaves EIP
+at the address of the `call` that reached the gate and calls `InjectPendingInterrupts`. The ISR's
+`iret` runs the call again, the gate sees `ThreadContext::glide_swap_wait_active` and keeps waiting,
+and it returns to its caller only when the present is done. The return target is the call site rather
+than the gate because the gate's segment (LINEXE 0x0080) has a descriptor not marked executable, which
+the frame's CS lookup refuses. `FindGlideGateCallSite` verifies the call site as `call rel32` to the
+gate or to an import thunk (`jmp rel32`, `jmp dword ptr [m32]`); unverified, the wait injects nothing.
+The direct dispatch resolvers accept ESP = entry + 4 − 12 when `glide_gate_interrupt_injected` is set.
+
+The code that arms ticks (`PitIrqSchedule::Poll`, the BIOS tick, the JAMMA timeline,
+`timer_interrupt_pending`) is a callable the host poll loop registers as
+`ThreadContext::timer_tick_arm`, run by the host loop and by the guest's wait loop under
+`timer_tick_arm_mutex`. The host loop is the thread that runs the present, so while the guest waits it
+is the guest that arms. An HLE reentry (`HandleAotReentry`'s planner-HLE branch) also attempts an
+injection after handling, so owed ticks drain right after `iret` without nesting (Task 747).
+
+The PIU10 MP3 playback clock (`Piu10Mp3AudioOut::Impl::PlaybackPosition`) advances from its own
+previous value at the PCM rate and slews, with a four second time constant (±2%), to the pulled count
+less half a device buffer. It never passes the pulled count and never runs backwards. The frame-sync
+toggles and the decode gate are driven by it.

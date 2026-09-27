@@ -18,6 +18,7 @@
 #include <atomic>
 #include <memory>
 #include <chrono>
+#include <memory>
 #include <cstddef>
 #include <cstdint>
 #include <condition_variable>
@@ -99,6 +100,15 @@ public:
     // the command was accepted for execution, not when it has executed; a
     // backend failure afterwards is counted rather than reported here.
     bool PostBufferSwap(std::uint32_t swap_interval);
+    // Task 750. Waits up to `timeout` for every posted swap to have been
+    // presented (and paced). True when none is outstanding, or when the host
+    // stopped pumping and none ever will be presented.
+    bool WaitForPendingSwaps(std::chrono::microseconds timeout);
+    void NoteSwapWaitBegin() { ++glide_swap_interval_policy_.wait_tick_swaps; }
+    void NoteSwapWaitInjection()
+    {
+        ++glide_swap_interval_policy_.wait_tick_injections;
+    }
     bool PostBufferClear(std::uint32_t color, std::uint32_t alpha,
                          std::uint32_t depth);
     bool PostDrawPrimitiveBatch(const hle::GlideDrawVertex* vertices,
@@ -384,6 +394,15 @@ private:
     std::string BuildWindowTitle(double frames_per_second) const;
     void ResetFrameRateMeasurement();
     void RecordPresentedFrame();
+    // Task 745. Sleeps to the next pacing deadline after a presented swap.
+    void PaceSwapAfterPresent(
+        std::chrono::steady_clock::time_point present_begin,
+        std::chrono::steady_clock::time_point present_end);
+    // Task 748: names a frame that took more than two periods, split into the
+    // previous pace's sleep, the guest's share and the present, whether or
+    // not the pacer is active (`REPIU_GLIDE_LONG_FRAME_LOG`).
+    void LogLongFrame(std::chrono::steady_clock::time_point present_begin,
+                      std::chrono::steady_clock::time_point present_end);
 
     std::thread::id host_thread_id_;
     JammaInputTimeline* jamma_input_timeline_ = nullptr;
@@ -516,6 +535,22 @@ private:
     GlideGlErrorPolicyProfile glide_gl_error_policy_;
     // Task 371: written once during window creation, read at teardown.
     GlideSwapIntervalPolicySnapshot glide_swap_interval_policy_;
+    // Task 748: the scripted keyboard (`REPIU_INPUT_SCRIPT`), started when
+    // the window opens and stopped when it closes. Owned through a pointer
+    // to keep SDL's event types out of this header's users.
+    std::unique_ptr<class SdlInputScriptPlayerHandle> input_script_;
+    // Task 745: the engine's own swap pacing when the driver refused the
+    // requested interval. Host thread only, like the swap itself.
+    bool swap_pacing_enabled_ = false;
+    std::chrono::steady_clock::duration swap_pacing_period_{};
+    std::chrono::steady_clock::time_point swap_pacing_deadline_{};
+    bool swap_pacing_deadline_valid_ = false;
+    // Task 748: when the previous swap returned to the guest and when its
+    // present ended, so a long frame can be split into sleep, guest and
+    // present time.
+    std::chrono::steady_clock::time_point swap_last_return_{};
+    std::chrono::steady_clock::time_point swap_last_present_end_{};
+    bool swap_last_present_valid_ = false;
     // Task 375: host thread only, written inside StoreTexture.
     GlideTextureCensus glide_texture_census_;
     GlideOrdinalTimingProfile* active_ordinal_timing_ = nullptr;

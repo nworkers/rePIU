@@ -2463,6 +2463,16 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
             }
             if (handled_hle)
             {
+                // Task 747. The legacy HLE chain attempts an injection after
+                // every handled HLE; this branch never did, so on Linux x64
+                // an owed tick could only go in at a safe point of the main
+                // loop or at the ISR's own `sti`. Under a long swap gate
+                // (vsync, or Task 745's pacing) that is two ticks a frame
+                // against four owed, and the backlog overflowed. After an
+                // `iret` the EOI has cleared the in-service bit and IF is
+                // restored, so the next tick goes in here without nesting,
+                // as it would on the real machine.
+                InjectPendingInterrupts(win32_context, context);
                 bool resumed = false;
                 if (static_cast<std::uint32_t>(win32_context->Eip) !=
                     guest_address)

@@ -100,8 +100,13 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtGlideGateFrame(
             std::numeric_limits<std::uint16_t>::max() ||
         !HandleGlideGateBoundary(&guest_context, context) ||
         static_cast<std::uint32_t>(guest_context.Eip) == gate_address ||
+        // Task 750: a tick injected while the swap gate waits pops the return
+        // address and leaves an interrupt frame (EFLAGS, CS, EIP) returning
+        // to the call, instead of the gate's own return.
         static_cast<std::uint32_t>(guest_context.Esp) !=
-            original_esp + expected_adjust)
+            (context->glide_gate_interrupt_injected
+                 ? original_esp + 4U - 12U
+                 : original_esp + expected_adjust))
     {
         context->aot_terminal_failure.store(true, std::memory_order_release);
         g_terminal_failure_count.fetch_add(1U, std::memory_order_relaxed);
@@ -262,8 +267,13 @@ std::uint32_t ResolveLinuxX64GlideGateFrame(
             std::numeric_limits<std::uint16_t>::max() ||
         !HandleGlideGateBoundary(&guest_context, context) ||
         static_cast<std::uint32_t>(guest_context.Eip) == gate_address ||
+        // Task 750: a tick injected while the swap gate waits pops the return
+        // address and leaves an interrupt frame (EFLAGS, CS, EIP) returning
+        // to the call, instead of the gate's own return.
         static_cast<std::uint32_t>(guest_context.Esp) !=
-            original_esp + expected_adjust)
+            (context->glide_gate_interrupt_injected
+                 ? original_esp + 4U - 12U
+                 : original_esp + expected_adjust))
     {
         context->aot_terminal_failure.store(true, std::memory_order_release);
         g_terminal_failure_count.fetch_add(1U, std::memory_order_relaxed);

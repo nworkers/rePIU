@@ -33,6 +33,8 @@
 #include "repiu/engine/live_execution_profile_report.h"
 #include "../aot/aot_dbt_glide_gate_dispatch.h"
 #include "repiu/platform/atomic_ops.h"
+#include <chrono>
+#include <mutex>
 
 namespace repiu::engine
 {
@@ -1305,9 +1307,172 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
     return true;
 }
 
+namespace
+{
+
+// Task 750. Linux x64 only, where it is on unless `0` turns it off. On
+// Win32 (i386) the first injected tick never returned to the call -- the run
+// stalled without a fault -- so the switch does not reach that host until
+// its continuation is made to work.
+bool GlideSwapWaitTicksEnabled()
+{
+#if defined(__x86_64__) && !defined(_WIN32)
+    static const bool enabled = [] {
+        const char* const value = std::getenv("REPIU_GLIDE_SWAP_WAIT_TICKS");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+#else
+    return false;
+#endif
+}
+
+// Task 750. The address of the `call rel32` that reached the gate, or zero.
+// The call goes either to the gate itself or to an import thunk that jumps
+// there: `jmp rel32` (what the loader's fixups leave in pumpitea) or
+// `jmp dword ptr [m32]`.
+std::uint32_t FindGlideGateCallSite(ThreadContext* context,
+                                    const std::uint32_t return_address,
+                                    const std::uint32_t gate_eip)
+{
+    if (return_address < 5U)
+    {
+        return 0U;
+    }
+    const std::uint32_t call_eip = return_address - 5U;
+    const auto* const call = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(call_eip));
+    if (!IsGuestInstructionPointer(context, call_eip) ||
+        !IsGuestRangeReadable(context, call, 5U) || call[0] != 0xE8U)
+    {
+        return 0U;
+    }
+    std::uint32_t displacement = 0U;
+    std::memcpy(&displacement, call + 1, sizeof(displacement));
+    const std::uint32_t target = return_address + displacement;
+    if (target == gate_eip)
+    {
+        return call_eip;
+    }
+    const auto* const thunk = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(target));
+    if (!IsGuestRangeReadable(context, thunk, 6U))
+    {
+        return 0U;
+    }
+    if (thunk[0] == 0xE9U)
+    {
+        std::uint32_t jump = 0U;
+        std::memcpy(&jump, thunk + 1, sizeof(jump));
+        return target + 5U + jump == gate_eip ? call_eip : 0U;
+    }
+    if (thunk[0] != 0xFFU || thunk[1] != 0x25U)
+    {
+        return 0U;
+    }
+    std::uint32_t slot = 0U;
+    std::memcpy(&slot, thunk + 2, sizeof(slot));
+    const auto* const slot_pointer = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(slot));
+    std::uint32_t slot_target = 0U;
+    if (!IsGuestRangeReadable(context, slot_pointer, sizeof(slot_target)))
+    {
+        return 0U;
+    }
+    std::memcpy(&slot_target, slot_pointer, sizeof(slot_target));
+    return slot_target == gate_eip ? call_eip : 0U;
+}
+
+// Task 750. The guest waits a posted swap out here, the way the real machine
+// waits a vblank: with IRQ0 still arriving. While the present (and its pacing)
+// runs on the host thread, an owed tick is injected as if the interrupt had
+// arrived just before the `call` that reached the gate: the frame returns to
+// that call with the return address popped, so the ISR's `iret` runs the call
+// again and this gate is entered again; only when the swap has been presented
+// does the gate return to its caller. The call site rather than the gate is
+// the return target because the gate's own segment is not one the guest's
+// code selector covers. Without this the guest saw an MP3 frame boundary
+// 0-16 ms late, once per frame, and its song position advanced in 16/33 ms
+// steps instead of 26 ms.
+bool ContinueGlideSwapWait(repiu::platform::GuestCpuContext* win32_context,
+                           ThreadContext* context,
+                           const std::uint32_t return_address)
+{
+    const std::uint32_t gate_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    const std::uint32_t gate_esp =
+        static_cast<std::uint32_t>(win32_context->Esp);
+    const std::uint32_t call_eip =
+        FindGlideGateCallSite(context, return_address, gate_eip);
+    // `REPIU_GLIDE_SWAP_WAIT_LOG=1`: the first few waits that could not
+    // deliver a tick, and why.
+    static const bool wait_log =
+        std::getenv("REPIU_GLIDE_SWAP_WAIT_LOG") != nullptr;
+    static std::uint32_t wait_log_count = 0U;
+    if (wait_log && call_eip == 0U && wait_log_count < 8U)
+    {
+        ++wait_log_count;
+        fprintf(stderr,
+                "[repiu-glide-swap] wait-tick no call site ret=0x%08X"
+                " gate=0x%08X" "\n",
+                return_address, gate_eip);
+    }
+    while (!context->glide_backend.WaitForPendingSwaps(
+        std::chrono::microseconds(0)))
+    {
+        if (call_eip != 0U)
+        {
+            std::lock_guard<std::mutex> arm_lock(context->timer_tick_arm_mutex);
+            if (context->timer_tick_arm)
+            {
+                context->timer_tick_arm();
+            }
+        }
+        if (call_eip != 0U &&
+            context->timer_interrupt_pending.load(std::memory_order_acquire))
+        {
+            win32_context->Eip = call_eip;
+            win32_context->Esp = gate_esp + sizeof(std::uint32_t);
+            InjectPendingInterrupts(win32_context, context);
+            if (static_cast<std::uint32_t>(win32_context->Eip) != call_eip)
+            {
+                context->glide_gate_interrupt_injected = true;
+                context->glide_backend.NoteSwapWaitInjection();
+                return true;
+            }
+            win32_context->Eip = gate_eip;
+            win32_context->Esp = gate_esp;
+            if (wait_log && wait_log_count < 8U)
+            {
+                ++wait_log_count;
+                fprintf(stderr,
+                        "[repiu-glide-swap] wait-tick refused call=0x%08X"
+                        " eflags=0x%08X in_service=%d" "\n",
+                        call_eip,
+                        static_cast<unsigned>(win32_context->EFlags),
+                        context->pic_timer_in_service.active ? 1 : 0);
+            }
+        }
+        context->glide_backend.WaitForPendingSwaps(
+            std::chrono::microseconds(500));
+    }
+    context->glide_swap_wait_active = false;
+    context->glide_backend_message = context->glide_backend.message();
+    ++context->glide_gate_handled_count;
+    win32_context->Eip = return_address;
+    win32_context->Esp += 2U * sizeof(std::uint32_t);
+    return true;
+}
+
+}  // namespace
+
 bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                              ThreadContext* context)
 {
+    if (context != nullptr)
+    {
+        context->glide_gate_interrupt_injected = false;
+    }
     const std::uint32_t gate_begin =
         context != nullptr
             ? context->linexe_arena_layout.gate_code_base +
@@ -2687,6 +2852,19 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
 
         case go::kGrBufferSwap: // _GRBUFFERSWAP@4
         {
+            // Task 750: back from the ISR of a tick injected during the wait.
+            if (context->glide_swap_wait_active)
+            {
+                // The same call, entered again: the counts stay the game's.
+                --context->glide_gate_entry_count;
+                if (glide_export->ordinal < context->glide_call_counts.size() &&
+                    context->glide_call_counts[glide_export->ordinal] != 0U)
+                {
+                    --context->glide_call_counts[glide_export->ordinal];
+                }
+                return ContinueGlideSwapWait(win32_context, context,
+                                             return_address);
+            }
             // Task 332: every filter tried so far (quad size, texture size)
             // spent its sample budget on other geometry, so dump whole frames
             // instead. One complete frame of the screen in question lists the
@@ -2855,6 +3033,14 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 // 32.8% of guest-run. A failure afterwards is counted rather
                 // than declining a gate that has already returned.
                 context->glide_backend.PostBufferSwap(swap_interval);
+            }
+            else if (GlideSwapWaitTicksEnabled() &&
+                     context->glide_backend.PostBufferSwap(swap_interval))
+            {
+                context->glide_swap_wait_active = true;
+                context->glide_backend.NoteSwapWaitBegin();
+                return ContinueGlideSwapWait(win32_context, context,
+                                             return_address);
             }
             else if (!context->glide_backend.BufferSwap(swap_interval))
             {

@@ -4,6 +4,7 @@
 #include "execution/execution_internal.h"
 #include "repiu/runtime/execution_timeout.h"
 
+#include <mutex>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -609,29 +610,15 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
             std::memory_order_relaxed);
         WriteLiveTelemetrySnapshot(*progress_context, 0, 0);
     }
-    for (TickCount iteration = 0;; ++iteration)
-    {
-        if (host_context != nullptr)
+    // Task 750. What the loop did inline every iteration, as a callable the
+    // guest thread can run too while it waits a swap out (see
+    // `ThreadContext::timer_tick_arm`). The schedule is stateful, so both
+    // callers hold `timer_tick_arm_mutex`.
+    const auto arm_due_timer_ticks = [&]() {
+        if (progress_context == nullptr)
         {
-            host_context->glide_backend.PumpHostCommands();
-            host_context->glide_backend.PumpEvents();
-            if (host_context->glide_backend.exit_requested())
-            {
-                if (progress_context != nullptr)
-                {
-                    WriteLiveTelemetrySnapshot(
-                        *progress_context,
-                        repiu::platform::MillisecondTicks() - start_tick,
-                        iteration + 1);
-                }
-                return HostPollOutcome::kHostExitRequested;
-            }
+            return;
         }
-        if (progress_context != nullptr)
-        {
-            progress_context->diagnostic_poll_iteration_count =
-                iteration + 1;
-
             const std::uint64_t current_event_clock = read_event_clock();
             const std::uint64_t elapsed_nanoseconds =
                 current_event_clock >= event_clock_start
@@ -697,6 +684,52 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                         due_interrupts);
                 }
                 ArmAotTimerSafePoint(progress_context);
+            }
+    };
+    struct TimerTickArmRegistration
+    {
+        ThreadContext* context;
+        ~TimerTickArmRegistration()
+        {
+            if (context != nullptr)
+            {
+                std::lock_guard<std::mutex> lock(context->timer_tick_arm_mutex);
+                context->timer_tick_arm = nullptr;
+            }
+        }
+    } timer_tick_arm_registration{progress_context};
+    if (progress_context != nullptr)
+    {
+        std::lock_guard<std::mutex> lock(progress_context->timer_tick_arm_mutex);
+        progress_context->timer_tick_arm = arm_due_timer_ticks;
+    }
+    for (TickCount iteration = 0;; ++iteration)
+    {
+        if (host_context != nullptr)
+        {
+            host_context->glide_backend.PumpHostCommands();
+            host_context->glide_backend.PumpEvents();
+            if (host_context->glide_backend.exit_requested())
+            {
+                if (progress_context != nullptr)
+                {
+                    WriteLiveTelemetrySnapshot(
+                        *progress_context,
+                        repiu::platform::MillisecondTicks() - start_tick,
+                        iteration + 1);
+                }
+                return HostPollOutcome::kHostExitRequested;
+            }
+        }
+        if (progress_context != nullptr)
+        {
+            progress_context->diagnostic_poll_iteration_count =
+                iteration + 1;
+
+            {
+                std::lock_guard<std::mutex> arm_lock(
+                    progress_context->timer_tick_arm_mutex);
+                arm_due_timer_ticks();
             }
         }
         // Task 503d-18: one question, asked without waiting. What stood here

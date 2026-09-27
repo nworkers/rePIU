@@ -43,6 +43,8 @@
 #include "repiu/engine/veh_exit_site.h"
 #include "native_fast_path.h"
 
+#include <functional>
+#include <mutex>
 #include <memory>
 #include "repiu/platform/guest_stack_switch.h"
 #include "repiu/platform/host_thread.h"
@@ -789,6 +791,19 @@ struct ThreadContext
     char linexe_get_proc_name[64] = {};
     std::uint32_t glide_gate_entry_count = 0;
     std::uint32_t glide_gate_handled_count = 0;
+    // Task 750. A swap posted and not yet presented, which the guest is
+    // waiting out at the gate with the timer ISR running; and whether the
+    // gate handler's last return left an injected interrupt frame rather
+    // than the gate's own return.
+    bool glide_swap_wait_active = false;
+    // Task 750. The host poll loop's tick arming, callable from the guest
+    // thread too: that loop is the host thread, which is inside the present
+    // (a vblank wait, a pacing sleep) exactly when the guest waits the swap
+    // out, so nothing was arming the ticks the wait is meant to deliver.
+    // Both callers hold the mutex; the loop clears the callable on return.
+    std::mutex timer_tick_arm_mutex;
+    std::function<void()> timer_tick_arm;
+    bool glide_gate_interrupt_injected = false;
     std::uint32_t glide_gate_esp = 0;
     std::uint32_t glide_gate_stack[8] = {};
     std::uint16_t glide_gate_ordinal = 0;

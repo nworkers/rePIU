@@ -3542,6 +3542,30 @@ void PrintExecutionAttempt(
             swap_policy.effective_valid
                 ? std::to_string(swap_policy.effective_interval)
                 : std::string("unknown"));
+        // Task 745: the refusal's reason and the pacing that stood in for it.
+        if (swap_policy.override_requested)
+        {
+            logger.info(
+                "Glide swap pacing active/refresh-hz/period-us/paced-swaps/"
+                "slept-ms/refusal: {}/{:.2f}/{}/{}/{}/{}",
+                swap_policy.pacing_active ? "true" : "false",
+                swap_policy.refresh_rate_hz, swap_policy.pacing_period_us,
+                swap_policy.paced_swaps, swap_policy.paced_sleep_us / 1000U,
+                swap_policy.failure[0] != '\0' ? swap_policy.failure
+                                                : "none");
+            // Task 748: the paced frames' jitter sources.
+            logger.info(
+                "Glide swap pacing late-swaps/late-max-us/resyncs/"
+                "oversleep>1ms/oversleep-max-us: {}/{}/{}/{}/{}",
+                swap_policy.late_swaps, swap_policy.late_max_us,
+                swap_policy.resyncs, swap_policy.oversleep_over_1ms,
+                swap_policy.oversleep_max_us);
+            // Task 750: the waits the guest spent at the swap gate with the
+            // timer ISR running.
+            logger.info(
+                "Glide swap wait ticks swaps/injections: {}/{}",
+                swap_policy.wait_tick_swaps, swap_policy.wait_tick_injections);
+        }
     }
     logger.info("Glide gate ordinal/name/argument bytes: {}/{}/{}",
                 attempt.glide_gate_ordinal,
@@ -5099,6 +5123,37 @@ int main(int argc, char** argv)
             // session, so the operator can read the reason and choose again.
             logger->info("{} exited with code {}; returning to the launcher",
                          chosen.rom_set_id, child_exit_code);
+        }
+    }
+
+    // Task 746. A run with arguments skips the launcher, and until now that
+    // meant it skipped `cfg/repiu.ini` too, so a swap interval or a volume
+    // stored there took effect only through the launcher. The same settings
+    // are read and published here, with the same rule: a variable already in
+    // the caller's environment wins over the file. The launcher's own child
+    // process passes through here as well and sees the parent's published
+    // variables as caller-set, so its outcome is unchanged.
+    {
+        const std::filesystem::path config_directory("cfg");
+        const repiu::launcher::LauncherSettingsLoad stored =
+            repiu::launcher::LoadLauncherSettings(config_directory);
+        for (const std::string& warning : stored.warnings)
+        {
+            logger->warn("launcher settings: {}", warning);
+        }
+        if (stored.file_present)
+        {
+            const repiu::launcher::LauncherEnvironmentOverrides caller_overrides =
+                repiu::launcher::ResolveLauncherEnvironmentOverrides(
+                    std::getenv(repiu::launcher::kLauncherSwapIntervalVariable),
+                    std::getenv(repiu::launcher::kLauncherYmzVolumeVariable));
+            logger->info(
+                "Launcher settings read from {} for an argument run "
+                "(environment wins: swap-interval/volume {}/{})",
+                repiu::launcher::LauncherSettingsPath(config_directory).string(),
+                caller_overrides.swap_interval ? "env" : "file",
+                caller_overrides.ymz_volume ? "env" : "file");
+            PublishLauncherSettings(stored.settings, caller_overrides, logger);
         }
     }
 

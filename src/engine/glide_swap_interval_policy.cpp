@@ -29,6 +29,20 @@ bool ResolveGlideSwapIntervalOverride(std::string_view setting,
     return true;
 }
 
+std::uint32_t ResolveGlideSwapPacingPeriodMicroseconds(
+    const std::int32_t interval, const double refresh_rate_hz)
+{
+    const std::int32_t frames = interval < 0 ? 1 : interval;
+    if (frames <= 0 || frames > kMaxGlideSwapInterval)
+    {
+        return 0U;
+    }
+    const double rate = refresh_rate_hz > 1.0 && refresh_rate_hz <= 1000.0
+        ? refresh_rate_hz : 60.0;
+    const double period = 1000000.0 * static_cast<double>(frames) / rate;
+    return static_cast<std::uint32_t>(period + 0.5);
+}
+
 bool TryReadGlideSwapIntervalOverride(std::int32_t* interval)
 {
     const char* value = std::getenv("REPIU_GLIDE_SWAP_INTERVAL");

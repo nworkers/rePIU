@@ -7,6 +7,7 @@
 #include "repiu/engine/jamma_input_timeline.h"
 #include "repiu/platform/build_identity.h"
 #include "sdl_bios_keyboard_adapter.h"
+#include "sdl_input_script.h"
 
 
 // SDL is this project's cross-platform layer, so these need no guard. They had
@@ -43,6 +44,13 @@
 #endif
 
 namespace repiu::engine {
+
+// Task 748. Wraps the player so the backend header needs only a forward
+// declaration.
+class SdlInputScriptPlayerHandle {
+public:
+  SdlInputScriptPlayer player;
+};
 namespace {
 
 // Task 497: the mapping comes from the configured binding table instead of a
@@ -631,15 +639,32 @@ bool GlideOpenGlBackend::PostBufferSwap(const std::uint32_t swap_interval) {
   return PostToHostThread(
       [this, swap_interval]() {
         const bool swapped = BufferSwapOnHostThread(swap_interval, true);
-        std::lock_guard<std::mutex> lock(host_command_mutex_);
-        if (pending_swap_count_.load(std::memory_order_relaxed) != 0U) {
-          pending_swap_count_.fetch_sub(1U, std::memory_order_relaxed);
+        {
+          std::lock_guard<std::mutex> lock(host_command_mutex_);
+          if (pending_swap_count_.load(std::memory_order_relaxed) != 0U) {
+            pending_swap_count_.fetch_sub(1U, std::memory_order_relaxed);
+          }
+          if (!swapped) {
+            ++async_present().failure_count;
+          }
         }
-        if (!swapped) {
-          ++async_present().failure_count;
-        }
+        // Task 750: a guest waiting the swap out is on this variable.
+        host_command_cv_.notify_all();
       },
       true);
+}
+
+bool GlideOpenGlBackend::WaitForPendingSwaps(
+    const std::chrono::microseconds timeout) {
+  const auto done = [this]() {
+    return pending_swap_count_.load(std::memory_order_relaxed) == 0U ||
+           host_stopped_pumping_.load(std::memory_order_acquire);
+  };
+  std::unique_lock<std::mutex> lock(host_command_mutex_);
+  if (timeout.count() <= 0) {
+    return done();
+  }
+  return host_command_cv_.wait_for(lock, timeout, done);
 }
 
 bool GlideOpenGlBackend::PostBufferClear(const std::uint32_t color,
@@ -1010,6 +1035,11 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
   }
 
   window_ = window;
+  // Task 748: a scripted keyboard, if one was asked for.
+  input_script_ = std::make_unique<SdlInputScriptPlayerHandle>();
+  if (!input_script_->player.StartFromEnvironment(SDL_GetWindowID(window))) {
+    input_script_.reset();
+  }
   render_context_ = render_context;
   logical_width_ = logical_width;
   logical_height_ = logical_height;
@@ -1039,6 +1069,41 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
         SDL_GL_GetSwapInterval(&effective);
     glide_swap_interval_policy_.effective_interval =
         static_cast<std::int32_t>(effective);
+    // Task 745. A refused interval used to leave the game unthrottled with
+    // only a line in the final report to say so: WSLg's llvmpipe GL
+    // advertises GLX_EXT_swap_control and then refuses the call. The engine
+    // then paces the swaps itself at the display's refresh rate.
+    if (!glide_swap_interval_policy_.applied) {
+      const char *const error = SDL_GetError();
+      std::strncpy(glide_swap_interval_policy_.failure,
+                   error != nullptr ? error : "",
+                   sizeof(glide_swap_interval_policy_.failure) - 1U);
+    }
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+    const SDL_DisplayMode *const mode =
+        display != 0U ? SDL_GetCurrentDisplayMode(display) : nullptr;
+    glide_swap_interval_policy_.refresh_rate_hz =
+        mode != nullptr ? static_cast<double>(mode->refresh_rate) : 0.0;
+    const bool honoured = glide_swap_interval_policy_.applied &&
+        (!glide_swap_interval_policy_.effective_valid ||
+         glide_swap_interval_policy_.effective_interval == requested_interval);
+    const std::uint32_t pacing_period_us =
+        ResolveGlideSwapPacingPeriodMicroseconds(
+            requested_interval, glide_swap_interval_policy_.refresh_rate_hz);
+    if (!honoured && pacing_period_us != 0U) {
+      glide_swap_interval_policy_.pacing_active = true;
+      glide_swap_interval_policy_.pacing_period_us = pacing_period_us;
+      swap_pacing_enabled_ = true;
+      swap_pacing_period_ = std::chrono::microseconds(pacing_period_us);
+      swap_pacing_deadline_valid_ = false;
+      fprintf(stderr,
+              "[repiu-glide-swap] driver refused swap interval %d (%s); "
+              "pacing swaps every %u us (display %.2f Hz)\n",
+              static_cast<int>(requested_interval),
+              glide_swap_interval_policy_.failure,
+              static_cast<unsigned>(pacing_period_us),
+              glide_swap_interval_policy_.refresh_rate_hz);
+    }
   }
   // Task 370: prefer asynchronous reporting. When the driver provides it the
   // frame check is removed entirely; otherwise it falls back to sampling. An
@@ -1201,6 +1266,116 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval) {
   return BufferSwapOnHostThread(swap_interval, false);
 }
 
+// Task 745. Deadlines accumulate from one swap to the next so the average
+// rate is exact; a deadline more than a period behind (a stall, a load) is
+// resynchronised to now rather than paid back in a burst. The last ~300 us
+// are spun because the sleep's wake-up is late by about that much.
+void GlideOpenGlBackend::PaceSwapAfterPresent(
+    std::chrono::steady_clock::time_point present_begin,
+    std::chrono::steady_clock::time_point present_end) {
+  if (!swap_pacing_enabled_) {
+    return;
+  }
+  const auto now = present_end;
+  if (!swap_pacing_deadline_valid_ ||
+      swap_pacing_deadline_ + swap_pacing_period_ < now) {
+    if (swap_pacing_deadline_valid_) {
+      ++glide_swap_interval_policy_.resyncs;
+    }
+    swap_pacing_deadline_ = now;
+    swap_pacing_deadline_valid_ = true;
+  }
+  swap_pacing_deadline_ += swap_pacing_period_;
+  if (swap_pacing_deadline_ <= now) {
+    ++glide_swap_interval_policy_.late_swaps;
+    const auto late = std::chrono::duration_cast<std::chrono::microseconds>(
+                          now - swap_pacing_deadline_)
+                          .count();
+    if (static_cast<std::uint64_t>(late) >
+        glide_swap_interval_policy_.late_max_us) {
+      glide_swap_interval_policy_.late_max_us = static_cast<std::uint64_t>(late);
+    }
+  }
+  if (swap_pacing_deadline_ > now) {
+    constexpr auto kSpinMargin = std::chrono::microseconds(300);
+    if (swap_pacing_deadline_ - now > kSpinMargin) {
+      const auto wake_target = swap_pacing_deadline_ - kSpinMargin;
+      std::this_thread::sleep_until(wake_target);
+      const auto woke = std::chrono::steady_clock::now();
+      if (woke > wake_target) {
+        const auto over = std::chrono::duration_cast<std::chrono::microseconds>(
+                              woke - wake_target)
+                              .count();
+        if (over > 1000) {
+          ++glide_swap_interval_policy_.oversleep_over_1ms;
+        }
+        if (static_cast<std::uint64_t>(over) >
+            glide_swap_interval_policy_.oversleep_max_us) {
+          glide_swap_interval_policy_.oversleep_max_us =
+              static_cast<std::uint64_t>(over);
+        }
+      }
+    }
+    while (std::chrono::steady_clock::now() < swap_pacing_deadline_) {
+    }
+    glide_swap_interval_policy_.paced_sleep_us += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - now)
+            .count());
+  }
+  ++glide_swap_interval_policy_.paced_swaps;
+}
+
+// Task 748. On stderr, where the 20 ms MP3 census already is, so what
+// happened inside the frame can be read off the same time axis. A frame is
+// the previous pace's sleep, the guest's share up to the next swap and the
+// present; the three are printed so the reader can tell the guest (a load,
+// a decode) from the display (a slow present, a compositor).
+void GlideOpenGlBackend::LogLongFrame(
+    std::chrono::steady_clock::time_point present_begin,
+    std::chrono::steady_clock::time_point present_end) {
+  // `1` names every frame over one and a half periods (a missed vblank);
+  // a larger value is the threshold itself in microseconds.
+  static const long long long_frame_threshold_us = [] {
+    const char* value = std::getenv("REPIU_GLIDE_LONG_FRAME_LOG");
+    if (value == nullptr) {
+      return -1LL;
+    }
+    const long long parsed = std::strtoll(value, nullptr, 10);
+    return parsed > 1 ? parsed : 0LL;
+  }();
+  if (long_frame_threshold_us < 0 || !swap_last_present_valid_) {
+    return;
+  }
+  const auto period = swap_pacing_enabled_
+                          ? swap_pacing_period_
+                          : std::chrono::steady_clock::duration(
+                                std::chrono::microseconds(16667));
+  const auto threshold =
+      long_frame_threshold_us == 0
+          ? period * 3 / 2
+          : std::chrono::steady_clock::duration(
+                std::chrono::microseconds(long_frame_threshold_us));
+  const auto frame = present_end - swap_last_present_end_;
+  if (frame <= threshold) {
+    return;
+  }
+  const auto us = [](std::chrono::steady_clock::duration d) {
+    return static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::microseconds>(d).count());
+  };
+  const auto since_first = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               present_end - presented_frame_first_)
+                               .count();
+  fprintf(stderr,
+          "[repiu-glide-swap] long-frame elapsed_ms=%lld frame=%llu"
+          " frame_us=%lld sleep_us=%lld guest_us=%lld present_us=%lld\n",
+          static_cast<long long>(since_first),
+          static_cast<unsigned long long>(presented_frame_total_), us(frame),
+          us(swap_last_return_ - swap_last_present_end_),
+          us(present_begin - swap_last_return_), us(present_end - present_begin));
+}
+
 bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
                                                 bool guest_gate_command) {
   if (!is_open()) {
@@ -1325,7 +1500,9 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
   }
   const std::uint64_t present_start_cycles =
       swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;
+  const auto present_begin = std::chrono::steady_clock::now();
   const bool swapped = SDL_GL_SwapWindow(static_cast<SDL_Window *>(window_));
+  const auto present_end = std::chrono::steady_clock::now();
   const std::uint64_t present_end_cycles =
       swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;
   if (!swapped) {
@@ -1339,6 +1516,11 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
     return false;
   }
   RecordPresentedFrame();
+  LogLongFrame(present_begin, present_end);
+  PaceSwapAfterPresent(present_begin, present_end);
+  swap_last_present_end_ = present_end;
+  swap_last_present_valid_ = true;
+  swap_last_return_ = std::chrono::steady_clock::now();
   // Task 370: this was a check on every frame in Task 369, on the assumption
   // that the present had already synchronised. It had not -- the swap queues
   // the flip in 44 microseconds without draining -- so the check became the
@@ -2579,6 +2761,14 @@ void GlideOpenGlBackend::Close() {
   // queued is at most a fraction of a frame that was never presented.
   host_stopped_pumping_.store(true, std::memory_order_release);
   pending_swap_count_.store(0U, std::memory_order_relaxed);
+  // Task 748: stop the scripted keyboard before the window goes.
+  if (input_script_ != nullptr) {
+    input_script_->player.Stop();
+    fprintf(stderr, "[repiu-input-script] pushed %llu events\n",
+            static_cast<unsigned long long>(
+                input_script_->player.pushed_events()));
+    input_script_.reset();
+  }
   // **No `notify_all` here.** The timeout path terminates the guest thread,
   // and that thread waits on `host_command_cv_` inside every synchronous gate.
   // A thread killed while waiting leaves its wait block linked into the

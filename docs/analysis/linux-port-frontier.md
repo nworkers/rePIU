@@ -18787,3 +18787,196 @@ Work log: [20260927-744](../work-logs/20260927-744-jump-table-low-byte-move-guar
 * This exhausts the engine-side trap candidates: what remains is `delay()`'s INT 21h AH=2Ch (a
   two-second calibration spin plus 6,600 a second), `lseek` (3,800 a second) and the ISR's batched
   `in`, EOI and `iret` (240 a second each).
+
+## 2026-09-27 Tasks 745–747 — vsync 거부, swap 페이싱, 그리고 tick 드레인
+
+작업 로그: [745](../work-logs/20260927-745-swap-pacing-when-vsync-refused.md) ·
+[746](../work-logs/20260927-746-apply-ini-settings-on-argument-runs.md) ·
+[747](../work-logs/20260927-747-inject-ticks-after-hle-on-x64.md)
+
+### 확인됨
+
+* WSLg의 llvmpipe GL은 `SDL_GL_SetSwapInterval(1)`을 거부합니다("That operation is not supported";
+  GLX는 확장을 광고). 로그 `override requested/value/applied/effective: true/1/false/0`이 단서였습니다.
+  Task 745: 거부되면 엔진이 주사율 기준으로 swap을 페이싱해 60 fps로 잡습니다. Task 746: 인자 실행도
+  `cfg/repiu.ini`를 적용합니다(환경 변수 우선).
+* 페이싱을 켜자 노트 점프·노이즈가 돌아왔습니다. 원인은 tick 드레인: x64는 HLE 재진입 뒤에 주입을
+  시도하지 않아(`HandleAotReentry` planner-HLE 분기) 긴 게이트 뒤 밀린 tick을 프레임당 2개만 빼고
+  backlog(64)가 넘쳤습니다(14초에 936개 폐기). Task 747이 legacy 체인과 같은 주입 호출을 넣어 `iret`
+  직후 중첩 없이 빠지게 했습니다(폐기 62). 진단 열쇠는 주입 지점별 통계(safe point / `sti` / HLE 뒤).
+* Win32 real vsync(Task 440: 37.6 fps, present 10.8 ms)에서 같은 backlog가 안 생긴 이유는 legacy
+  HLE 체인이 HLE마다 주입하기 때문입니다. x64만 빠져 있었습니다.
+
+### 남은 것
+
+* 게이트 대기 중 tick 전달(실제 기계는 vblank 대기 중에도 IRQ). 지금은 게이트 뒤 ISR 연쇄로 따라잡습니다.
+* WSLg에서 tearing은 막을 수 없습니다(vblank 없음). wayland 드라이버는 창을 못 엽니다(미조사).
+
+## English
+
+## 2026-09-27 Tasks 745–747 — refused vsync, swap pacing, and tick drain
+
+Work logs: [745](../work-logs/20260927-745-swap-pacing-when-vsync-refused.md) ·
+[746](../work-logs/20260927-746-apply-ini-settings-on-argument-runs.md) ·
+[747](../work-logs/20260927-747-inject-ticks-after-hle-on-x64.md)
+
+### Confirmed
+
+* WSLg's llvmpipe GL refuses `SDL_GL_SetSwapInterval(1)` ("That operation is not supported"; GLX
+  advertises the extension). The log's `override requested/value/applied/effective: true/1/false/0`
+  was the clue. Task 745: when refused, the engine paces the swaps at the refresh rate (60 fps).
+  Task 746: argument runs apply `cfg/repiu.ini` too (environment wins).
+* Pacing brought back the arrow jumps and noise. The cause was tick drain: x64 never attempted an
+  injection after an HLE reentry (`HandleAotReentry`'s planner-HLE branch), so after a long gate the
+  owed ticks drained two a frame and the backlog (64) overflowed (936 dropped in 14 s). Task 747 added
+  the legacy chain's injection call, draining right after `iret` without nesting (62 dropped). The key
+  diagnostic was the per-site injection count (safe point / `sti` / after HLE).
+* Win32 under real vsync (Task 440: 37.6 fps, 10.8 ms presents) never had this backlog because the
+  legacy HLE chain injects after every HLE; only x64 lacked it.
+
+### Unresolved
+
+* Tick delivery during a gate wait (the real machine takes IRQs during its vblank wait); today the
+  ISR chain after the gate catches up.
+* Tearing cannot be prevented on WSLg (no vblank). The wayland driver opens no window (not
+  investigated).
+
+## 2026-09-27 Task 748 — 페이싱 아래 "잠깐 멈칫": WSLg 미재현, 분해 진단, wayland의 진짜 vsync
+
+작업 로그: [748](../work-logs/20260927-748-long-frame-split-and-scripted-keyboard.md)
+
+### 확인됨
+
+* 스크립트 키보드(`REPIU_INPUT_SCRIPT`)로 곡까지 결정적으로 들어간 페이싱 플레이 3회: 곡 구간(36–50 s)의
+  긴 프레임은 llvmpipe present(8–15 ms)가 쌓인 페이서 빚뿐, 게스트 6–18 ms, MP3 census 정상(toggle 공백
+  0, lag ≤ 17 ms), 곡 중 파일 I/O 0건. 사용자 증상은 WSLg에서 재현되지 않습니다.
+* 곡 중으로 보였던 50.3 s(85 ms)·54.4 s(92 ms)·56.7 s(320 ms)는 입력 없는 플레이의 실패 연출 BGA 로드
+  (`HEYMAN.DAT` 248 KB·`GAMEOVER.DAT` 160 KB·`TITLE.DAT` 760 KB)입니다: 통째 읽기 + Huffman 디코드
+  (`0x010EE71C`), 게스트 0.35–0.45 ms/KB. 함정: 무입력 플레이는 곡 중간에 실패합니다.
+* `REPIU_LIVE_PROFILE_INTERVAL_MS`는 `REPIU_EXECUTION_TIME_PROFILE=1`이 함께 있어야 찍힙니다.
+* wayland 드라이버가 창을 못 열던 이유는 `$XDG_RUNTIME_DIR`에 `wayland-0`이 없어서입니다(WSLg는
+  `/mnt/wslg/runtime-dir`). 그리 주면 swap interval 1이 applied/effective 1, 페이싱 없이 60 fps —
+  WSLg에서도 진짜 vsync가 됩니다.
+
+### 남은 것
+
+* 사용자 호스트의 멈칫: 가설은 소프트웨어 페이서와 컴포지터의 위상 차(1/|Δf| 초마다 프레임 겹침/누락).
+  `REPIU_GLIDE_LONG_FRAME_LOG=1 REPIU_PIU10_MP3_CENSUS_MS=20` stderr로 가르고, wayland 드라이버로 진짜
+  vsync를 시험합니다.
+
+## English
+
+## 2026-09-27 Task 748 — the "brief hitch" under pacing: not on WSLg, a split log, real vsync on wayland
+
+Work log: [748](../work-logs/20260927-748-long-frame-split-and-scripted-keyboard.md)
+
+### Confirmed
+
+* Three paced plays reaching the song deterministically through the scripted keyboard
+  (`REPIU_INPUT_SCRIPT`): the long frames inside the song (36–50 s) are pacer debt from llvmpipe's 8–15
+  ms presents only, guest 6–18 ms, MP3 census clean (no toggle gaps, lag ≤ 17 ms), zero file I/O during
+  the song. The user's symptom does not reproduce on WSLg.
+* What looked like in-song stalls at 50.3 s (85 ms), 54.4 s (92 ms) and 56.7 s (320 ms) are the fail
+  sequence's BGA loads of an unattended play (`HEYMAN.DAT` 248 KB, `GAMEOVER.DAT` 160 KB, `TITLE.DAT`
+  760 KB): whole-file read plus Huffman decode (`0x010EE71C`), 0.35–0.45 ms/KB of guest time. Pitfall: a
+  play without input fails mid-song.
+* `REPIU_LIVE_PROFILE_INTERVAL_MS` prints only with `REPIU_EXECUTION_TIME_PROFILE=1`.
+* The wayland driver opened no window because `$XDG_RUNTIME_DIR` lacked `wayland-0` (WSLg keeps it in
+  `/mnt/wslg/runtime-dir`). Pointed there, swap interval 1 is applied and effective, no pacing, 60 fps:
+  real vsync even on WSLg.
+
+### Unresolved
+
+* The user's hitch: the hypothesis is the phase mismatch between a software pacer and the compositor (a
+  duplicated or dropped frame every 1/|Δf| s). To tell, the stderr of a play with
+  `REPIU_GLIDE_LONG_FRAME_LOG=1 REPIU_PIU10_MP3_CENSUS_MS=20`, and the wayland driver for real vsync.
+  (Refuted the same day: the hitch stays under wayland; see Task 749 below.)
+
+## 2026-09-28 Task 749 — MP3 위치를 직접 보니: 시계의 계단 점프(수정)와 게이트 대기의 관측 지연(남음)
+
+작업 로그: [749](../work-logs/20260928-749-free-running-mp3-playback-clock.md)
+
+### 확인됨
+
+* `REPIU_PIU10_MP3_POSITION_TRACE=1`(토글 시각 + 게스트 첫 관측 시각). Task 740 시계는 장치 계단마다
+  직전 계단 count에서 선을 다시 그려 pull 지터가 12 ms 점프·정지가 됐고 토글 간격이 16–35 ms로 흩어졌다.
+  자유 진행 + 4초 슬루(±2%) 시계로 24–27 ms(98%).
+* 60 Hz 대기(페이싱·wayland vsync)에서 게스트는 프레임당 한 번 몰아서(5회) status를 읽어 토글을 0–16 ms
+  늦게 보고 위치가 16/33 ms 걸음이 된다. 자유 실행은 0–7 ms, 20–30 ms 걸음. 이것이 vsync ON에서만 느껴지는
+  멈칫의 남은 기전.
+
+### 남은 것
+
+* 게이트 대기 중 타이머 ISR(EIP를 게이트 자리에 둔 채 tick 주입 → ISR `iret`가 게이트로 복귀 → 재진입
+  HLE가 present 완료를 확인). 747·748이 남긴 같은 항목이 이제 근거를 얻었다.
+* wayland 시작 시 tick 폭주(748) 미조사.
+
+## English
+
+## 2026-09-28 Task 749 — the MP3 position observed: the clock's step jumps (fixed) and the gate wait's observation delay (open)
+
+Work log: [749](../work-logs/20260928-749-free-running-mp3-playback-clock.md)
+
+### Confirmed
+
+* `REPIU_PIU10_MP3_POSITION_TRACE=1` (toggle time plus the guest's first observation). Task 740's clock
+  restarted its line at the previous step's count every device step, so pull jitter became 12 ms jumps
+  and stalls and toggles scattered to 16–35 ms apart. Free-running with a four second slew (±2%): 24–27
+  ms (98%).
+* Under a 60 Hz wait (pacing or wayland vsync) the guest reads the status in one burst of five per frame,
+  sees a toggle 0–16 ms late and steps its position by 16/33 ms; free-running sees it within 0–7 ms and
+  steps 20–30 ms. This is the remaining mechanism of the hitch felt only with vsync on.
+
+### Unresolved
+
+* The timer ISR during a gate wait (leave EIP at the gate site, inject the tick, the ISR's `iret` returns
+  to the gate, the re-entered HLE checks the present). The item 747 and 748 left now has its evidence.
+* The tick storm at a wayland start (748) is not investigated.
+
+## 2026-09-28 Task 750 — swap 대기 중 타이머 tick: 게스트의 MP3 관측이 자유 실행과 같아졌다
+
+작업 로그: [750](../work-logs/20260928-750-timer-ticks-during-the-swap-wait.md)
+
+### 확인됨
+
+* `grBufferSwap` 게이트가 present를 게시하고 기다리는 동안, 밀린 tick을 "게이트에 도달한 `call` 직전에 온
+  인터럽트"로 주입한다(ISR `iret` → `call` 재실행 → 게이트 재진입). 곡 구간의 토글 관측 지연 0–16 ms →
+  0–4 ms, 관측 간격 16/33 ms 쌍봉 → 25 ms 중심. x11 페이싱·wayland 모두 60 fps, 폴트 0.
+* 함정 셋: (1) 비동기 present는 대기를 다음 동기 명령으로 옮길 뿐이다. (2) 게이트 주소의 세그먼트(LINEXE
+  0x0080)는 디스크립터가 실행 가능으로 표시돼 있지 않아 x64의 프레임 CS 조회가 거절한다 — 반환 목표는
+  호출부여야 한다(pumpitea: `call rel32` → import thunk `jmp rel32` → 게이트). (3) tick 무장은 호스트 폴
+  루프 = present를 실행하는 스레드 안에 있어 게스트가 기다리는 동안 멈춘다 — callable로 빼 게스트도 부른다.
+* `REPIU_GLIDE_SWAP_WAIT_TICKS`(Linux x64 전용, 기본 켜짐), 보고 `Glide swap wait ticks swaps/injections`.
+
+### 남은 것
+
+* Win32(i386)는 켜면 첫 주입 뒤 멈춰 제공하지 않음. 호출부가 `call rel32`가 아닌 게임은 주입 없이 대기.
+* Win32 pumpitea 15초 tick 폐기 380(vsync off에서도 같음) — 747의 "Win32 backlog 없음"과 어긋남, 미조사.
+* wayland 시작 시 tick 폭주(748) 미조사.
+
+## English
+
+## 2026-09-28 Task 750 — timer ticks during the swap wait: the guest's MP3 observations match free-running
+
+Work log: [750](../work-logs/20260928-750-timer-ticks-during-the-swap-wait.md)
+
+### Confirmed
+
+* While the `grBufferSwap` gate waits for the present it posted, an owed tick is injected as "an
+  interrupt that arrived just before the `call` that reached the gate" (the ISR's `iret` re-runs the
+  call, the gate is entered again). In-song toggle observation delay 0–16 ms → 0–4 ms, observation
+  interval from a 16/33 ms bimodal to a 25 ms centre. x11 pacing and wayland both at 60 fps, no faults.
+* Three pitfalls: (1) asynchronous present only moves the wait to the next synchronous command. (2) The
+  gate's segment (LINEXE 0x0080) has a descriptor not marked executable, so the x64 frame CS lookup
+  refuses it; the return target has to be the call site (pumpitea: `call rel32` → import thunk
+  `jmp rel32` → gate). (3) Tick arming lives in the host poll loop, the thread that runs the present, so
+  it stops while the guest waits; it is now a callable the guest runs too.
+* `REPIU_GLIDE_SWAP_WAIT_TICKS` (Linux x64 only, on by default), reported as `Glide swap wait ticks
+  swaps/injections`.
+
+### Unresolved
+
+* Not offered on Win32 (i386): forced on, the run stalls after the first injection. A game whose call
+  site is not `call rel32` waits without injection.
+* Win32 pumpitea drops 380 ticks in 15 s, vsync on or off, at odds with 747's note; not investigated.
+* The tick storm at a wayland start (748) is not investigated.

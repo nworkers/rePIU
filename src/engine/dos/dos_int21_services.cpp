@@ -18,6 +18,20 @@
 #include "repiu/platform/atomic_ops.h"
 #include "repiu/platform/host_time.h"
 
+namespace
+{
+// Task 748: `REPIU_DOS_ASSET_TRACE=all` lifts the success caps below, so the
+// reads a song issues mid-play (well past the 120th read) are still named.
+bool AssetTraceUncapped()
+{
+    static const bool uncapped = [] {
+        const char* value = std::getenv("REPIU_DOS_ASSET_TRACE");
+        return value != nullptr && std::strcmp(value, "all") == 0;
+    }();
+    return uncapped;
+}
+} // namespace
+
 namespace repiu::engine
 {
 
@@ -374,7 +388,7 @@ void RecordDosOpen(ThreadContext* context,
                 resolved.result == repiu::hle::DosPathResult::kOk;
             // Log every failure, but cap successes so a hot reload loop cannot
             // drown the interesting lines.
-            if (!ok || index <= 200)
+            if (!ok || index <= 200 || AssetTraceUncapped())
             {
                 fprintf(stderr,
                         "[repiu-asset] %-4s open #%ld \"%s\" -> %s handle=%u"
@@ -1137,7 +1151,8 @@ bool HandleDosReadFile(repiu::platform::GuestCpuContext* win32_context, ThreadCo
             // asset silently becomes missing content.
             const bool short_read =
                 dos_error == 0 && actual_bytes < requested_bytes;
-            if (short_read || dos_error != 0 || index <= 120)
+            if (short_read || dos_error != 0 || index <= 120 ||
+                AssetTraceUncapped())
             {
                 fprintf(stderr,
                         "[repiu-asset] %-5s read #%ld \"%s\" h=%u off=%u"
@@ -1269,7 +1284,7 @@ bool HandleDosSeekFile(repiu::platform::GuestCpuContext* win32_context, ThreadCo
         {
             static long seek_trace_count = 0;
             const long index = repiu::platform::AtomicIncrement(&seek_trace_count);
-            if (dos_error != 0 || index <= 120)
+            if (dos_error != 0 || index <= 120 || AssetTraceUncapped())
             {
                 fprintf(stderr,
                         "[repiu-asset] %-5s seek #%ld \"%s\" h=%u origin=%u"

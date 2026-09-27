@@ -53,7 +53,20 @@ bool RunGlideSwapIntervalPolicyProbe()
     const bool refusal_visible = refused.override_requested &&
         !refused.applied && refused.effective_interval == 1;
 
-    const bool all = accepted && rejected && inert && refusal_visible;
+    // Task 745. The pacing period: one 60 Hz frame is 16,667 us, an unknown
+    // rate falls back to 60 Hz, interval 2 doubles it, adaptive counts as 1,
+    // and interval 0 asks for no pacing.
+    using engine::ResolveGlideSwapPacingPeriodMicroseconds;
+    const bool pacing_period =
+        ResolveGlideSwapPacingPeriodMicroseconds(1, 60.0) == 16667U &&
+        ResolveGlideSwapPacingPeriodMicroseconds(1, 0.0) == 16667U &&
+        ResolveGlideSwapPacingPeriodMicroseconds(2, 60.0) == 33333U &&
+        ResolveGlideSwapPacingPeriodMicroseconds(-1, 120.0) == 8333U &&
+        ResolveGlideSwapPacingPeriodMicroseconds(0, 60.0) == 0U &&
+        ResolveGlideSwapPacingPeriodMicroseconds(1, 59.94) == 16683U;
+
+    const bool all = accepted && rejected && inert && refusal_visible &&
+        pacing_period;
     std::cout << "glide_swap_interval_accepted="
               << (accepted ? "true" : "false")
               << "\nglide_swap_interval_rejected="
@@ -61,6 +74,8 @@ bool RunGlideSwapIntervalPolicyProbe()
               << "\nglide_swap_interval_inert=" << (inert ? "true" : "false")
               << "\nglide_swap_interval_refusal_visible="
               << (refusal_visible ? "true" : "false")
+              << "\nglide_swap_pacing_period="
+              << (pacing_period ? "true" : "false")
               << "\nglide_swap_interval_all=" << (all ? "true" : "false")
               << std::endl;
     return all;

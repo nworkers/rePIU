@@ -355,6 +355,7 @@ target_sources(repiu_exe
         src/engine/verified_region_analyzer.cpp
         src/engine/glide_gl_error_policy.cpp
         src/engine/glide_swap_interval_policy.cpp
+        src/engine/sdl_input_script.cpp
         src/engine/glide_texture_census.cpp
         src/engine/out_of_arena_step_census.cpp
         src/engine/glide_opengl_backend.cpp

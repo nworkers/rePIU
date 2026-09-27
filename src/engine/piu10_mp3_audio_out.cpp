@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
 #include <span>
@@ -112,13 +113,44 @@ struct Piu10Mp3AudioOut::Impl
     // clock rises at the PCM rate from the pulled count before the latest
     // step, never runs backwards and never passes the pulled count, so it
     // is at most one device buffer behind the device and cannot drift.
+    // Task 749. The line no longer restarts at every device step. A step
+    // observed early jumped the clock forward by the unplayed remainder of
+    // the previous step, and one observed late stalled it at the cap, so the
+    // pull jitter of the audio thread (a few ms on WSLg's PulseAudio) became
+    // 12 ms jumps and stalls in the song position: frame-sync toggles 18-33
+    // ms apart for a 26.1 ms frame. The clock now free-runs at the PCM rate
+    // from its own previous value and slews toward the device's count less
+    // half a device buffer (the same average lag as before) with a four
+    // second time constant, so jitter is absorbed and a real rate difference
+    // is followed without a step. It still never passes the pulled count and
+    // never runs backwards.
     std::uint64_t clock_reported = 0U;
-    std::uint64_t clock_origin = 0U;
     std::uint64_t clock_estimate = 0U;
-    std::chrono::steady_clock::time_point clock_step_time{};
+    bool clock_valid = false;
+    std::chrono::steady_clock::time_point clock_time{};
     std::chrono::steady_clock::time_point last_put_time{};
     bool last_put_valid = false;
+    // Task 748. `REPIU_PIU10_MP3_POSITION_TRACE=1`: every frame-sync toggle
+    // (the worker) and every guest read that first sees the new value (the
+    // guest thread), each with a microsecond stamp, so the song position the
+    // guest counts can be read event by event next to the host clock.
+    const bool position_trace =
+        std::getenv("REPIU_PIU10_MP3_POSITION_TRACE") != nullptr;
+    const std::chrono::steady_clock::time_point trace_origin =
+        std::chrono::steady_clock::now();
+    std::atomic<std::int64_t> last_toggle_us{0};
+    std::atomic<std::uint64_t> toggle_seq{0};
+    mutable std::uint8_t last_seen_sync = 0xFFU;
+    mutable std::uint64_t reads_since_seen = 0U;
     std::string message;
+
+    std::int64_t TraceMicroseconds() const
+    {
+        return static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - trace_origin)
+                .count());
+    }
 
     std::uint64_t PcmBytesPerSecond() const
     {
@@ -128,30 +160,53 @@ struct Piu10Mp3AudioOut::Impl
     }
 
     // The playback clock for the queue state `queued`. Worker thread only.
+    std::uint64_t DeviceBufferBytes() const
+    {
+        return static_cast<std::uint64_t>(
+                   device_buffer_frames > 0 ? device_buffer_frames : 0) *
+            static_cast<std::uint64_t>(source_channels) * sizeof(std::int16_t);
+    }
+
     std::uint64_t PlaybackPosition(const std::uint64_t queued)
     {
         const std::uint64_t reported = total_pcm_bytes_put -
             std::min(total_pcm_bytes_put, queued);
         const auto now = std::chrono::steady_clock::now();
-        if (reported != clock_reported)
+        clock_reported = reported;
+        const std::uint64_t half_buffer = DeviceBufferBytes() / 2U;
+        const std::uint64_t target =
+            reported > half_buffer ? reported - half_buffer : 0U;
+        if (!clock_valid)
         {
-            // The line restarts from the count before this step, so the
-            // step's own length is what it spans and a late observation
-            // stalls the clock for the delay instead of losing it.
-            clock_origin = clock_reported;
-            clock_reported = reported;
-            clock_step_time = now;
+            if (reported == 0U)
+            {
+                playback_lag_bytes.store(0U, std::memory_order_relaxed);
+                return 0U;
+            }
+            clock_valid = true;
+            clock_estimate = target;
+            clock_time = now;
         }
         const double elapsed_seconds =
-            std::chrono::duration<double>(now - clock_step_time).count();
-        std::uint64_t estimate = clock_origin +
-            static_cast<std::uint64_t>(
-                elapsed_seconds * static_cast<double>(PcmBytesPerSecond()));
-        estimate = std::min(estimate, clock_reported);
+            std::chrono::duration<double>(now - clock_time).count();
+        clock_time = now;
+        const double rate = static_cast<double>(PcmBytesPerSecond());
+        // The slew: a fraction of the error per second, bounded to two per
+        // cent of the rate so a burst of late pulls cannot become a jump.
+        constexpr double kSlewSeconds = 4.0;
+        constexpr double kSlewLimit = 0.02;
+        const double error = static_cast<double>(target) -
+            static_cast<double>(clock_estimate);
+        double slew = error / (kSlewSeconds * rate);
+        slew = std::max(-kSlewLimit, std::min(kSlewLimit, slew));
+        const double advance = elapsed_seconds * rate * (1.0 + slew);
+        std::uint64_t estimate = clock_estimate +
+            static_cast<std::uint64_t>(advance > 0.0 ? advance : 0.0);
+        estimate = std::min(estimate, reported);
         estimate = std::max(estimate, clock_estimate);
         clock_estimate = estimate;
         playback_lag_bytes.store(
-            clock_reported - estimate, std::memory_order_relaxed);
+            reported - estimate, std::memory_order_relaxed);
         return estimate;
     }
 
@@ -176,9 +231,9 @@ struct Piu10Mp3AudioOut::Impl
     void ResetPlaybackClock()
     {
         clock_reported = 0U;
-        clock_origin = 0U;
         clock_estimate = 0U;
-        clock_step_time = std::chrono::steady_clock::time_point{};
+        clock_valid = false;
+        clock_time = std::chrono::steady_clock::time_point{};
         last_put_valid = false;
         playback_lag_bytes.store(0U, std::memory_order_relaxed);
     }
@@ -199,9 +254,30 @@ struct Piu10Mp3AudioOut::Impl
         while (!frame_start_pcm_offsets.empty() &&
                frame_start_pcm_offsets.front() <= position)
         {
+            const std::uint64_t frame_start = frame_start_pcm_offsets.front();
             frame_sync.fetch_xor(1U, std::memory_order_relaxed);
             frame_start_pcm_offsets.pop_front();
             ++toggles;
+            if (position_trace)
+            {
+                const std::int64_t now_us = TraceMicroseconds();
+                const std::uint64_t seq =
+                    toggle_seq.fetch_add(1U, std::memory_order_relaxed) + 1U;
+                last_toggle_us.store(now_us, std::memory_order_relaxed);
+                const double bytes_per_ms =
+                    static_cast<double>(PcmBytesPerSecond()) / 1000.0;
+                fprintf(stderr,
+                        "[repiu-mp3-pos] toggle seq=%llu t_us=%lld"
+                        " pos_ms=%.1f frame_ms=%.1f lag_ms=%.1f"
+                        " queued_ms=%.1f\n",
+                        static_cast<unsigned long long>(seq),
+                        static_cast<long long>(now_us),
+                        static_cast<double>(position) / bytes_per_ms,
+                        static_cast<double>(frame_start) / bytes_per_ms,
+                        static_cast<double>(clock_reported - position) /
+                            bytes_per_ms,
+                        static_cast<double>(queued) / bytes_per_ms);
+            }
         }
         if (toggles != 0U)
         {
@@ -751,7 +827,29 @@ bool Piu10Mp3AudioOut::demand() const
 
 std::uint8_t Piu10Mp3AudioOut::frame_sync() const
 {
-    return impl_->frame_sync.load(std::memory_order_relaxed);
+    const std::uint8_t value =
+        impl_->frame_sync.load(std::memory_order_relaxed);
+    if (impl_->position_trace)
+    {
+        ++impl_->reads_since_seen;
+        if (value != impl_->last_seen_sync)
+        {
+            const std::int64_t now_us = impl_->TraceMicroseconds();
+            fprintf(stderr,
+                    "[repiu-mp3-pos] seen seq=%llu t_us=%lld delay_us=%lld"
+                    " reads=%llu\n",
+                    static_cast<unsigned long long>(
+                        impl_->toggle_seq.load(std::memory_order_relaxed)),
+                    static_cast<long long>(now_us),
+                    static_cast<long long>(
+                        now_us -
+                        impl_->last_toggle_us.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long long>(impl_->reads_since_seen));
+            impl_->last_seen_sync = value;
+            impl_->reads_since_seen = 0U;
+        }
+    }
+    return value;
 }
 
 Piu10Mp3AudioStats Piu10Mp3AudioOut::stats() const
