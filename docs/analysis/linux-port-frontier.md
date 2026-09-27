@@ -19204,3 +19204,55 @@ Work log: [754](../work-logs/20260928-754-tick-clock-follows-the-audio-clock.md)
 * **Follow-up**: the music's own speed is left as WSL's problem and is to be checked on real hardware (an
   actual Linux machine). If the music slows there while the last value of the `host clock
   raw-against-steady …` line is 0, the clock is not the cause and it is to be investigated again.
+
+## 2026-09-28 Task 755 — WSL에서 음악이 전반적으로 느린 까닭: 사운드 서버가 느린 시계로 출력한다
+
+작업 로그: [755](../work-logs/20260928-755-wsl-audio-rate-and-clock-tug-of-war.md)
+
+### 확인됨
+
+* v0.0.194의 tick 시계 변경은 음악의 속도를 바꾸지 않았다. pumpitea를 `steady`와 `REPIU_EVENT_CLOCK=sdl`로
+  돌리면 MP3 디코드는 둘 다 `CLOCK_MONOTONIC`의 초당 38.0~38.8프레임(명목 38.28)이다.
+* WSLg의 사운드 서버(PulseAudio, RDP sink)는 `CLOCK_MONOTONIC`의 초당 44,097~44,103프레임을 내고, 실제
+  시간(RAW)으로는 40,390~43,553프레임이다(게임 없이 monitor 녹음 40초, 전체 −5.15%).
+* Windows의 시계가 NTP보다 1.01~1.04초 늦고 Windows Time 서비스가 꺼져 있다. WSL의 `systemd-timesyncd`는 폴
+  간격이 최솟값(32초)에 붙어 있고 offset이 +1.90초다. `adjtimex`의 `tick`은 9492~10137을 오간다.
+* v0.0.194부터는 게임의 시간도 그 시계를 따르므로 게임 전체가 음악과 함께 느려진다(v0.0.193은 음악만 느렸다).
+
+### 가설(미확인)
+
+* NTP 시각을 따르는 `systemd-timesyncd`와 Windows 시각을 따르는 WSL의 호스트 동기화가 서로의 결과를 되돌린다.
+  `tick`을 바꾸는 주체는 확인하지 못했다. 조치 후보: Windows 시계 동기화, 또는 WSL 안의 `systemd-timesyncd`
+  끄기. 판정은 `host clock raw-against-steady …` 줄의 마지막 값.
+* **사용자 확인(2026-09-28)**: Windows 시계를 동기화해도 MP3 재생은 그대로 느렸다. 그 실행의 시계 보고는
+  받지 못해 slew가 멈췄는지는 모른다. **보류** — 실기에서의 비교가 있어야 판단한다.
+
+## English
+
+## 2026-09-28 Task 755 — why the music is slower overall on WSL: the sound server puts audio out by a slow clock
+
+Work log: [755](../work-logs/20260928-755-wsl-audio-rate-and-clock-tug-of-war.md)
+
+### Confirmed
+
+* v0.0.194's change of the tick clock did not alter the music's speed. pumpitea on `steady` and on
+  `REPIU_EVENT_CLOCK=sdl` decodes MP3 at 38.0–38.8 frames a second of `CLOCK_MONOTONIC` either way
+  (nominal 38.28).
+* WSLg's sound server (PulseAudio, the RDP sink) produces 44,097–44,103 frames a second of
+  `CLOCK_MONOTONIC` and 40,390–43,553 a second of real time (RAW) (its monitor recorded for 40 s with no
+  game, −5.15% overall).
+* The Windows clock is 1.01–1.04 s behind NTP and the Windows Time service is off. WSL's
+  `systemd-timesyncd` has its poll interval pinned at the minimum (32 s) and an offset of +1.90 s.
+  `adjtimex`'s `tick` moves between 9492 and 10137.
+* From v0.0.194 the game's time follows that clock too, so the whole game slows with the music (on
+  v0.0.193 the music alone was slow).
+
+### Hypothesis (not confirmed)
+
+* `systemd-timesyncd`, following NTP time, and WSL's host synchronisation, following Windows time, undo
+  each other's result. What changes `tick` is not established. Steps to try: synchronising the Windows
+  clock, or turning `systemd-timesyncd` off inside WSL. The judge is the last value of the `host clock
+  raw-against-steady …` line.
+* **The user's check (2026-09-28)**: with the Windows clock synchronised MP3 playback was as slow as
+  before. That run's clock report was not received, so whether the slew stopped is not known. **On
+  hold** — a comparison on real hardware is needed to judge.
