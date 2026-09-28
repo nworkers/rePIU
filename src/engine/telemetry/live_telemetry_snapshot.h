@@ -8,21 +8,17 @@
 #include "native_phase_sampler.h"
 
 #include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/host_telemetry.h"
 #include "repiu/platform/host_thread.h"
 
 #include <cstdint>
 #include <vector>
 
-// Task 503d-14. Fenced, because what is behind it is the cross-process
-// diagnostics: a shared section another process maps, and the thread handles a
-// watchdog waits on. Neither is needed to run the guest, so Linux starts
-// without them rather than with an invented counterpart.
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
+// Task 503d-14. What is behind the shared mapping below is the cross-process
+// diagnostics: a section another process maps. It is not needed to run the
+// guest, so Linux starts without it rather than with an invented counterpart.
+// Task 759. The section itself is the platform layer's (host_telemetry.h); on
+// a host without one the mapping is empty and the telemetry pointer null.
 
 namespace repiu::engine
 {
@@ -50,10 +46,9 @@ enum class HostPollOutcome
     kFailed,
 };
 
-#if defined(_WIN32)
 struct SharedTelemetryMapping
 {
-    HANDLE mapping = nullptr;
+    repiu::platform::HostSharedMapping mapping;
     SharedLiveTelemetry* telemetry = nullptr;
 
     SharedTelemetryMapping() = default;
@@ -62,23 +57,15 @@ struct SharedTelemetryMapping
     SharedTelemetryMapping(SharedTelemetryMapping&& other) noexcept
         : mapping(other.mapping), telemetry(other.telemetry)
     {
-        other.mapping = nullptr;
+        other.mapping = repiu::platform::HostSharedMapping{};
         other.telemetry = nullptr;
     }
 
     ~SharedTelemetryMapping()
     {
-        if (telemetry != nullptr)
-        {
-            UnmapViewOfFile(telemetry);
-        }
-        if (mapping != nullptr)
-        {
-            CloseHandle(mapping);
-        }
+        repiu::platform::CloseHostSharedMapping(&mapping);
     }
 };
-#endif
 
 // Task 503d-18: the thread is the layer's handle, and the loop asks it whether
 // the guest is still running rather than reading GetExitCodeThread and comparing
@@ -95,9 +82,7 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                                     std::uint32_t* exit_code,
                                     bool* stall_timed_out);
 
-#if defined(_WIN32)
 SharedTelemetryMapping OpenSharedTelemetryMapping();
-#endif
 
 // Task 503d-14: CONTEXT becomes GuestCpuContext, which is an alias for it on
 // Windows, so neither the definition nor its callers change.

@@ -1,0 +1,9 @@
+#ifndef REPIU_PLATFORM_WIN32_THUNK_CALLING_CONVENTION_WIN32_H_
+#define REPIU_PLATFORM_WIN32_THUNK_CALLING_CONVENTION_WIN32_H_
+
+// Task 758. MSVC spells stdcall as a keyword.
+// Include thunk_calling_convention.h, not this.
+
+#define REPIU_THUNK_RESOLVER_CALL __stdcall
+
+#endif  // REPIU_PLATFORM_WIN32_THUNK_CALLING_CONVENTION_WIN32_H_

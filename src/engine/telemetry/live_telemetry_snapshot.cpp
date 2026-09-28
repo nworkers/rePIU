@@ -1,5 +1,4 @@
 #include "live_telemetry_snapshot.h"
-#include "repiu/platform/win32/win32_thread_api.h"
 #include "boundary/timer_interrupt_boundary.h"
 #include "execution/execution_internal.h"
 #include "repiu/runtime/execution_timeout.h"
@@ -14,12 +13,6 @@
 #include <limits>
 #include <sstream>
 
-// Task 503d-16. psapi is read by the module enumeration inside
-// PollThreadUntilExit, which is fenced with everything else this process
-// does to observe another thread. The include follows what uses it.
-#if defined(_WIN32)
-#include <psapi.h>
-#endif
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/host_error_stream.h"
 #include "repiu/platform/host_time.h"
@@ -252,47 +245,6 @@ void WriteLiveGuestScan(const ThreadContext& context,
 }  // namespace
 
 // Task 503d-16. The .cpp takes the boundary the header already drew in
-// 3d-14: the section another process maps, and the thread a watchdog waits
-// on. Neither is needed to run the guest, and neither has a counterpart
-// worth inventing -- Linux cannot suspend a thread and read its registers
-// from inside the same process at all.
-#if defined(_WIN32)
-SharedTelemetryMapping OpenSharedTelemetryMapping()
-{
-    SharedTelemetryMapping result;
-    char mapping_name[256] = {};
-    if (GetEnvironmentVariableA(kLiveTelemetryEnvironment,
-                                mapping_name,
-                                sizeof(mapping_name)) == 0)
-    {
-        return result;
-    }
-    result.mapping = OpenFileMappingA(
-        FILE_MAP_ALL_ACCESS,
-        FALSE,
-        mapping_name);
-    if (result.mapping == nullptr)
-    {
-        return result;
-    }
-    result.telemetry = static_cast<SharedLiveTelemetry*>(
-        MapViewOfFile(result.mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0));
-    if (result.telemetry == nullptr ||
-        result.telemetry->magic != kLiveTelemetryMagic ||
-        result.telemetry->version != kLiveTelemetryVersion)
-    {
-        if (result.telemetry != nullptr)
-        {
-            UnmapViewOfFile(result.telemetry);
-            result.telemetry = nullptr;
-        }
-        CloseHandle(result.mapping);
-        result.mapping = nullptr;
-    }
-    return result;
-}
-#endif
-
 // Task 503d-16: not fenced. What it formats is the engine's own progress, and
 // the two counters are milliseconds and an iteration number rather than
 // anything Windows owns -- so they are spelled by what they mean. The format
@@ -447,13 +399,6 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
     WriteLiveGuestScan(context, elapsed_milliseconds);
 }
 
-// Task 503d-17. The host spells "no limit" with a neutral constant, and on
-// Windows it also reaches a Win32 wait. They are the same number, and this is
-// what says so where a change to either would be noticed.
-#if defined(_WIN32)
-static_assert(repiu::runtime::kWaitForeverMilliseconds == INFINITE);
-#endif
-
 // Task 503d-19: out of the fence. The loop is what drives a run, and a host
 // being brought up needs it before anything else here.
 HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
@@ -468,16 +413,6 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
     {
         return HostPollOutcome::kFailed;
     }
-    // Task 503d-18: the loop's own question goes through the layer, but the
-    // diagnostics below sample a thread with Win32 calls that take a HANDLE.
-    // `HostThread::handle` is documented as being one on this host.
-    // Task 503d-21: what stays fenced is `GetThreadTimes` alone. The register
-    // sampling that used to be here with it moved onto the platform layer's
-    // interrupt and runs on both hosts.
-#if defined(_WIN32)
-    auto* thread_handle = static_cast<HANDLE>(thread.handle);
-#endif
-
     if (stall_timed_out != nullptr)
     {
         *stall_timed_out = false;
@@ -574,23 +509,8 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
     // compares against it.
     std::uint32_t loader_module_base = 0;
     std::uint32_t loader_module_size = 0;
-#if defined(_WIN32)
-    {
-        const HMODULE loader_module = GetModuleHandleW(nullptr);
-        MODULEINFO module_info = {};
-        if (loader_module != nullptr &&
-            GetModuleInformation(GetCurrentProcess(), loader_module,
-                                 &module_info, sizeof(module_info)))
-        {
-            loader_module_base = static_cast<std::uint32_t>(
-                reinterpret_cast<std::uintptr_t>(module_info.lpBaseOfDll));
-            loader_module_size =
-                static_cast<std::uint32_t>(module_info.SizeOfImage);
-        }
-    }
-    // Left zero on Linux, which the sampling path reads as "no bounds known"
-    // -- it only compares an address against them.
-#endif
+    repiu::platform::ReadHostImageRange(&loader_module_base,
+                                        &loader_module_size);
     TickCount dispatch_quiet_start_tick = start_tick;
     std::uint32_t last_dispatch_total = 0;
     if (progress_context != nullptr)
@@ -895,30 +815,16 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
             }
             // Task 412: the busy-or-blocked split. One call per sample, on the
             // poll thread, and the last reading is the one reported.
-            //
-            // Task 503d-21: fenced on its own now. Linux reports the same split
-            // in /proc/<pid>/task/<tid>/stat, but as jiffies against a
-            // configurable tick rather than as 100ns units, so a counterpart
-            // would be a different measurement under this one's name.
-#if defined(_WIN32)
-            FILETIME creation_time = {};
-            FILETIME exit_time = {};
-            FILETIME kernel_time = {};
-            FILETIME user_time = {};
-            if (GetThreadTimes(thread_handle, &creation_time, &exit_time,
-                               &kernel_time, &user_time))
+            std::uint64_t kernel_100ns = 0;
+            std::uint64_t user_100ns = 0;
+            if (repiu::platform::ReadHostThreadTimes(
+                    thread, &kernel_100ns, &user_100ns))
             {
-                const auto to_100ns = [](const FILETIME& value) {
-                    return (static_cast<std::uint64_t>(value.dwHighDateTime)
-                            << 32) |
-                        static_cast<std::uint64_t>(value.dwLowDateTime);
-                };
                 RecordGuestPositionThreadTime(
                     progress_context->guest_position_census.get(),
-                    to_100ns(kernel_time), to_100ns(user_time),
+                    kernel_100ns, user_100ns,
                     static_cast<std::uint32_t>(current_tick - start_tick));
             }
-#endif
             last_position_census_tick = current_tick;
         }
         // Task 421: the music position, on its own interval. `host_context` is
@@ -1078,6 +984,45 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
     }
 }
 
+// 3d-14: the section another process maps. Task 759: the platform layer opens
+// and maps it; what the engine checks is that it is the telemetry it expects.
+SharedTelemetryMapping OpenSharedTelemetryMapping()
+{
+    SharedTelemetryMapping result;
+    result.mapping = repiu::platform::OpenHostSharedMappingFromEnvironment(
+        kLiveTelemetryEnvironment);
+    result.telemetry =
+        static_cast<SharedLiveTelemetry*>(result.mapping.view);
+    if (result.telemetry != nullptr &&
+        (result.telemetry->magic != kLiveTelemetryMagic ||
+         result.telemetry->version != kLiveTelemetryVersion))
+    {
+        result.telemetry = nullptr;
+        repiu::platform::CloseHostSharedMapping(&result.mapping);
+    }
+    return result;
+}
+
+void CopySnapshotFromContextRecord(const repiu::platform::GuestCpuContext& source,
+                                   X86ExecutionSnapshot* snapshot);
+
+// Nothing calls this today (Task 759 found no caller). `thread` is the host's
+// thread handle.
+void CaptureSuspendedThreadSnapshot(void* thread,
+                                    X86ExecutionSnapshot* snapshot)
+{
+    if (thread == nullptr || snapshot == nullptr)
+    {
+        return;
+    }
+    repiu::platform::GuestCpuContext thread_context = {};
+    if (repiu::platform::ReadSuspendedHostThreadContext(thread,
+                                                        &thread_context))
+    {
+        CopySnapshotFromContextRecord(thread_context, snapshot);
+    }
+}
+
 void CopySnapshotFromContextRecord(const repiu::platform::GuestCpuContext& source,
                                    X86ExecutionSnapshot* snapshot)
 {
@@ -1090,7 +1035,6 @@ void CopySnapshotFromContextRecord(const repiu::platform::GuestCpuContext& sourc
 // context, not whether the host is a 32-bit process. Linux x64 carries the
 // same guest fields in its platform context and must copy them as well; only a
 // native Windows x64 CONTEXT lacks these Eip/Eax-style fields.
-#if defined(_M_IX86) || defined(__i386__) || defined(__x86_64__)
     snapshot->captured = true;
     snapshot->eip = source.Eip;
     snapshot->eax = source.Eax;
@@ -1108,49 +1052,8 @@ void CopySnapshotFromContextRecord(const repiu::platform::GuestCpuContext& sourc
     snapshot->ss = static_cast<std::uint16_t>(source.SegSs);
     snapshot->fs = static_cast<std::uint16_t>(source.SegFs);
     snapshot->gs = static_cast<std::uint16_t>(source.SegGs);
-#else
-    (void)source;
-    snapshot->captured = false;
-#endif
 }
 
-#if defined(_WIN32)
-void CaptureSuspendedThreadSnapshot(HANDLE thread,
-                                    X86ExecutionSnapshot* snapshot)
-{
-    if (thread == nullptr || snapshot == nullptr)
-    {
-        return;
-    }
-
-#if defined(_M_IX86)
-    const repiu::platform::win32::Win32ThreadApi& api =
-        repiu::platform::win32::GetWin32ThreadApi();
-    if (api.suspend_thread == nullptr ||
-        api.get_thread_context == nullptr ||
-        api.resume_thread == nullptr)
-    {
-        return;
-    }
-
-    if (api.suspend_thread(thread) == static_cast<DWORD>(-1))
-    {
-        return;
-    }
-
-    repiu::platform::GuestCpuContext thread_context = {};
-    thread_context.ContextFlags = CONTEXT_FULL | CONTEXT_SEGMENTS;
-    if (api.get_thread_context(thread, &thread_context))
-    {
-        CopySnapshotFromContextRecord(thread_context, snapshot);
-    }
-    api.resume_thread(thread);
-#else
-    (void)thread;
-    snapshot->captured = false;
-#endif
-}
-#endif  // _WIN32
 
 bool BuildSingleStepSnapshot(const ThreadContext& context,
                              X86ExecutionSnapshot* snapshot)

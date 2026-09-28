@@ -1,18 +1,15 @@
 #ifndef REPIU_ENGINE_X87_CONTEXT_H_
 #define REPIU_ENGINE_X87_CONTEXT_H_
 
-#if defined(_WIN32)
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#endif
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::engine
 {
 
-#if defined(_WIN32)
-bool PushX87Float(CONTEXT* context, float value);
-#endif
+// Pushes `value` on the x87 register stack held in the context's save area.
+// Nothing calls it today (Task 759 found no caller); it is built on Win32
+// only, as it was.
+bool PushX87Float(repiu::platform::GuestCpuContext* context, float value);
 
 }  // namespace repiu::engine
 

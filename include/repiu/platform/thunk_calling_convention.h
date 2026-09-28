@@ -19,12 +19,15 @@
 // construction; elsewhere it expands to nothing so the declaration still
 // compiles.
 
-#if defined(_MSC_VER)
-#define REPIU_THUNK_RESOLVER_CALL __stdcall
-#elif (defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
-#define REPIU_THUNK_RESOLVER_CALL __attribute__((stdcall))
+// Task 758. Selection point: the definitions are per platform and architecture.
+#if defined(_WIN32)
+#include "repiu/platform/win32/thunk_calling_convention_win32.h"
+#elif defined(__EMSCRIPTEN__)
+#include "repiu/platform/web/thunk_calling_convention.h"
+#elif defined(__i386__)
+#include "repiu/platform/linux/x86/thunk_calling_convention.h"
 #else
-#define REPIU_THUNK_RESOLVER_CALL
+#include "repiu/platform/linux/x64/thunk_calling_convention.h"
 #endif
 
 #endif  // REPIU_PLATFORM_THUNK_CALLING_CONVENTION_H_

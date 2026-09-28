@@ -1,6 +1,7 @@
-#pragma once
+#ifndef REPIU_PLATFORM_HOST_CRASH_REPORT_H_
+#define REPIU_PLATFORM_HOST_CRASH_REPORT_H_
 
-namespace repiu::engine
+namespace repiu::platform
 {
 
 // Task 441: prints the faulting address and a symbolised host stack when an
@@ -15,6 +16,12 @@ namespace repiu::engine
 // Installed once from `main`. It fires only on an exception that would have
 // terminated the process anyway, so it can never mask a fault -- it prints and
 // then lets the process die.
+//
+// Task 759: in the platform layer, because all of it is the host's own
+// reporting. Linux installs nothing: an unhandled fault there is reported by
+// the platform fault handler (Task 578).
 void InstallHostCrashReporter();
 
-}  // namespace repiu::engine
+}  // namespace repiu::platform
+
+#endif  // REPIU_PLATFORM_HOST_CRASH_REPORT_H_

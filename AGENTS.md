@@ -200,7 +200,10 @@ If the requirement is a simple question or confirmation request, answer it direc
 
 ## 구현 규칙
 
-* 플랫폼 종속 코드는 `src/platform/win32/`, `src/platform/linux/`, `src/platform/web/` 아래에 둔다.
+* 플랫폼(OS) 종속 코드는 `src/platform/win32/`, `src/platform/linux/`, `src/platform/web/` 아래에 둔다. 엔진·런타임·HLE·도구 디렉터리에는 플랫폼·아키텍처 하위 디렉터리를 두지 않는다. 플랫폼 계층은 엔진의 타입을 알지 못한다: 엔진은 주소·버퍼·콜백 같은 기본 값으로 플랫폼 함수를 부르고, 엔진의 흐름과 엔진 타입을 다루는 코드는 엔진에 남긴다.
+* 엔진의 CPU 아키텍처 차이는 실행 모델로 표현한다. 실행 모델은 `direct`(게스트의 바이트를 그대로 실행: Win32, Linux i386)와 `cache`(번역한 long mode 코드 캐시를 실행: Linux x64) 둘이다. 엔진은 `include/repiu/runtime/execution_model.h`로 묻고, 모델에 따라 다른 구현은 공용 파일 옆에 `<이름>_direct.cpp`, `<이름>_cache.cpp`로 두며 CMake가 `REPIU_EXECUTION_MODEL`로 고른다. 기능을 켤지 여부나 한 호스트에서만 만든 진단을 아키텍처 디렉터리로 나누지 않는다.
+* 예외: Win32의 예외 진입(`execution_trampoline.cpp`의 Win32 스레드 프로시저와 `DispatchGuestException`, `exception_rescue_win32.cpp`)과 종료 복구의 vectored handler는 엔진의 상태를 쥐고 있어 엔진에 남아 있다. 이것을 플랫폼 계층의 콜백으로 바꾸는 일은 별도 작업이며, 그 전에 같은 모양의 Win32 코드를 엔진에 더하지 않는다.
+* 한 플랫폼 안에서 CPU 아키텍처에 따라 갈리는 코드는 그 플랫폼 디렉터리의 아키텍처 하위 디렉터리(예: `src/platform/linux/x86/`, `src/platform/linux/x64/`)에 두고, 플랫폼 디렉터리 자체에는 아키텍처 공용 코드만 둔다. 한 파일 안에 아키텍처 분기가 섞이면 공용 부분과 아키텍처 부분으로 나눈다. 공개 헤더도 같은 규칙을 따라 `include/repiu/platform/<플랫폼>/`과 그 아키텍처 하위 디렉터리(예: `include/repiu/platform/linux/x64/`)에 두고, 모든 호스트가 쓰는 플랫폼 중립 헤더만 `include/repiu/platform/`에 둔다.
 * 새 기능을 추가할 때는 테스트 전략 또는 최소 검증 절차를 문서에 함께 남긴다.
 * 코드 수정이 있는 작업은 영향 범위에 맞는 빌드 검증을 수행하고, 불가능하면 이유를 작업 로그에 남긴다.
 * 자산, 런타임 경로, 플랫폼 분기 정책은 코드와 문서에서 함께 관리한다.
@@ -214,7 +217,10 @@ If the requirement is a simple question or confirmation request, answer it direc
 
 ## Implementation Rules
 
-* Put platform-specific code under `src/platform/win32/`, `src/platform/linux/`, or `src/platform/web/`.
+* Put platform (OS) specific code under `src/platform/win32/`, `src/platform/linux/`, or `src/platform/web/`. The engine, runtime, HLE and tool directories have no platform or architecture subdirectories. The platform layer knows none of the engine's types: the engine calls platform functions with plain values (addresses, buffers, callbacks), and code that holds the engine's flow or its types stays in the engine.
+* Express the engine's difference by CPU architecture as an execution model. There are two: `direct` (the guest's bytes run as they are: Win32, Linux i386) and `cache` (the translated long-mode code cache runs: Linux x64). The engine asks through `include/repiu/runtime/execution_model.h`; implementations that differ by model sit next to their shared file as `<name>_direct.cpp` and `<name>_cache.cpp`, picked by CMake with `REPIU_EXECUTION_MODEL`. Do not turn whether a feature is on, or a diagnostic built on one host, into architecture directories.
+* The exception: Win32's exception entry (the Win32 thread procedure and `DispatchGuestException` in `execution_trampoline.cpp`, and `exception_rescue_win32.cpp`) and the shutdown recovery's vectored handlers hold engine state and remain in the engine. Turning them into callbacks of the platform layer is a task of its own; until then, add no more Win32 code of that shape to the engine.
+* Within one platform, put code that differs by CPU architecture in that platform directory's architecture subdirectory (for example `src/platform/linux/x86/` and `src/platform/linux/x64/`), and keep only architecture-shared code in the platform directory itself. When one file mixes architecture branches, split it into a shared part and per-architecture parts. Public headers follow the same rule under `include/repiu/platform/<platform>/` and its architecture subdirectories (for example `include/repiu/platform/linux/x64/`); only platform-neutral headers every host uses stay in `include/repiu/platform/`.
 * When adding a feature, document the test strategy or minimum verification procedure.
 * For tasks that modify code, run build verification appropriate to the impact. If verification is impossible, record the reason in the work log.
 * Manage assets, runtime paths, and platform branching policy in both code and documentation.

@@ -14,6 +14,41 @@ if(WIN32)
     add_compile_definitions(NOMINMAX)
 endif()
 
+# Task 758: the platform and architecture every platform-specific source list
+# below is chosen by. Platform code lives in <dir>/<platform>/ and
+# <dir>/<platform>/<arch>/ (see AGENTS.md); the web build reuses the linux/
+# POSIX files that have no reason to differ, as it already did for
+# host_environment and worker_signal (Task 513).
+if(EMSCRIPTEN)
+    set(REPIU_PLATFORM web)
+    set(REPIU_ARCH wasm32)
+elseif(WIN32)
+    set(REPIU_PLATFORM win32)
+    set(REPIU_ARCH x86)
+elseif(UNIX)
+    set(REPIU_PLATFORM linux)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        set(REPIU_ARCH x86)
+    else()
+        set(REPIU_ARCH x64)
+    endif()
+else()
+    message(FATAL_ERROR "rePIU builds for Win32, Linux and the web only")
+endif()
+
+# Task 759: how the host runs the guest. A 32-bit x86 host runs the guest's
+# bytes as they are (direct); an x86-64 host runs the translated long-mode code
+# cache (cache). The engine's sources that differ by it are named
+# <name>_direct.cpp and <name>_cache.cpp and sit next to their shared file; the
+# engine has no platform or architecture subdirectories (see AGENTS.md).
+if(REPIU_ARCH STREQUAL "x86")
+    set(REPIU_EXECUTION_MODEL direct)
+elseif(REPIU_ARCH STREQUAL "x64")
+    set(REPIU_EXECUTION_MODEL cache)
+else()
+    set(REPIU_EXECUTION_MODEL none)
+endif()
+
 # Task 503d: the AOT/DBT dispatch thunks are hand-written assembly on Linux,
 # because GCC has no __declspec(naked) on x86.
 #
@@ -217,6 +252,7 @@ add_library(repiu_exe
     src/runtime/dos_low_memory.cpp
     src/runtime/env_toggle.cpp
     src/runtime/execution_backend.cpp
+    src/runtime/execution_model_${REPIU_EXECUTION_MODEL}.cpp
     src/runtime/execution_timeout.cpp
     src/runtime/image_address.cpp
     src/runtime/runtime_memory_arena.cpp
@@ -226,7 +262,6 @@ add_library(repiu_exe
     src/storage/nvram_path.cpp
     src/target/target_profile.cpp
     src/platform/guest_stack_switch_state.cpp
-    src/platform/host_error_stream.cpp
     src/platform/build_identity.cpp
     src/platform/host_thread.cpp
     src/platform/host_time.cpp
@@ -295,8 +330,6 @@ target_sources(repiu_exe
         src/engine/dos/dpmi_mscdex_services.cpp
         src/engine/exception/breakpoint_evidence.cpp
         src/engine/exception/guest_owned_breakpoint.cpp
-        src/engine/exception/exception_rescue_win32.cpp
-        src/engine/exception/host_crash_report.cpp
         src/engine/cpu_emul/guest_memory_access.cpp
         src/engine/cpu_emul/instruction_emulation.cpp
         src/engine/cpu_emul/interrupt_return.cpp
@@ -360,15 +393,107 @@ target_sources(repiu_exe
         src/engine/out_of_arena_step_census.cpp
         src/engine/glide_opengl_backend.cpp
         src/engine/glide_opengl_shader.cpp
-        src/engine/x87_context.cpp
         src/engine/runtime_memory_policy.cpp
-        src/platform/win32/virtual_memory_win32.cpp
-        src/platform/win32/fault_handler_win32.cpp
-        src/platform/win32/worker_signal_win32.cpp
-        src/platform/win32/safe_memory_copy_win32.cpp
-        src/platform/win32/host_environment_win32.cpp
-        src/platform/win32/host_process_win32.cpp
 )
+endif()
+
+# Task 759: the engine's sources that differ by execution model or exist for
+# one host. The engine has no platform or architecture subdirectories; what
+# depends on the OS is in the platform layer below. The engine is not built for
+# the web.
+if(NOT EMSCRIPTEN)
+    if(REPIU_PLATFORM STREQUAL "win32")
+        target_sources(repiu_exe
+            PRIVATE
+                src/engine/x87_context.cpp
+                src/engine/exception/exception_rescue_win32.cpp
+        )
+    endif()
+    # Task 759: the sources that differ by execution model.
+    target_sources(repiu_exe
+        PRIVATE
+            src/engine/aot/aot_dbt_dispatch_thunks_${REPIU_EXECUTION_MODEL}.cpp
+            src/engine/execution/execution_trampoline_${REPIU_EXECUTION_MODEL}.cpp
+            src/engine/native_phase_sampler_${REPIU_EXECUTION_MODEL}.cpp
+    )
+    # A diagnostic of the Linux x64 host.
+    if(REPIU_PLATFORM STREQUAL "linux" AND REPIU_ARCH STREQUAL "x64")
+        target_sources(repiu_exe
+            PRIVATE
+                src/engine/telemetry/linux_x64_native_write_trace.cpp
+        )
+    endif()
+endif()
+
+# Task 758: the platform layer's per-platform sources. Before this, the six
+# Win32 files above sat in the engine list and compiled to empty objects on
+# Linux behind whole-file #if guards.
+if(REPIU_PLATFORM STREQUAL "win32")
+    target_sources(repiu_exe
+        PRIVATE
+            src/platform/win32/virtual_memory_win32.cpp
+            src/platform/win32/fault_handler_win32.cpp
+            src/platform/win32/worker_signal_win32.cpp
+            src/platform/win32/safe_memory_copy_win32.cpp
+            src/platform/win32/host_environment_win32.cpp
+            src/platform/win32/host_process_win32.cpp
+            src/platform/win32/host_thread_win32.cpp
+            src/platform/win32/host_time_win32.cpp
+            src/platform/win32/host_error_stream_win32.cpp
+            src/platform/win32/build_identity_win32.cpp
+    )
+    # Task 759: the thunks and the stack switch, MSVC inline assembly. The
+    # Linux i386 counterparts are the .S files in src/platform/linux/x86/.
+    if(NOT EMSCRIPTEN)
+        target_sources(repiu_exe
+            PRIVATE
+                src/platform/win32/aot_dbt_dispatch_thunks_win32.cpp
+                src/platform/win32/guest_stack_switch_win32.cpp
+        )
+    endif()
+    # Task 759: what the engine asks of the host beyond running the guest.
+    if(NOT EMSCRIPTEN)
+        target_sources(repiu_exe
+            PRIVATE
+                src/platform/win32/host_crash_report_win32.cpp
+                src/platform/win32/host_fault_report_win32.cpp
+                src/platform/win32/host_gpu_driver_win32.cpp
+                src/platform/win32/host_symbols_win32.cpp
+                src/platform/win32/host_telemetry_win32.cpp
+                src/platform/win32/host_trace_descriptor_win32.cpp
+        )
+    endif()
+else()
+    # POSIX, shared by the Linux and web builds.
+    target_sources(repiu_exe
+        PRIVATE
+            src/platform/linux/host_thread.cpp
+            src/platform/linux/host_time.cpp
+            src/platform/linux/host_error_stream.cpp
+    )
+endif()
+if(REPIU_PLATFORM STREQUAL "linux")
+    target_sources(repiu_exe
+        PRIVATE
+            # Task 759: what the engine asks of the host beyond running the guest.
+            src/platform/linux/host_crash_report.cpp
+            src/platform/linux/host_fault_report.cpp
+            src/platform/linux/host_gpu_driver.cpp
+            src/platform/linux/${REPIU_ARCH}/host_gpu_driver_arch.cpp
+            src/platform/linux/host_symbols.cpp
+            src/platform/linux/host_telemetry.cpp
+            src/platform/linux/host_trace_descriptor.cpp
+            src/platform/linux/host_cycle_counter.cpp
+            src/platform/linux/build_identity.cpp
+            src/platform/linux/${REPIU_ARCH}/build_identity.cpp
+    )
+endif()
+if(REPIU_PLATFORM STREQUAL "web")
+    target_sources(repiu_exe
+        PRIVATE
+            src/platform/web/host_cycle_counter.cpp
+            src/platform/web/build_identity.cpp
+    )
 endif()
 
 # Task 513: the web platform layer.
@@ -422,33 +547,41 @@ endfunction()
 
 # Task 503a-503c: the Linux platform layer. It holds the guest register context
 # conversion, the virtual memory API, and the signal-based fault handler.
+#
+# Task 757: src/platform/linux/ holds what i386 and x86-64 share; what differs
+# lives in x86/ and x64/, chosen here by pointer size. Each architecture file
+# checks its own architecture with #error, so a wrong pick fails to compile.
 if(UNIX AND NOT EMSCRIPTEN)
     target_sources(repiu_exe
         PRIVATE
             src/platform/linux/guest_cpu_context.cpp
             src/platform/linux/virtual_memory.cpp
             src/platform/linux/fault_handler.cpp
+            src/platform/linux/fault_report_writer.cpp
             src/platform/linux/worker_signal.cpp
             src/platform/linux/safe_memory_copy.cpp
             src/platform/linux/host_environment.cpp
             src/platform/linux/host_process.cpp
     )
 
-    # Task 545: both assembly units below are i386 execution contracts. They
+    # Task 545: the assembly units below are i386 execution contracts. They
     # use 32-bit registers, stack frames, and selector state; collecting them
     # in an x64 build does not provide a partial port and only hides the next
     # C++/link barrier behind an assembler failure.
     if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-        # Task 503d-12: the five dispatch thunks. Their resolvers are still
-        # Win32-only sources, so nothing on Linux references these symbols
-        # yet and the archive member simply goes unused until it does.
         target_sources(repiu_exe
             PRIVATE
-                src/platform/linux/aot_dbt_dispatch_thunks.S
+                src/platform/linux/x86/guest_cpu_context.cpp
+                src/platform/linux/x86/fault_handler_arch.cpp
+                # Task 503d-12: the five dispatch thunks. Their resolvers are
+                # still Win32-only sources, so nothing on Linux references these
+                # symbols yet and the archive member simply goes unused until it
+                # does.
+                src/platform/linux/x86/aot_dbt_dispatch_thunks.S
                 # Task 503d-16: the trampoline's three entries into the guest.
                 # These do link today -- the globals they read moved to a
                 # source built on every host, so the probe can call them.
-                src/platform/linux/guest_stack_switch.S
+                src/platform/linux/x86/guest_stack_switch.S
         )
     endif()
 
@@ -458,19 +591,20 @@ if(UNIX AND NOT EMSCRIPTEN)
     if(CMAKE_SIZEOF_VOID_P GREATER 4)
         target_sources(repiu_exe
             PRIVATE
-                src/engine/telemetry/linux_x64_native_write_trace.cpp
-                src/platform/linux/aot_dbt_dispatch_x64.cpp
-                src/platform/linux/aot_dbt_return_thunk_x64.S
-                src/platform/linux/aot_dbt_glide_gate_thunk_x64.S
+                src/platform/linux/x64/guest_cpu_context.cpp
+                src/platform/linux/x64/fault_handler_arch.cpp
+                src/platform/linux/x64/aot_dbt_dispatch_x64.cpp
+                src/platform/linux/x64/aot_dbt_return_thunk_x64.S
+                src/platform/linux/x64/aot_dbt_glide_gate_thunk_x64.S
                 # Task 575: the two fault-recovery symbols the fence above
                 # takes away. They are the only ones an x64 `repiu` link was
                 # missing, and they are `ud2` here rather than a return --
                 # nothing on x64 can reach them, and the file says why.
-                src/platform/linux/guest_stack_recover_x64.S
+                src/platform/linux/x64/guest_stack_recover_x64.S
                 # Task 578: the guest entry itself. Not the guest's own bytes --
                 # the placed long-mode cache, with guest state loaded under Task
                 # 558's mapping.
-                src/platform/linux/guest_entry_x64.S
+                src/platform/linux/x64/guest_entry_x64.S
         )
     endif()
 endif()

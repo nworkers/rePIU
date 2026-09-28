@@ -2,7 +2,7 @@
 // dispatch thunk; it checks the ABI contract that the production bridge must
 // satisfy before it is allowed to cross into a resolver.
 
-#include "repiu/platform/linux_x64_aot_frame.h"
+#include "repiu/platform/linux/x64/linux_x64_aot_frame.h"
 
     .intel_syntax noprefix
     .text

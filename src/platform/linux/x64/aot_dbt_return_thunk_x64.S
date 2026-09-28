@@ -13,7 +13,7 @@
 // still gets an INT3: what long mode cannot complete safely reaches a boundary
 // rather than being guessed at.
 
-#include "repiu/platform/linux_x64_aot_frame.h"
+#include "repiu/platform/linux/x64/linux_x64_aot_frame.h"
 
     .intel_syntax noprefix
     .text

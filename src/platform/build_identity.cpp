@@ -1,37 +1,11 @@
 #include "repiu/platform/build_identity.h"
 
+// Task 758. The configuration part of the build identity, shared by every host.
+// BuildPlatformName and BuildArchitectureName are defined per platform and
+// architecture (win32/, linux/, linux/x86/, linux/x64/, web/).
+
 namespace repiu::platform
 {
-
-std::string_view BuildPlatformName()
-{
-#if defined(__EMSCRIPTEN__)
-    return "Web";
-#elif defined(_WIN32)
-    return "Win";
-#elif defined(__linux__)
-    return "Linux";
-#else
-    return "Unknown";
-#endif
-}
-
-std::string_view BuildArchitectureName()
-{
-#if defined(__wasm32__)
-    return "wasm32";
-#elif defined(_M_X64) || defined(__x86_64__)
-    return "x64";
-#elif defined(_M_IX86) || defined(__i386__)
-    return "x86";
-#elif defined(_M_ARM64) || defined(__aarch64__)
-    return "arm64";
-#elif SIZE_MAX > 0xFFFFFFFFu
-    return "ptr64";
-#else
-    return "ptr32";
-#endif
-}
 
 std::string_view BuildConfigurationName()
 {

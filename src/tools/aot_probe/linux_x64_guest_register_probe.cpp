@@ -2,9 +2,9 @@
 #include "repiu/runtime/aot_segment_patch.h"
 
 #include "repiu/platform/fault_handler.h"
-#include "repiu/platform/linux_x64_aot_dispatch.h"
-#include "repiu/platform/linux_x64_guest_entry.h"
-#include "repiu/platform/linux_x64_guest_registers.h"
+#include "repiu/platform/linux/x64/linux_x64_aot_dispatch.h"
+#include "repiu/platform/linux/x64/linux_x64_guest_entry.h"
+#include "repiu/platform/linux/x64/linux_x64_guest_registers.h"
 #include "repiu/platform/virtual_memory.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_code_cache_reservation.h"

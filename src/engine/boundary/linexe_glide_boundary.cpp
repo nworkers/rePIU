@@ -1,4 +1,5 @@
 #include "repiu/engine/aot_boundary_opcode_census.h"
+#include "repiu/runtime/execution_model.h"
 #include "linexe_glide_boundary.h"
 #include "aot/aot_runtime_dispatch.h"
 #include "execution_internal.h"
@@ -1322,21 +1323,22 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
 namespace
 {
 
-// Task 750. Linux x64 only, where it is on unless `0` turns it off. On
-// Win32 (i386) the first injected tick never returned to the call -- the run
-// stalled without a fault -- so the switch does not reach that host until
-// its continuation is made to work.
+// Task 750. Where the execution model can inject during the wait (the cache
+// model, Linux x64) it is on unless `0` turns it off. On the direct model the
+// first injected tick never returned to the call -- the run stalled without
+// a fault on Win32 -- so the switch does not reach those hosts until that
+// continuation is made to work.
 bool GlideSwapWaitTicksEnabled()
 {
-#if defined(__x86_64__) && !defined(_WIN32)
+    if (!runtime::execution_model::InjectsTicksDuringSwapWait())
+    {
+        return false;
+    }
     static const bool enabled = [] {
         const char* const value = std::getenv("REPIU_GLIDE_SWAP_WAIT_TICKS");
         return value == nullptr || value[0] != '0';
     }();
     return enabled;
-#else
-    return false;
-#endif
 }
 
 // Task 750. The address of the `call rel32` that reached the gate, or zero.

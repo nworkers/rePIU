@@ -142,65 +142,6 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtIndirectMissFrame(
         1, std::memory_order_relaxed);
 }
 
-#if defined(_MSC_VER) && defined(_M_IX86)
-extern "C" __declspec(naked) void AotDbtIndirectMissThunk()
-{
-    __asm
-    {
-        pushfd
-        pushad
-        mov esi, esp
-        mov ecx, dword ptr [g_repiu_active_thread_context]
-        test ecx, ecx
-        jz fail_without_host
-        mov eax, dword ptr [g_repiu_dbt_host_esp]
-        test eax, eax
-        jz fail_without_host
-
-        mov edx, dword ptr [g_repiu_dbt_host_stack_base]
-        mov dword ptr fs:[4], edx
-        mov edx, dword ptr [g_repiu_dbt_host_stack_limit]
-        mov dword ptr fs:[8], edx
-        mov esp, eax
-        // The C++ resolver clobbers x87/MMX/SSE state that the guest may hold
-        // live across this indirect call (Glide init is FP-heavy). The VEH path
-        // preserves it through the OS exception context; reproduce that here by
-        // saving and restoring it around the call. edi survives the stdcall.
-        sub esp, 512
-        and esp, -16
-        fxsave [esp]
-        mov edi, esp
-        push esi
-        push ecx
-        call ResolveAotDbtIndirectMissFrame
-        fxrstor [edi]
-
-        mov eax, dword ptr [g_repiu_dbt_guest_stack_base]
-        mov dword ptr fs:[4], eax
-        mov eax, dword ptr [g_repiu_dbt_guest_stack_limit]
-        mov dword ptr fs:[8], eax
-        mov esp, esi
-        popad
-        popfd
-        ret
-
-    fail_without_host:
-        mov eax, dword ptr [esp + 40]
-        add eax, 21
-        mov dword ptr [esp + 36], eax
-        popad
-        popfd
-        ret
-    }
-}
-#endif
-
-#if !defined(_MSC_VER) && defined(__i386__)
-// Task 503d-12: the same thunk on Linux, one instantiation of the shared
-// bridge macro in src/platform/linux/aot_dbt_dispatch_thunks.S. GCC has no
-// naked functions on x86, so only the declaration is here.
-extern "C" void AotDbtIndirectMissThunk();
-#endif
 
 }  // namespace
 
@@ -224,13 +165,7 @@ void RecordAotDbtIndirectFallback(
         1U, std::memory_order_relaxed);
 }
 
-void* GetAotDbtIndirectMissThunkAddress()
-{
-#if (defined(_MSC_VER) && defined(_M_IX86)) || defined(__i386__)
-    return reinterpret_cast<void*>(&AotDbtIndirectMissThunk);
-#else
-    return nullptr;
-#endif
-}
+// Task 759. GetAotDbtIndirectMissThunkAddress is in
+// aot_dbt_dispatch_thunks_direct.cpp and aot_dbt_dispatch_thunks_cache.cpp.
 
 }  // namespace repiu::engine

@@ -5,7 +5,7 @@
 // are the same macro, expanded with a resolver the probe supplies. Whatever is
 // wrong with them here is wrong in all five.
 
-#include "../../platform/linux/stack_bridge.inc.S"
+#include "../../platform/linux/x86/stack_bridge.inc.S"
 
     .text
 

@@ -6,7 +6,7 @@
 #include "../../engine/boundary/linexe_glide_boundary.h"
 #include "../../engine/aot/aot_runtime_dispatch.h"
 #include "repiu/hle/glide_hle.h"
-#include "repiu/platform/linux_x64_aot_dispatch.h"
+#include "repiu/platform/linux/x64/linux_x64_aot_dispatch.h"
 #include "repiu/platform/virtual_memory.h"
 #include "repiu/runtime/selector_table.h"
 

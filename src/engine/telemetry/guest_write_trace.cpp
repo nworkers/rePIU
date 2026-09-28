@@ -9,9 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#if !defined(_WIN32)
-#include <unistd.h>
-#endif
+#include "repiu/platform/host_trace_descriptor.h"
 
 namespace repiu::engine
 {
@@ -329,12 +327,8 @@ void DumpGuestWriteTraceTail(const int file_descriptor)
         char line[1024] = {};
         std::size_t length = 0U;
         WriteTraceRecord(line, &length, record);
-#if !defined(_WIN32)
-        const ssize_t written = write(file_descriptor, line, length);
-        (void)written;
-#else
-        (void)file_descriptor;
-#endif
+        repiu::platform::WriteHostTraceDescriptor(file_descriptor, line,
+                                                  length);
     }
 }
 

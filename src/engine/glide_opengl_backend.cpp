@@ -8,24 +8,18 @@
 #include "repiu/platform/build_identity.h"
 #include "sdl_bios_keyboard_adapter.h"
 #include "sdl_input_script.h"
+#include "repiu/platform/host_gpu_driver.h"
 
 
 // SDL is this project's cross-platform layer, so these need no guard. They had
 // one because nothing had ever compiled this file anywhere else, and on Linux
 // it removed every GL declaration the file uses.
-#if defined(__linux__)
-#include <unistd.h>
-#endif
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 
-// Task 419: the pause hint for the rendezvous spin. MSVC spells it in
-// <intrin.h>; on GCC it lives with the SSE2 intrinsics.
-#if defined(_MSC_VER)
-#include <intrin.h>
-#elif defined(__i386__) || defined(__x86_64__)
-#include <xmmintrin.h>
-#endif
+// Task 419: the pause hint for the rendezvous spin. Task 758: <immintrin.h>
+// declares it on MSVC and GCC alike, for every host the engine builds for.
+#include <immintrin.h>
 
 #include <algorithm>
 #include <atomic>
@@ -50,39 +44,6 @@ namespace repiu::engine {
 
 // Task 748. Wraps the player so the backend header needs only a forward
 // declaration.
-// Task 752. WSL hands the GPU to Linux only through Mesa's D3D12 driver, and
-// Mesa picks llvmpipe unless told otherwise, so a machine with a GPU drew in
-// software. Chosen when the paravirtual GPU device and the driver are both
-// there and the user has not chosen for themselves; `REPIU_WSL_D3D12=0` keeps
-// Mesa's own choice.
-bool SelectWslD3d12Driver() {
-#if defined(__linux__)
-  const char *const choice = std::getenv("REPIU_WSL_D3D12");
-  if (choice != nullptr && choice[0] == '0') {
-    return false;
-  }
-  if (std::getenv("GALLIUM_DRIVER") != nullptr ||
-      std::getenv("MESA_LOADER_DRIVER_OVERRIDE") != nullptr ||
-      std::getenv("LIBGL_ALWAYS_SOFTWARE") != nullptr) {
-    return false;
-  }
-  if (access("/dev/dxg", F_OK) != 0) {
-    return false;
-  }
-  static const char *const kDrivers[] = {
-      "/usr/lib/x86_64-linux-gnu/dri/d3d12_dri.so",
-      "/usr/lib/i386-linux-gnu/dri/d3d12_dri.so",
-      "/usr/lib64/dri/d3d12_dri.so",
-      "/usr/lib/dri/d3d12_dri.so",
-  };
-  for (const char *const driver : kDrivers) {
-    if (access(driver, R_OK) == 0) {
-      return setenv("GALLIUM_DRIVER", "d3d12", 0) == 0;
-    }
-  }
-#endif
-  return false;
-}
 
 class SdlInputScriptPlayerHandle {
 public:
@@ -409,9 +370,7 @@ bool GlideOpenGlBackend::SpinForRendezvousHint(const std::atomic<bool> &hint,
         }
         return true;
       }
-#if defined(_MSC_VER) || defined(__i386__) || defined(__x86_64__)
       _mm_pause();
-#endif
     }
     if (std::chrono::steady_clock::now() >= deadline) {
       break;
@@ -1047,7 +1006,8 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
   const int window_width = static_cast<int>(logical_width * window_scale_);
   const int window_height = static_cast<int>(logical_height * window_scale_);
 
-  glide_swap_interval_policy_.wsl_d3d12_selected = SelectWslD3d12Driver();
+  glide_swap_interval_policy_.wsl_d3d12_selected =
+      repiu::platform::SelectWslD3d12Driver();
   if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
     dummy_mode_ = true;
     logical_width_ = logical_width;

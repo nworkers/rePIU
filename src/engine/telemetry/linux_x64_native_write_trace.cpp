@@ -1,6 +1,10 @@
-#include "repiu/platform/linux_x64_aot_dispatch.h"
+#include "repiu/platform/linux/x64/linux_x64_aot_dispatch.h"
 
-#if !defined(_WIN32) && defined(__x86_64__)
+// Task 759. A diagnostic of the Linux x64 host; CMake builds this file only
+// there.
+#if defined(_WIN32) || !defined(__x86_64__)
+#error "linux_x64_native_write_trace.cpp is built on Linux x64 only"
+#endif
 
 #include "../cpu_emul/guest_memory_access.h"
 #include "repiu/engine/glide_lfb_native_store_census.h"
@@ -248,4 +252,3 @@ extern "C" void RepiuLinuxX64NativeMemoryWriteTrace(
         nullptr);
 }
 
-#endif  // !defined(_WIN32) && defined(__x86_64__)

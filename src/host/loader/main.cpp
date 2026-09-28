@@ -18,7 +18,7 @@
 #include "../../engine/telemetry/aot_residency_sample.h"
 #include "../../engine/io/port_io_delay_loop.h"
 #include "../../engine/aot/aot_generation_failure_policy.h"
-#include "../../engine/exception/host_crash_report.h"
+#include "repiu/platform/host_crash_report.h"
 #include "repiu/engine/aot_boundary_opcode_census.h"
 #include "repiu/engine/live_telemetry.h"
 #include "repiu/engine/veh_exit_site.h"
@@ -5103,7 +5103,7 @@ int main(int argc, char** argv)
 {
     // Task 441: first thing, so a host crash anywhere after this point names
     // itself instead of vanishing into an exit code.
-    repiu::engine::InstallHostCrashReporter();
+    repiu::platform::InstallHostCrashReporter();
     std::shared_ptr<spdlog::logger> logger = CreateLoaderLogger();
 
     if (LauncherRequested(argc))

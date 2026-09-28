@@ -8,20 +8,7 @@
 #include <limits>
 #include <sstream>
 
-#if defined(_WIN32)
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-using DWORD = unsigned long;
-constexpr DWORD MEM_COMMIT = 0x00001000;
-constexpr DWORD MEM_FREE = 0x00010000;
-constexpr DWORD MEM_RESERVE = 0x00002000;
-constexpr DWORD PAGE_READONLY = 0x02;
-constexpr DWORD PAGE_READWRITE = 0x04;
-constexpr DWORD PAGE_EXECUTE_READ = 0x20;
-constexpr DWORD PAGE_EXECUTE_READWRITE = 0x40;
-#endif
+#include "repiu/runtime/execution_model.h"
 
 namespace repiu::engine
 {
@@ -33,11 +20,7 @@ bool IsDirectX86ExecutionSupported()
 // Task 503d-19: the same answer the trampoline gives, and for the same reason.
 // Running the guest's code in this process needs a 32-bit x86 host; the Win32
 // APIs it used to also need are in the platform layer.
-#if defined(_M_IX86) || defined(__i386__)
-    return true;
-#else
-    return false;
-#endif
+    return runtime::execution_model::RunsGuestBytesDirectly();
 }
 
 // Task 503d-19. The three states a region can be in, as the diagnostic that

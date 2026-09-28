@@ -1,265 +1,13 @@
 #include "repiu/platform/host_thread.h"
 
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#else
-#include <csignal>
-#include <pthread.h>
-#include <sched.h>
-#include <sys/syscall.h>
-#include <time.h>
-#include <ucontext.h>
-#include <unistd.h>
+#include "host_thread_platform.h"
 
-#include <atomic>
-#endif
-
-#include <new>
+// Task 758. The host thread API's argument checks, shared by every host. The
+// thread itself is started, sampled and released by host_thread_platform.h,
+// defined in win32/ and linux/.
 
 namespace repiu::platform
 {
-namespace
-{
-
-// Task 503d-18. The entry the engine writes is `std::uint32_t(void*)`, and
-// neither host starts a thread with that signature, so each backend carries a
-// record with the real entry and its argument and a trampoline of its own
-// shape. The record is heap-allocated because it has to outlive the call that
-// created the thread.
-struct HostThreadRecord
-{
-    HostThreadEntry entry = nullptr;
-    void* parameter = nullptr;
-#if !defined(_WIN32)
-    pthread_t thread{};
-    // Written by the thread, read by a caller that must not block. Release on
-    // the store and acquire on the load, so the exit code beside it is visible
-    // to whoever sees the flag set.
-    std::atomic<bool> finished{false};
-    std::atomic<std::uint32_t> exit_code{0};
-    std::atomic<bool> joined{false};
-
-    // Task 503d-20. The interrupt's handshake, as one state rather than a pair
-    // of flags.
-    //
-    // Task 503d-22: two flags were wrong, and wrong in a way that corrupted
-    // memory. A signal already on its way cannot be cancelled, so a requester
-    // that timed out and returned would leave the handler to run afterwards --
-    // against a `user_data` that had been a local of the caller's frame.
-    // Checking a flag and then clearing it cannot fix that: the handler can
-    // pass the check an instant before the clear.
-    //
-    // The states below are claimed with a compare-exchange, which makes the
-    // question "did the handler start" answerable exactly once. A requester
-    // that loses the race has to wait for `kDone`, because by then the handler
-    // is already touching its memory.
-    enum class InterruptState : std::uint8_t
-    {
-        kIdle,
-        kRequested,
-        kRunning,
-        kDone,
-        kAbandoned,
-    };
-    std::atomic<InterruptState> interrupt_state{InterruptState::kIdle};
-    ThreadInterruptCallback interrupt_callback = nullptr;
-    ThreadInterruptContextCallback interrupt_context_callback = nullptr;
-    void* interrupt_user_data = nullptr;
-#endif
-};
-
-#if defined(_WIN32)
-
-DWORD WINAPI HostThreadTrampoline(void* parameter)
-{
-    auto* record = static_cast<HostThreadRecord*>(parameter);
-    const std::uint32_t result = record->entry(record->parameter);
-    // Freed here rather than in CloseHostThread, because on this host nothing
-    // reads the record after the entry returns: the exit code lives in the
-    // thread object the handle names. The POSIX record cannot do this -- a
-    // caller still reads the completion flag out of it.
-    delete record;
-    return static_cast<DWORD>(result);
-}
-
-#else
-
-void* HostThreadTrampoline(void* parameter)
-{
-    auto* record = static_cast<HostThreadRecord*>(parameter);
-    const std::uint32_t result = record->entry(record->parameter);
-    record->exit_code.store(result, std::memory_order_relaxed);
-    record->finished.store(true, std::memory_order_release);
-    return nullptr;
-}
-
-// `pthread_timedjoin_np` wants an absolute CLOCK_REALTIME deadline rather than
-// a duration, which is the one thing about it that is easy to get wrong.
-timespec DeadlineFromNow(const std::uint32_t milliseconds)
-{
-    timespec deadline{};
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    constexpr long kNanosecondsPerSecond = 1000000000L;
-    deadline.tv_sec += static_cast<time_t>(milliseconds / 1000U);
-    deadline.tv_nsec +=
-        static_cast<long>(milliseconds % 1000U) * 1000000L;
-    if (deadline.tv_nsec >= kNanosecondsPerSecond)
-    {
-        deadline.tv_nsec -= kNanosecondsPerSecond;
-        ++deadline.tv_sec;
-    }
-    return deadline;
-}
-
-#endif
-
-#if !defined(_WIN32)
-
-// Task 503d-20. A real-time signal, because 3c already owns SIGSEGV, SIGBUS,
-// SIGTRAP, SIGILL and SIGFPE, and a fault handler that fired for this would
-// classify it as a guest fault.
-//
-// SIGRTMIN rather than SIGUSR1: the two SIGUSR signals belong to whoever
-// embeds this, and a real-time signal is the one range a library can take
-// without arguing about it.
-int InterruptSignal()
-{
-    return SIGRTMIN;
-}
-
-// The record whose sample is being taken. One at a time: the callers are a
-// watchdog and a diagnostic, neither of which runs concurrently with itself,
-// and a per-thread registry would be state to keep correct for no gain.
-std::atomic<HostThreadRecord*> g_interrupt_target{nullptr};
-
-void InterruptSignalHandler(int, siginfo_t*, void* host_context)
-{
-    HostThreadRecord* record =
-        g_interrupt_target.load(std::memory_order_acquire);
-    if (record == nullptr)
-    {
-        return;
-    }
-    // Task 503d-22. The signal has to have arrived on the thread the request
-    // named. 3d-20 deliberately did not ask -- a delivery that belonged to no
-    // request could not happen then -- but abandonment creates exactly that: a
-    // signal left behind by a request already given up on, which cannot be
-    // recalled and which the *next* request is what it arrives during. Claiming
-    // that one would run the callback against a different thread's registers,
-    // and one of the two callers edits them.
-    //
-    // `record->thread` is written by `pthread_create` before `CreateHostThread`
-    // returns, and no request can exist before that, so the handler never reads
-    // it unset. `pthread_self` is async-signal-safe and `pthread_equal` is a
-    // comparison.
-    if (!pthread_equal(pthread_self(), record->thread))
-    {
-        return;
-    }
-    // Claiming the request is what makes the callback's `user_data` safe to
-    // touch: whoever loses this exchange does not run the callback, and the
-    // requester that loses it waits instead of returning.
-    auto expected = HostThreadRecord::InterruptState::kRequested;
-    if (!record->interrupt_state.compare_exchange_strong(
-            expected, HostThreadRecord::InterruptState::kRunning,
-            std::memory_order_acq_rel))
-    {
-        // A stray or late delivery. Ignoring it is right: the request it
-        // belonged to has been answered or abandoned.
-        return;
-    }
-
-    GuestCpuContext registers;
-    if (LoadGuestCpuContext(host_context, &registers) &&
-        (record->interrupt_callback != nullptr ||
-         record->interrupt_context_callback != nullptr))
-    {
-        bool write_back = false;
-        if (record->interrupt_context_callback != nullptr)
-        {
-            write_back = record->interrupt_context_callback(
-                &registers, record->interrupt_user_data, host_context);
-        }
-        else
-        {
-            write_back = record->interrupt_callback(
-                &registers, record->interrupt_user_data);
-        }
-        if (write_back)
-        {
-            StoreGuestCpuContext(registers, host_context);
-        }
-    }
-    record->interrupt_state.store(HostThreadRecord::InterruptState::kDone,
-                                  std::memory_order_release);
-}
-
-// Installed once, on first use rather than at startup: a process that never
-// interrupts a thread should not have a handler for this signal at all, and
-// nothing here can install it before the callers exist.
-//
-// SA_ONSTACK matters for the guest thread, which runs on the guest's stack with
-// a sigaltstack that 3c installed. Without it the handler frame lands on the
-// guest's own stack, which is the stack this is usually called to inspect. A
-// thread with no alternate stack simply ignores the flag.
-//
-// SA_NODEFER is deliberately absent, and this is the place that says so,
-// because the absence has been mistaken for an oversight once already.
-//
-// Without it the kernel blocks this signal while its own handler runs and
-// unblocks it on return, so the handler cannot interrupt itself. 3c's fault
-// handler sets the opposite for a reason its own comment gives -- the engine
-// plants breakpoints and single-steps from inside that handler, so nesting is
-// normal there. This handler has the opposite shape: it copies registers and
-// returns. There is nothing here to nest.
-//
-// What made this look like a defect is a genuine finding, read out of /proc on
-// a stalled guest: SigBlk and SigPnd both carrying this signal's bit, meaning
-// the thread sat inside a handler that had not returned, so every later request
-// went pending and timed out. **That is the diagnostic, not the bug.** Exactly
-// one signal being blocked on exactly one thread is what says "the handler did
-// not return", and it says it only because the masking is on.
-//
-// Adding SA_NODEFER would not make a stuck handler return. It would let the
-// next delivery nest into one that is already stuck -- and on this thread, which
-// is already running on 3c's alternate stack, a nested frame goes on that same
-// alternate stack and can quietly overflow it. It would trade a legible timeout
-// for an unreadable one. The open question is why the handler does not return,
-// and this flag is not it.
-bool EnsureInterruptHandler()
-{
-    static const bool installed = []() {
-        struct sigaction action = {};
-        action.sa_sigaction = &InterruptSignalHandler;
-        action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
-        sigemptyset(&action.sa_mask);
-        return sigaction(InterruptSignal(), &action, nullptr) == 0;
-    }();
-    return installed;
-}
-
-#endif
-
-}  // namespace
-
-std::uint32_t CurrentThreadId()
-{
-#if defined(_WIN32)
-    return static_cast<std::uint32_t>(GetCurrentThreadId());
-#elif defined(SYS_gettid)
-    // Not pthread_self: that is a pointer-like handle private to the C library,
-    // while this is the number the kernel, /proc, and a debugger all use.
-    return static_cast<std::uint32_t>(::syscall(SYS_gettid));
-#else
-    return 0U;
-#endif
-}
 
 bool CreateHostThread(HostThreadEntry entry,
                       void* parameter,
@@ -276,53 +24,8 @@ bool CreateHostThread(HostThreadEntry entry,
     }
     *thread = HostThread{};
 
-    auto* record = new (std::nothrow) HostThreadRecord{};
-    if (record == nullptr)
-    {
-        return false;
-    }
-    record->entry = entry;
-    record->parameter = parameter;
-
-#if defined(_WIN32)
-    DWORD thread_id = 0;
-    HANDLE handle = CreateThread(nullptr, 0, HostThreadTrampoline, record, 0,
-                                 &thread_id);
-    if (handle == nullptr)
-    {
-        if (host_error != nullptr)
-        {
-            *host_error = static_cast<std::uint32_t>(GetLastError());
-        }
-        delete record;
-        return false;
-    }
-    // What identifies the thread from here on is the handle; the record is the
-    // trampoline's own and it frees it.
-    thread->handle = handle;
-    thread->id = static_cast<std::uint32_t>(thread_id);
-    thread->valid = true;
-#else
-    const int created = pthread_create(&record->thread, nullptr,
-                                       HostThreadTrampoline, record);
-    if (created != 0)
-    {
-        if (host_error != nullptr)
-        {
-            *host_error = static_cast<std::uint32_t>(created);
-        }
-        delete record;
-        return false;
-    }
-    thread->handle = record;
-    // POSIX names a thread only from inside it, so the identifier stays zero
-    // here. Every caller that needs the number reads it from the thread's own
-    // `CurrentThreadId()`, which is what the engine's thread procedure already
-    // stores into its context.
-    thread->id = 0;
-    thread->valid = true;
-#endif
-    return true;
+    return host_thread_platform::StartThread(entry, parameter, thread,
+                                             host_error);
 }
 
 HostThreadStatus QueryHostThread(const HostThread& thread)
@@ -333,25 +36,7 @@ HostThreadStatus QueryHostThread(const HostThread& thread)
         status.running = false;
         return status;
     }
-#if defined(_WIN32)
-    // Not GetExitCodeThread alone. It reports 259 for a running thread, and 259
-    // is a legal exit code, so the wait is what separates the two questions.
-    auto handle = static_cast<HANDLE>(thread.handle);
-    status.running = WaitForSingleObject(handle, 0) != WAIT_OBJECT_0;
-    DWORD exit_code = 0;
-    if (!status.running && GetExitCodeThread(handle, &exit_code))
-    {
-        status.exit_code = static_cast<std::uint32_t>(exit_code);
-    }
-#else
-    const auto* record = static_cast<const HostThreadRecord*>(thread.handle);
-    status.running = !record->finished.load(std::memory_order_acquire);
-    if (!status.running)
-    {
-        status.exit_code = record->exit_code.load(std::memory_order_relaxed);
-    }
-#endif
-    return status;
+    return host_thread_platform::QueryThread(thread);
 }
 
 bool JoinHostThread(const HostThread& thread,
@@ -362,38 +47,8 @@ bool JoinHostThread(const HostThread& thread,
     {
         return false;
     }
-#if defined(_WIN32)
-    auto handle = static_cast<HANDLE>(thread.handle);
-    if (WaitForSingleObject(handle, static_cast<DWORD>(
-                                        timeout_milliseconds)) != WAIT_OBJECT_0)
-    {
-        return false;
-    }
-    DWORD code = 0;
-    if (exit_code != nullptr && GetExitCodeThread(handle, &code))
-    {
-        *exit_code = static_cast<std::uint32_t>(code);
-    }
-    return true;
-#else
-    auto* record = static_cast<HostThreadRecord*>(thread.handle);
-    if (!record->joined.load(std::memory_order_acquire))
-    {
-        const timespec deadline = DeadlineFromNow(timeout_milliseconds);
-        const int joined = pthread_timedjoin_np(record->thread, nullptr,
-                                                &deadline);
-        if (joined != 0)
-        {
-            return false;
-        }
-        record->joined.store(true, std::memory_order_release);
-    }
-    if (exit_code != nullptr)
-    {
-        *exit_code = record->exit_code.load(std::memory_order_acquire);
-    }
-    return true;
-#endif
+    return host_thread_platform::JoinThread(thread, timeout_milliseconds,
+                                            exit_code);
 }
 
 bool InterruptHostThreadImpl(const HostThread& thread,
@@ -419,124 +74,14 @@ bool InterruptHostThreadImpl(const HostThread& thread,
     {
         return fail(ThreadInterruptFailure::kRefused);
     }
-#if defined(_WIN32)
-    auto handle = static_cast<HANDLE>(thread.handle);
-    if (SuspendThread(handle) == static_cast<DWORD>(-1))
+    const ThreadInterruptFailure reason =
+        host_thread_platform::InterruptThread(thread, callback, context_callback,
+                                              user_data, timeout_milliseconds);
+    if (reason != ThreadInterruptFailure::kNone)
     {
-        return fail(ThreadInterruptFailure::kNotDelivered);
-    }
-    // The timeout has nothing to wait for on this host: SuspendThread has
-    // already stopped the target by the time it returns, so the sample is
-    // bounded by the callback itself.
-    (void)timeout_milliseconds;
-
-    GuestCpuContext registers = {};
-    registers.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
-    bool sampled = false;
-    if (GetThreadContext(handle, &registers))
-    {
-        bool write_back = false;
-        if (context_callback != nullptr)
-        {
-            write_back = context_callback(&registers, user_data, &registers);
-        }
-        else
-        {
-            write_back = callback(&registers, user_data);
-        }
-        sampled = !write_back || SetThreadContext(handle, &registers) != 0;
-    }
-    ResumeThread(handle);
-    if (!sampled)
-    {
-        return fail(ThreadInterruptFailure::kNotDelivered);
+        return fail(reason);
     }
     return true;
-#else
-    auto* record = static_cast<HostThreadRecord*>(thread.handle);
-    if (record->finished.load(std::memory_order_acquire))
-    {
-        // Signalling a thread that has exited is how a caller learns it has,
-        // not something to attempt: pthread_kill on a stale pthread_t is
-        // undefined rather than an error.
-        return fail(ThreadInterruptFailure::kNotDelivered);
-    }
-
-    if (!EnsureInterruptHandler())
-    {
-        return fail(ThreadInterruptFailure::kRefused);
-    }
-
-    HostThreadRecord* expected = nullptr;
-    if (!g_interrupt_target.compare_exchange_strong(expected, record,
-                                                    std::memory_order_acq_rel))
-    {
-        // One at a time, as the handler's comment says.
-        return fail(ThreadInterruptFailure::kRefused);
-    }
-
-    record->interrupt_callback = callback;
-    record->interrupt_context_callback = context_callback;
-    record->interrupt_user_data = user_data;
-    record->interrupt_state.store(HostThreadRecord::InterruptState::kRequested,
-                                  std::memory_order_release);
-
-    const auto past = [](const timespec& deadline) {
-        timespec now{};
-        clock_gettime(CLOCK_REALTIME, &now);
-        return now.tv_sec > deadline.tv_sec ||
-            (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec);
-    };
-
-    bool answered = false;
-    bool delivered = false;
-    if (pthread_kill(record->thread, InterruptSignal()) == 0)
-    {
-        delivered = true;
-        const timespec deadline = DeadlineFromNow(timeout_milliseconds);
-        while (record->interrupt_state.load(std::memory_order_acquire) !=
-                   HostThreadRecord::InterruptState::kDone &&
-               !past(deadline))
-        {
-            // Yielding rather than sleeping: the target is usually running and
-            // the answer arrives in microseconds, and a caller investigating a
-            // stall should not add a millisecond of its own to every sample.
-            sched_yield();
-        }
-
-        // Task 503d-22. Giving up is a claim, not a decision. If the handler
-        // has not started, abandoning the request stops it from ever running
-        // against a `user_data` this call is about to return past. If it has
-        // started, there is nothing to abandon and the only safe move is to
-        // wait for it: the callback is holding the caller's memory.
-        auto expected = HostThreadRecord::InterruptState::kRequested;
-        if (record->interrupt_state.compare_exchange_strong(
-                expected, HostThreadRecord::InterruptState::kAbandoned,
-                std::memory_order_acq_rel))
-        {
-            answered = false;
-        }
-        else
-        {
-            while (record->interrupt_state.load(std::memory_order_acquire) !=
-                   HostThreadRecord::InterruptState::kDone)
-            {
-                sched_yield();
-            }
-            answered = true;
-        }
-    }
-
-    record->interrupt_state.store(HostThreadRecord::InterruptState::kIdle,
-                                  std::memory_order_release);
-    g_interrupt_target.store(nullptr, std::memory_order_release);
-    if (!answered)
-    {
-        return fail(delivered ? ThreadInterruptFailure::kTimedOut
-                              : ThreadInterruptFailure::kNotDelivered);
-    }
-    return true;
-#endif
 }
 
 bool InterruptHostThread(const HostThread& thread,
@@ -566,20 +111,7 @@ void CloseHostThread(HostThread* thread)
     {
         return;
     }
-#if defined(_WIN32)
-    CloseHandle(static_cast<HANDLE>(thread->handle));
-#else
-    auto* record = static_cast<HostThreadRecord*>(thread->handle);
-    // A thread that was never joined still owns its stack, so it is joined here
-    // even though the caller has established that it exited. That join returns
-    // immediately.
-    if (!record->joined.load(std::memory_order_acquire))
-    {
-        pthread_join(record->thread, nullptr);
-        record->joined.store(true, std::memory_order_release);
-    }
-    delete record;
-#endif
+    host_thread_platform::CloseThread(thread);
     *thread = HostThread{};
 }
 
@@ -589,27 +121,7 @@ void DetachHostThread(HostThread* thread)
     {
         return;
     }
-#if defined(_WIN32)
-    // The record is the trampoline's own here, and it frees it when the entry
-    // returns -- which for a thread that never returns means it is not freed at
-    // all. That is the same leak this function accepts on the other host, for
-    // the same reason.
-    CloseHandle(static_cast<HANDLE>(thread->handle));
-#else
-    auto* record = static_cast<HostThreadRecord*>(thread->handle);
-    if (!record->joined.load(std::memory_order_acquire))
-    {
-        // Detaching rather than joining: the caller reached here because the
-        // thread would not stop, and the point of this function is not to wait.
-        // The record outlives this call on purpose -- see the header.
-        pthread_detach(record->thread);
-    }
-    else
-    {
-        // Already joined, so the thread is gone and the record is only memory.
-        delete record;
-    }
-#endif
+    host_thread_platform::DetachThread(thread);
     *thread = HostThread{};
 }
 

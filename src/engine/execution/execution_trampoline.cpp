@@ -12,11 +12,9 @@
 #include "repiu/platform/host_environment.h"
 #include "repiu/platform/host_error_stream.h"
 #include "repiu/platform/host_thread.h"
-#if defined(__x86_64__)
-// Task 578. The x64 entry bridge and the dispatch frame its resolver fills.
-#include "repiu/platform/linux_x64_aot_dispatch.h"
-#include "repiu/platform/linux_x64_guest_entry.h"
-#endif
+#include "repiu/platform/host_fault_report.h"
+#include "execution_trampoline_model.h"
+#include "repiu/runtime/execution_model.h"
 #include "repiu/runtime/execution_timeout.h"
 #include "repiu/runtime/timer_safe_point_injection.h"
 #include "repiu/runtime/aot_long_mode_compatibility.h"
@@ -168,11 +166,8 @@ bool IsDirectX86ExecutionSupported()
 // Task 503d-19: the `_WIN32` half is gone. What running the guest's code in
 // this process requires is a 32-bit x86 host, and every Win32 API the driver
 // behind this used to need is in the platform layer now.
-#if defined(_M_IX86) || defined(__i386__)
-    return true;
-#else
-    return false;
-#endif
+// Task 759: the execution model answers.
+    return runtime::execution_model::RunsGuestBytesDirectly();
 }
 
 // Task 578. Whether this host enters the guest through the emitted cache.
@@ -189,11 +184,7 @@ bool IsDirectX86ExecutionSupported()
 // to begin with.
 bool IsCodeCacheEntrySupported()
 {
-#if defined(_M_X64) || defined(__x86_64__)
-    return true;
-#else
-    return false;
-#endif
+    return runtime::execution_model::RunsLongModeCodeCache();
 }
 
 const char* AotFixupKindName(const runtime::AotFixupKind kind)
@@ -625,11 +616,8 @@ bool IsGuestStackSwitchSupported()
 // Task 503d-19: what this asks is whether the stack switch exists, and since
 // 3d-16 wrote it in GAS the answer no longer depends on the compiler. It
 // depends on the architecture, because the switch is 32-bit x86 assembly.
-#if defined(_M_IX86) || defined(__i386__)
-    return true;
-#else
-    return false;
-#endif
+// Task 759: which is the direct execution model.
+    return runtime::execution_model::RunsGuestBytesDirectly();
 }
 
 // Task 503d-15. What used to be one `#if defined(_WIN32)` over the next two
@@ -696,43 +684,13 @@ int CaptureException(const repiu::platform::FaultEvent& fault,
 {
     if (fault.registers != nullptr && context != nullptr)
     {
-#if defined(_WIN32)
-        // Task 503d-15. 0xE06D7363 is the exception code MSVC raises a C++
-        // throw with, so this block can only fire on Windows, and what it
-        // prints -- a host stack walk and the loaded module list -- is the
-        // operating system's to answer. A guest fault never reaches it.
-        if (fault.host_code == 0xe06d7363U)
-        {
-            fprintf(stderr, "[repiu-live-debug] Caught C++ Exception (0xe06d7363) at address 0x%p\n",
-                    fault.instruction_address);
-            void* stack[64];
-            USHORT frames = CaptureStackBackTrace(0, 64, stack, nullptr);
-            fprintf(stderr, "[repiu-live-debug] Host Stack trace (%d frames):\n", frames);
-            for (USHORT i = 0; i < frames; ++i)
-            {
-                fprintf(stderr, "  [%d] 0x%p\n", i, stack[i]);
-            }
-            HMODULE modules[256];
-            DWORD cbNeeded;
-            if (EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &cbNeeded))
-            {
-                fprintf(stderr, "[repiu-live-debug] Loaded Modules:\n");
-                for (size_t i = 0; i < cbNeeded / sizeof(HMODULE); ++i)
-                {
-                    char name[MAX_PATH];
-                    if (GetModuleFileNameA(modules[i], name, sizeof(name)))
-                    {
-                        MODULEINFO info;
-                        if (GetModuleInformation(GetCurrentProcess(), modules[i], &info, sizeof(info)))
-                        {
-                            fprintf(stderr, "  base=0x%p size=0x%X path=%s\n",
-                                    info.lpBaseOfDll, info.SizeOfImage, name);
-                        }
-                    }
-                }
-            }
-        }
-#endif
+        // Task 503d-15, Task 759. A language exception of the host's own (an
+        // MSVC C++ throw) is reported by the platform layer; a guest fault
+        // never is one.
+        repiu::platform::ReportHostLanguageException(
+            fault.host_code,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(fault.instruction_address)));
         context->exception_caught = true;
         context->exception_code =
             fault.host_code;
@@ -789,147 +747,144 @@ int CaptureException(const repiu::platform::FaultEvent& fault,
                             fault_page.allocation_base));
                 context->exception_fault_region_size =
                     static_cast<std::uint32_t>(fault_page.size);
-#if defined(_WIN32)
                 // Task 503d-15. These two keep the host numbering, because the
                 // crash report prints them as hex for a person who reads them
                 // as Windows constants. Rounding them to the neutral triple
                 // would change what an existing report means, so Linux leaves
                 // them zero rather than putting different numbers in the same
                 // fields.
-                MEMORY_BASIC_INFORMATION raw = {};
-                if (VirtualQuery(fault_address, &raw, sizeof(raw)) ==
-                    sizeof(raw))
+                std::uint32_t host_state = 0U;
+                std::uint32_t host_protect = 0U;
+                if (repiu::platform::QueryHostMemoryNumbers(
+                        fault_address, &host_state, &host_protect))
                 {
-                    context->exception_fault_state = raw.State;
-                    context->exception_fault_protect = raw.Protect;
+                    context->exception_fault_state = host_state;
+                    context->exception_fault_protect = host_protect;
                 }
-#endif
             }
         }
-#if defined(_M_IX86)
-        CopySnapshotFromContextRecord(*fault.registers,
-                                      &context->exception_snapshot);
-        context->exception_eax = fault.registers->Eax;
-        context->exception_ebx = fault.registers->Ebx;
-        context->exception_ecx = fault.registers->Ecx;
-        context->exception_edx = fault.registers->Edx;
-        context->exception_esi = fault.registers->Esi;
-        context->exception_edi = fault.registers->Edi;
-        for (std::uint32_t index = 0; index < 8U; ++index)
+        // Task 759. The registers and the memory they point at, where the
+        // host's report carries them (Windows; Task 503d-15).
+        if (repiu::platform::FillsFaultReportDetail())
         {
-            const std::uintptr_t source =
-                static_cast<std::uintptr_t>(
-                    fault.registers->Esi) +
-                0x20U + index * 4U;
-            SIZE_T copied = 0;
-            if (ReadProcessMemory(GetCurrentProcess(),
-                                  reinterpret_cast<const void*>(source),
-                                  &context->exception_esi_dwords[index],
-                                  sizeof(std::uint32_t), &copied) != 0 &&
-                copied == sizeof(std::uint32_t))
+            CopySnapshotFromContextRecord(*fault.registers,
+                                          &context->exception_snapshot);
+            context->exception_eax = fault.registers->Eax;
+            context->exception_ebx = fault.registers->Ebx;
+            context->exception_ecx = fault.registers->Ecx;
+            context->exception_edx = fault.registers->Edx;
+            context->exception_esi = fault.registers->Esi;
+            context->exception_edi = fault.registers->Edi;
+            for (std::uint32_t index = 0; index < 8U; ++index)
             {
-                context->exception_esi_dword_valid_mask |= 1U << index;
-            }
-        }
-        // Capture the ASCII string that each GPR points at (up to 32 bytes).
-        // Null-pointer and string frontiers (e.g. a stricmp fed a filename with
-        // no extension) are diagnosed by seeing the actual string a register
-        // holds; ESI in particular keeps the callee-saved source pointer.
-        const std::uint32_t exception_register_values[6] = {
-            fault.registers->Eax,
-            fault.registers->Ebx,
-            fault.registers->Ecx,
-            fault.registers->Edx,
-            fault.registers->Esi,
-            fault.registers->Edi,
-        };
-        for (std::uint32_t reg = 0; reg < 6U; ++reg)
-        {
-            SIZE_T copied = 0;
-            if (exception_register_values[reg] != 0 &&
-                ReadProcessMemory(
-                    GetCurrentProcess(),
-                    reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
-                        exception_register_values[reg])),
-                    context->exception_register_strings[reg],
-                    sizeof(context->exception_register_strings[reg]),
-                    &copied) != 0 &&
-                copied != 0)
-            {
-                context->exception_register_string_valid_mask |= 1U << reg;
-            }
-        }
-        // Capture a window of the guest stack starting at the fault-time ESP.
-        // Arguments passed to the faulting function sit above ESP; the caller
-        // return address lives just below the lowest argument slot. Reading
-        // this window is what lets a terminal fault's wild-pointer argument be
-        // traced back to the caller that supplied it.
-        context->exception_stack_base =
-            static_cast<std::uint32_t>(fault.registers->Esp);
-        context->exception_stack_dword_count = 0;
-        for (std::uint32_t index = 0;
-             index < kExceptionStackDwordCapacity; ++index)
-        {
-            const std::uintptr_t source =
-                static_cast<std::uintptr_t>(context->exception_stack_base) +
-                index * 4U;
-            SIZE_T copied = 0;
-            if (ReadProcessMemory(GetCurrentProcess(),
-                                  reinterpret_cast<const void*>(source),
-                                  &context->exception_stack_dwords[index],
-                                  sizeof(std::uint32_t), &copied) == 0 ||
-                copied != sizeof(std::uint32_t))
-            {
-                break;
-            }
-            context->exception_stack_dword_count = index + 1U;
-        }
-        // Optional: dump the runtime (dynamic) AOT cache bytes for a configured
-        // guest address (REPIU_AOT_PROBE_GUEST). This lets a terminal fault
-        // compare the on-demand translation of a block against the static plan,
-        // to tell whether a runtime dynamic-cache divergence explains a
-        // corrupted guest value.
-        if (context->aot_placement != nullptr)
-        {
-            const char* probe_text = std::getenv("REPIU_AOT_PROBE_GUEST");
-            if (probe_text != nullptr && *probe_text != '\0')
-            {
-                context->aot_probe_guest_address =
-                    static_cast<std::uint32_t>(
-                        std::strtoul(probe_text, nullptr, 0));
-                std::uint32_t cache_address = 0;
-                if (context->aot_probe_guest_address != 0 &&
-                    FindAotCacheAddress(*context->aot_placement,
-                                        context->aot_probe_guest_address,
-                                        &cache_address))
+                const std::uintptr_t source =
+                    static_cast<std::uintptr_t>(
+                        fault.registers->Esi) +
+                    0x20U + index * 4U;
+                std::size_t copied = 0;
+                if (repiu::platform::ReadMemoryForFaultReport(
+                        reinterpret_cast<const void*>(source),
+                        &context->exception_esi_dwords[index],
+                        sizeof(std::uint32_t), &copied) &&
+                    copied == sizeof(std::uint32_t))
                 {
-                    context->aot_probe_cache_address = cache_address;
-                    SIZE_T copied = 0;
-                    if (ReadProcessMemory(
-                            GetCurrentProcess(),
-                            reinterpret_cast<const void*>(
-                                static_cast<std::uintptr_t>(cache_address)),
-                            context->aot_probe_cache_bytes,
-                            sizeof(context->aot_probe_cache_bytes),
-                            &copied) != 0 &&
-                        copied == sizeof(context->aot_probe_cache_bytes))
+                    context->exception_esi_dword_valid_mask |= 1U << index;
+                }
+            }
+            // Capture the ASCII string that each GPR points at (up to 32 bytes).
+            // Null-pointer and string frontiers (e.g. a stricmp fed a filename with
+            // no extension) are diagnosed by seeing the actual string a register
+            // holds; ESI in particular keeps the callee-saved source pointer.
+            const std::uint32_t exception_register_values[6] = {
+                fault.registers->Eax,
+                fault.registers->Ebx,
+                fault.registers->Ecx,
+                fault.registers->Edx,
+                fault.registers->Esi,
+                fault.registers->Edi,
+            };
+            for (std::uint32_t reg = 0; reg < 6U; ++reg)
+            {
+                std::size_t copied = 0;
+                if (exception_register_values[reg] != 0 &&
+                    repiu::platform::ReadMemoryForFaultReport(
+                        reinterpret_cast<const void*>(
+                            static_cast<std::uintptr_t>(
+                                exception_register_values[reg])),
+                        context->exception_register_strings[reg],
+                        sizeof(context->exception_register_strings[reg]),
+                        &copied) &&
+                    copied != 0)
+                {
+                    context->exception_register_string_valid_mask |= 1U << reg;
+                }
+            }
+            // Capture a window of the guest stack starting at the fault-time ESP.
+            // Arguments passed to the faulting function sit above ESP; the caller
+            // return address lives just below the lowest argument slot. Reading
+            // this window is what lets a terminal fault's wild-pointer argument be
+            // traced back to the caller that supplied it.
+            context->exception_stack_base =
+                static_cast<std::uint32_t>(fault.registers->Esp);
+            context->exception_stack_dword_count = 0;
+            for (std::uint32_t index = 0;
+                 index < kExceptionStackDwordCapacity; ++index)
+            {
+                const std::uintptr_t source =
+                    static_cast<std::uintptr_t>(context->exception_stack_base) +
+                    index * 4U;
+                std::size_t copied = 0;
+                if (!repiu::platform::ReadMemoryForFaultReport(
+                        reinterpret_cast<const void*>(source),
+                        &context->exception_stack_dwords[index],
+                        sizeof(std::uint32_t), &copied) ||
+                    copied != sizeof(std::uint32_t))
+                {
+                    break;
+                }
+                context->exception_stack_dword_count = index + 1U;
+            }
+            // Optional: dump the runtime (dynamic) AOT cache bytes for a configured
+            // guest address (REPIU_AOT_PROBE_GUEST). This lets a terminal fault
+            // compare the on-demand translation of a block against the static plan,
+            // to tell whether a runtime dynamic-cache divergence explains a
+            // corrupted guest value.
+            if (context->aot_placement != nullptr)
+            {
+                const char* probe_text = std::getenv("REPIU_AOT_PROBE_GUEST");
+                if (probe_text != nullptr && *probe_text != '\0')
+                {
+                    context->aot_probe_guest_address =
+                        static_cast<std::uint32_t>(
+                            std::strtoul(probe_text, nullptr, 0));
+                    std::uint32_t cache_address = 0;
+                    if (context->aot_probe_guest_address != 0 &&
+                        FindAotCacheAddress(*context->aot_placement,
+                                            context->aot_probe_guest_address,
+                                            &cache_address))
                     {
-                        context->aot_probe_cache_valid = 1;
+                        context->aot_probe_cache_address = cache_address;
+                        std::size_t copied = 0;
+                        if (repiu::platform::ReadMemoryForFaultReport(
+                                reinterpret_cast<const void*>(
+                                    static_cast<std::uintptr_t>(cache_address)),
+                                context->aot_probe_cache_bytes,
+                                sizeof(context->aot_probe_cache_bytes),
+                                &copied) &&
+                            copied == sizeof(context->aot_probe_cache_bytes))
+                        {
+                            context->aot_probe_cache_valid = 1;
+                        }
                     }
                 }
             }
         }
-#endif
     }
 
     // Task 503d-15: the return value is an SEH filter code, which only
     // means anything to the __except that calls this. Elsewhere the
     // handler decides with a FaultDisposition and never reads it.
-#if defined(_WIN32)
-    return EXCEPTION_EXECUTE_HANDLER;
-#else
-    return 1;
-#endif
+    return repiu::platform::kFaultFilterRunsHandler;
 }
 
 // Task 503d-15. The three hand-written assembly entries, declared out here so
@@ -978,118 +933,9 @@ static_assert(offsetof(StackSwitchCallState, host_stack_base) ==
 static_assert(offsetof(StackSwitchCallState, host_stack_limit) ==
               REPIU_STACK_SWITCH_HOST_STACK_LIMIT);
 
-#if defined(_MSC_VER) && defined(_M_IX86)
-
-extern "C" void RecoverHostStackException();
-
-extern "C" __declspec(naked) std::uint32_t __stdcall
-CallGuestEntryWithStack(StackSwitchCallState* state)
-{
-    __asm
-    {
-        push ebp
-        mov ebp, esp
-        push ebx
-        push esi
-        push edi
-
-        mov ecx, [ebp + 8]
-        mov eax, [ecx + REPIU_STACK_SWITCH_ENTRY_ADDRESS]
-        mov edx, [ecx + REPIU_STACK_SWITCH_INITIAL_ESP]
-
-        // Save host stack base/limit
-        mov ebx, dword ptr fs:[4]
-        mov [ecx + REPIU_STACK_SWITCH_HOST_STACK_BASE], ebx
-        mov g_recovery_host_stack_base, ebx
-        mov g_repiu_dbt_host_stack_base, ebx
-        mov ebx, dword ptr fs:[8]
-        mov [ecx + REPIU_STACK_SWITCH_HOST_STACK_LIMIT], ebx
-        mov g_recovery_host_stack_limit, ebx
-        mov g_repiu_dbt_host_stack_limit, ebx
-
-        // Set guest stack base/limit
-        mov ebx, [ecx + REPIU_STACK_SWITCH_GUEST_STACK_BASE]
-        mov dword ptr fs:[4], ebx
-        mov g_repiu_dbt_guest_stack_base, ebx
-        mov ebx, [ecx + REPIU_STACK_SWITCH_GUEST_STACK_LIMIT]
-        mov dword ptr fs:[8], ebx
-        mov g_repiu_dbt_guest_stack_limit, ebx
-
-        xor ebx, ebx
-        mov bx, fs
-        mov [ecx + REPIU_STACK_SWITCH_HOST_FS], ebx
-        mov g_recovery_host_fs, ebx
-        mov bx, ds
-        mov [ecx + REPIU_STACK_SWITCH_HOST_DS], ebx
-        mov g_recovery_host_ds, ebx
-        mov bx, es
-        mov [ecx + REPIU_STACK_SWITCH_HOST_ES], ebx
-        mov g_recovery_host_es, ebx
-        mov bx, gs
-        mov [ecx + REPIU_STACK_SWITCH_HOST_GS], ebx
-        mov g_recovery_host_gs, ebx
-        mov bx, ss
-        mov [ecx + REPIU_STACK_SWITCH_HOST_SS], ebx
-        mov [ecx + REPIU_STACK_SWITCH_HOST_ESP], esp
-        mov g_repiu_dbt_host_esp, esp
-
-        mov esp, edx
-        cmp dword ptr [ecx + REPIU_STACK_SWITCH_SINGLE_STEP], 0
-        je no_single_step_trace
-        pushfd
-        or dword ptr [esp], REPIU_STACK_SWITCH_TRAP_FLAG
-        popfd
- no_single_step_trace:
-        push ecx
-        call eax
-        pop ecx
-
-        // Restore host stack base/limit
-        mov ebx, [ecx + REPIU_STACK_SWITCH_HOST_STACK_BASE]
-        mov dword ptr fs:[4], ebx
-        mov ebx, [ecx + REPIU_STACK_SWITCH_HOST_STACK_LIMIT]
-        mov dword ptr fs:[8], ebx
-
-        mov [ecx + REPIU_STACK_SWITCH_GUEST_RETURN_ESP], esp
-        mov esp, [ecx + REPIU_STACK_SWITCH_HOST_ESP]
-        mov dword ptr [ecx + REPIU_STACK_SWITCH_RESULT_CODE], 0
-        xor eax, eax
-
-        pop edi
-        pop esi
-        pop ebx
-        pop ebp
-        ret 4
-    }
-}
-
-extern "C" __declspec(naked) void __stdcall
-RecoverGuestStackException()
-{
-    __asm
-    {
-        mov eax, dword ptr cs:[g_recovery_host_stack_base]
-        mov dword ptr fs:[4], eax
-        mov eax, dword ptr cs:[g_recovery_host_stack_limit]
-        mov dword ptr fs:[8], eax
-
-        mov eax, dword ptr cs:[g_recovery_host_fs]
-        mov fs, ax
-        mov eax, dword ptr cs:[g_recovery_host_gs]
-        mov gs, ax
-        mov eax, dword ptr cs:[g_recovery_host_es]
-        mov es, ax
-        mov eax, dword ptr cs:[g_recovery_host_ds]
-        mov ds, ax
-        pop edi
-        pop esi
-        pop ebx
-        pop ebp
-        mov eax, REPIU_STACK_SWITCH_RECOVERED
-        ret 4
-    }
-}
-#endif  // _MSC_VER && _M_IX86
+// Task 759. The stack switch and its recovery points are the platform layer's:
+// src/platform/win32/guest_stack_switch_win32.cpp on Win32, and
+// src/platform/linux/x86/guest_stack_switch.S on Linux i386.
 
 void RecoverToHost(repiu::platform::GuestCpuContext* context, ThreadContext* thread_context)
 {
@@ -1214,14 +1060,14 @@ std::uint32_t DrainFollowingLegacyStackInstructions(
     repiu::platform::GuestCpuContext* win32_context,
     ThreadContext* context)
 {
-#if defined(_M_X64) || defined(__x86_64__)
+    // Task 759. The cache model's alone: original PUSH/POP bytes would use
+    // the host's stack pointer in long mode.
     constexpr std::uint32_t kMaximumFollowingStackInstructions = 16U;
-    if (context != nullptr)
+    if (runtime::execution_model::RunsLongModeCodeCache() && context != nullptr)
     {
         return HandleConsecutiveLegacyStackInstructions(
             win32_context, context, kMaximumFollowingStackInstructions);
     }
-#endif
     return 0U;
 }
 
@@ -1264,23 +1110,24 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
     }
     const std::uint8_t opcode = ptr[offset];
     const std::uint8_t second_opcode = offset == 0U ? ptr[1] : 0U;
-#if defined(_M_X64) || defined(__x86_64__)
-    if (context->aot_legacy_fallback && offset == 0U && opcode == 0xE8U &&
-        HandleAotLegacyDirectCall(win32_context, context))
+    if (runtime::execution_model::RunsLongModeCodeCache())
     {
-        return true;
+        if (context->aot_legacy_fallback && offset == 0U && opcode == 0xE8U &&
+            HandleAotLegacyDirectCall(win32_context, context))
+        {
+            return true;
+        }
+        // Original 32-bit PUSH/POP bytes would silently use host RSP in long mode.
+        // Only legacy fallback reaches original bytes; emitted cache code already
+        // lowers these operations to the R15D guest stack pointer.
+        if (context->aot_legacy_fallback && offset == 0U &&
+            opcode >= 0x50U && opcode <= 0x5FU &&
+            HandleGeneralRegisterStackInstruction(win32_context, context))
+        {
+            DrainFollowingLegacyStackInstructions(win32_context, context);
+            return true;
+        }
     }
-    // Original 32-bit PUSH/POP bytes would silently use host RSP in long mode.
-    // Only legacy fallback reaches original bytes; emitted cache code already
-    // lowers these operations to the R15D guest stack pointer.
-    if (context->aot_legacy_fallback && offset == 0U &&
-        opcode >= 0x50U && opcode <= 0x5FU &&
-        HandleGeneralRegisterStackInstruction(win32_context, context))
-    {
-        DrainFollowingLegacyStackInstructions(win32_context, context);
-        return true;
-    }
-#endif
     const bool segment_stack_candidate =
         (opcode == 0x06U || opcode == 0x0EU || opcode == 0x16U ||
          opcode == 0x1EU || opcode == 0x07U || opcode == 0x1FU ||
@@ -2155,13 +2002,13 @@ bool HandleSingleStepTrace(repiu::platform::GuestCpuContext* win32_context, Thre
                                 VehExitSite::kSingleStepTraceHleResumed);
                 return true;
             }
-#if defined(__x86_64__)
             // A failed HLE-to-AOT lookup may not fall through to original guest
             // bytes when the continuation has different long-mode semantics.
             // The cache path is the common lowering for stack, width,
             // addressing, and privileged-instruction differences; if it is
             // unavailable, decline the event instead of corrupting host RSP.
-            if (!CanResumeLinuxX64LegacyTarget(
+            if (runtime::execution_model::RunsLongModeCodeCache() &&
+                !CanResumeLinuxX64LegacyTarget(
                     context,
                     static_cast<std::uint32_t>(win32_context->Eip)))
             {
@@ -2174,7 +2021,6 @@ bool HandleSingleStepTrace(repiu::platform::GuestCpuContext* win32_context, Thre
                 win32_context->EFlags &= ~0x00000100U;
                 return false;
             }
-#endif
         }
         NoteVehExitSite(context, VehExitSite::kSingleStepTraceHleStepped);
         win32_context->EFlags |= 0x00000100U;
@@ -2894,794 +2740,11 @@ bool HandleDosMemoryAccess(repiu::platform::GuestCpuContext* win32_context, Thre
     return false;
 }
 
-#if defined(_MSC_VER) && defined(_M_IX86)
-extern "C" __declspec(naked) void
-RecoverHostStackException()
-{
-    __asm
-    {
-        xor eax, eax
-        ret
-    }
-}
 
-
-#endif
-
-// Task 503d-19: the fence widened to name what these need, which is 32-bit x86
-// rather than MSVC. The Linux thread procedure calls both.
-#if defined(_M_IX86) || defined(__i386__)
-// Task 323 denominator: the whole guest execution window on this thread. The
-// scope lives here rather than in GuestEntryThreadProc because that function
-// uses __try on Windows, and MSVC rejects objects requiring unwinding in the
-// same function (C2712).
-void CallGuestEntryWithStackTimed(StackSwitchCallState* state,
-                                  ThreadContext* context)
-{
-    const ExecutionTimeScope guest_run_time_scope(
-        context != nullptr ? context->execution_time_profile.get() : nullptr,
-        ExecutionTimeBucket::kGuestRunTotal);
-    CallGuestEntryWithStack(state);
-}
-
-// Same denominator for the non-stack-switching entry path. Both branches must
-// be instrumented or the guest-run total silently stays zero.
-void CallGuestEntryDirectTimed(ThreadContext* context)
-{
-    const ExecutionTimeScope guest_run_time_scope(
-        context != nullptr ? context->execution_time_profile.get() : nullptr,
-        ExecutionTimeBucket::kGuestRunTotal);
-    using EntryFunction = void (*)();
-    EntryFunction entry = reinterpret_cast<EntryFunction>(
-        static_cast<std::uintptr_t>(context->entry_address));
-    entry();
-}
-#endif
-
-#if defined(__x86_64__)
-bool LinuxX64ReturnTraceEnabled()
-{
-    static const bool enabled = std::getenv("REPIU_LINUX_X64_RETURN_TRACE") != nullptr;
-    return enabled;
-}
-
-void TraceLinuxX64ReturnResolver(const char* const result,
-                                 const std::uint32_t guest_target,
-                                 const std::uint32_t cache_address,
-                                 const char* const detail = "",
-                                 const std::uint32_t producer_tag = 0U,
-                                 const std::uint32_t guest_esp = 0U)
-{
-    if (!LinuxX64ReturnTraceEnabled())
-    {
-        return;
-    }
-    std::fprintf(stderr,
-                 "[repiu-x64-return] result=%s source=0x%08X cache=0x%08X "
-                 "producer=0x%08X guest_esp=0x%08X detail=%s\n",
-                 result, static_cast<unsigned>(guest_target),
-                 static_cast<unsigned>(cache_address),
-                 static_cast<unsigned>(producer_tag),
-                 static_cast<unsigned>(guest_esp), detail);
-}
-
-std::uint32_t LinuxX64GuestEntryTraceAddress()
-{
-    static const std::uint32_t address = [] {
-        const char* const value =
-            std::getenv("REPIU_LINUX_X64_GUEST_ENTRY_TRACE");
-        if (value == nullptr || *value == '\0')
-        {
-            return 0U;
-        }
-        char* end = nullptr;
-        const unsigned long parsed = std::strtoul(value, &end, 0);
-        if (end == value || *end != '\0' ||
-            parsed > std::numeric_limits<std::uint32_t>::max())
-        {
-            return 0U;
-        }
-        return static_cast<std::uint32_t>(parsed);
-    }();
-    return address;
-}
-
-std::uint32_t LinuxX64GuestEntryTraceEndAddress()
-{
-    static const std::uint32_t address = [] {
-        const char* const value =
-            std::getenv("REPIU_LINUX_X64_GUEST_ENTRY_TRACE_END");
-        if (value == nullptr || *value == '\0')
-        {
-            return 0U;
-        }
-        char* end = nullptr;
-        const unsigned long parsed = std::strtoul(value, &end, 0);
-        if (end == value || *end != '\0' ||
-            parsed > std::numeric_limits<std::uint32_t>::max())
-        {
-            return 0U;
-        }
-        return static_cast<std::uint32_t>(parsed);
-    }();
-    return address;
-}
-
-const char* LinuxX64FaultKindName(
-    const repiu::platform::FaultKind kind)
-{
-    switch (kind)
-    {
-        case repiu::platform::FaultKind::kAccessViolation:
-            return "access";
-        case repiu::platform::FaultKind::kSingleStep:
-            return "single-step";
-        case repiu::platform::FaultKind::kBreakpoint:
-            return "breakpoint";
-        case repiu::platform::FaultKind::kIllegalInstruction:
-            return "illegal";
-        case repiu::platform::FaultKind::kIntegerDivideByZero:
-            return "divide-by-zero";
-        case repiu::platform::FaultKind::kPrivilegedInstruction:
-            return "privileged";
-        case repiu::platform::FaultKind::kOther:
-            return "other";
-    }
-    return "unknown";
-}
-
-std::uint32_t ResolveLinuxX64GuestEntryAddress(
-    ThreadContext* const context,
-    const std::uint32_t eip)
-{
-    if (context == nullptr || context->aot_placement == nullptr ||
-        !IsAotCacheAddress(context, eip))
-    {
-        return eip;
-    }
-    std::uint32_t guest_address = 0U;
-    return FindAotGuestAddress(
-               *context->aot_placement, eip, &guest_address)
-        ? guest_address : eip;
-}
-
-void TraceLinuxX64GuestEntry(
-    ThreadContext* const context,
-    const std::uint32_t fault_eip,
-    const repiu::platform::FaultKind fault_kind,
-    const std::uint32_t entry_eip,
-    const std::uint32_t exit_eip,
-    const std::uint32_t entry_esp,
-    const std::uint32_t exit_esp,
-    const std::uint32_t exit_eflags)
-{
-    if (context == nullptr)
-    {
-        return;
-    }
-    const std::uint32_t target = LinuxX64GuestEntryTraceAddress();
-    if (target == 0U)
-    {
-        return;
-    }
-    const std::uint32_t configured_end =
-        LinuxX64GuestEntryTraceEndAddress();
-    const std::uint32_t range_end = configured_end >= target
-        ? configured_end : target;
-    const std::uint32_t entry_guest_eip =
-        ResolveLinuxX64GuestEntryAddress(context, entry_eip);
-    const std::uint32_t exit_guest_eip =
-        ResolveLinuxX64GuestEntryAddress(context, exit_eip);
-    const bool entry_matched =
-        entry_guest_eip >= target && entry_guest_eip <= range_end;
-    const bool exit_matched =
-        exit_guest_eip >= target && exit_guest_eip <= range_end;
-    if (!entry_matched && !exit_matched)
-    {
-        return;
-    }
-    static std::atomic<std::uint32_t> trace_count{0U};
-    const std::uint32_t sequence =
-        trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U;
-    if (sequence > 32U)
-    {
-        return;
-    }
-    char line[512] = {};
-    const int length = std::snprintf(
-        line, sizeof(line),
-        "[repiu-x64-guest-entry] n=%u target=0x%08X end=0x%08X fault_kind=%s "
-        "fault_eip=0x%08X entry_eip=0x%08X entry_guest=0x%08X "
-        "exit_eip=0x%08X exit_guest=0x%08X entry_esp=0x%08X "
-        "exit_esp=0x%08X "
-        "eflags=0x%08X pending=%u legacy=%u exit_site=%s\n",
-        static_cast<unsigned>(sequence), static_cast<unsigned>(target),
-        static_cast<unsigned>(range_end),
-        LinuxX64FaultKindName(fault_kind), static_cast<unsigned>(fault_eip),
-        static_cast<unsigned>(entry_eip),
-        static_cast<unsigned>(entry_guest_eip),
-        static_cast<unsigned>(exit_eip), static_cast<unsigned>(exit_guest_eip),
-        static_cast<unsigned>(entry_esp), static_cast<unsigned>(exit_esp),
-        static_cast<unsigned>(exit_eflags),
-        context->aot_reentry_pending ? 1U : 0U,
-        context->aot_legacy_fallback ? 1U : 0U,
-        VehExitSiteName(context->last_veh_exit_site));
-    if (length > 0)
-    {
-        repiu::platform::WriteHostErrorStream(
-            line,
-            static_cast<std::size_t>(length) < sizeof(line)
-                ? static_cast<std::size_t>(length)
-                : sizeof(line) - 1U);
-    }
-}
-
-bool LinuxX64ReturnFrameTraceEnabled()
-{
-    static const bool enabled = [] {
-        const char* const value =
-            std::getenv("REPIU_LINUX_X64_RETURN_FRAME_TRACE");
-        return value != nullptr && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
-
-void TraceLinuxX64ReturnStackTail(
-    const repiu::platform::LinuxX64AotDispatchFrame& frame,
-    std::uint32_t sequence);
-
-// Task 616. Capture the two stack layouts that share the x64 return thunk:
-// ordinary RET leaves its caller at [ESP] after consuming [ESP-4], while an
-// indirect call leaves its pushed fallthrough at [ESP] before resolving the
-// loaded target in R14D. This is diagnostics only; it does not choose a path.
-void TraceLinuxX64ZeroReturnFrame(
-    ThreadContext* const context,
-    const repiu::platform::LinuxX64AotDispatchFrame& frame)
-{
-    if (!LinuxX64ReturnFrameTraceEnabled() || context == nullptr)
-    {
-        return;
-    }
-    static std::atomic<std::uint32_t> trace_count{0U};
-    const std::uint32_t sequence =
-        trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U;
-    if (sequence > 8U)
-    {
-        return;
-    }
-
-    std::uint32_t stack_words[4] = {};
-    std::uint32_t valid_mask = 0U;
-    const std::uint32_t guest_esp = frame.guest.esp;
-    const std::uint32_t stack_base = guest_esp >= 8U ? guest_esp - 8U : 0U;
-    if (guest_esp >= 8U)
-    {
-        for (std::uint32_t index = 0U; index < 4U; ++index)
-        {
-            const std::uint32_t address = stack_base + index * 4U;
-            const void* const source = reinterpret_cast<const void*>(
-                static_cast<std::uintptr_t>(address));
-            if (!IsGuestRangeReadable(context, source, sizeof(std::uint32_t)) ||
-                !repiu::platform::CopyMemoryWithoutFaulting(
-                    &stack_words[index], source, sizeof(stack_words[index]))
-                     .complete)
-            {
-                continue;
-            }
-            valid_mask |= 1U << index;
-        }
-    }
-    std::uint32_t source_match_mask = 0U;
-    for (std::uint32_t index = 0U; index < 4U; ++index)
-    {
-        if ((valid_mask & (1U << index)) != 0U &&
-            stack_words[index] == frame.guest_source)
-        {
-            source_match_mask |= 1U << index;
-        }
-    }
-    const std::uint32_t consumed_slot =
-        guest_esp >= 4U ? guest_esp - 4U : 0U;
-    std::uint32_t stack_write_match_count = 0U;
-    for (std::uint32_t index = 0U;
-         index < REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY; ++index)
-    {
-        const auto& record = frame.stack_trace[index];
-        if (record.site != 0U && record.guest_esp == consumed_slot)
-        {
-            ++stack_write_match_count;
-        }
-    }
-    std::uint32_t top_call_source = 0U;
-    std::uint32_t top_call_target = 0U;
-    std::uint32_t top_call_fallthrough = 0U;
-    std::uint32_t top_call_entry_esp = 0U;
-    std::uint32_t top_call_origin = 0U;
-    if (context->aot_call_depth != 0U)
-    {
-        const ThreadContext::AotCallFrame& top_call =
-            context->aot_call_frames[context->aot_call_depth - 1U];
-        top_call_source = top_call.source;
-        top_call_target = top_call.target;
-        top_call_fallthrough = top_call.fallthrough;
-        top_call_entry_esp = top_call.entry_esp;
-        top_call_origin = static_cast<std::uint32_t>(top_call.origin);
-    }
-    std::fprintf(
-        stderr,
-        "[repiu-x64-return-frame] n=%u source=0x%08X guest_eip=0x%08X "
-        "guest_esp=0x%08X eflags=0x%08X continuation=0x%08X "
-        "metadata_esp=0x%08X status=0x%08X stack_base=0x%08X valid=0x%X "
-        "m8=0x%08X m4=0x%08X p0=0x%08X p4=0x%08X matches=0x%X "
-        "producer=%s producer_site=0x%08X "
-        "last_indirect=0x%08X/0x%08X last_return=0x%08X/0x%08X "
-        "call_depth=%u top_call=0x%08X/0x%08X/0x%08X/0x%08X/%u\n",
-        sequence,
-        static_cast<unsigned>(frame.guest_source),
-        static_cast<unsigned>(frame.guest.eip),
-        static_cast<unsigned>(frame.guest.esp),
-        static_cast<unsigned>(frame.guest.eflags),
-        static_cast<unsigned>(frame.guest_continuation),
-        static_cast<unsigned>(frame.guest_metadata_esp),
-        static_cast<unsigned>(frame.status),
-        static_cast<unsigned>(stack_base),
-        static_cast<unsigned>(valid_mask),
-        static_cast<unsigned>(stack_words[0]),
-        static_cast<unsigned>(stack_words[1]),
-        static_cast<unsigned>(stack_words[2]),
-        static_cast<unsigned>(stack_words[3]),
-        static_cast<unsigned>(source_match_mask),
-        (frame.status & 0x80000000U) != 0U ? "indirect-call" : "ret",
-        static_cast<unsigned>(frame.status & 0x7FFFFFFFU),
-        static_cast<unsigned>(context->aot_last_indirect_source.load(
-            std::memory_order_relaxed)),
-        static_cast<unsigned>(context->aot_last_indirect_target.load(
-            std::memory_order_relaxed)),
-        static_cast<unsigned>(context->aot_last_return_source.load(
-            std::memory_order_relaxed)),
-        static_cast<unsigned>(context->aot_last_return_target.load(
-            std::memory_order_relaxed)),
-        static_cast<unsigned>(context->aot_call_depth),
-        static_cast<unsigned>(top_call_source),
-        static_cast<unsigned>(top_call_target),
-        static_cast<unsigned>(top_call_fallthrough),
-        static_cast<unsigned>(top_call_entry_esp),
-        static_cast<unsigned>(top_call_origin));
-    std::fprintf(stderr,
-                 "[repiu-x64-stack-write] consumed=0x%08X sequence=%u "
-                 "matches=%u\n",
-                 static_cast<unsigned>(consumed_slot),
-                 static_cast<unsigned>(frame.stack_trace_sequence),
-                 static_cast<unsigned>(stack_write_match_count));
-    for (std::uint32_t index = 0U;
-         index < REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY; ++index)
-    {
-        const auto& record = frame.stack_trace[index];
-        if (record.site == 0U || record.guest_esp != consumed_slot)
-        {
-            continue;
-        }
-        const char* const writer = record.fallthrough != 0U
-            ? "direct-call" : "guest-push";
-        std::fprintf(stderr,
-                     "[repiu-x64-stack-write] slot=0x%08X index=%u "
-                     "writer=%s "
-                     "site=0x%08X fallthrough=0x%08X esp=0x%08X "
-                     "value=0x%08X\n",
-                     static_cast<unsigned>(consumed_slot),
-                     static_cast<unsigned>(index),
-                     writer,
-                     static_cast<unsigned>(record.site),
-                     static_cast<unsigned>(record.fallthrough),
-                     static_cast<unsigned>(record.guest_esp),
-                     static_cast<unsigned>(record.value));
-    }
-    TraceLinuxX64ReturnStackTail(frame, sequence);
-}
-
-// Task 626. Select one resolved return target for a read-only register/frame
-// snapshot at the x64 resolver boundary.
-std::uint32_t LinuxX64ReturnRegisterTraceAddress()
-{
-    static const std::uint32_t address = [] {
-        const auto setting = repiu::platform::ReadEnvironmentSetting(
-            "REPIU_LINUX_X64_RETURN_REG_TRACE", 32U);
-        if (!setting.present || setting.too_long || setting.value.empty())
-        {
-            return 0U;
-        }
-        char text[33] = {};
-        std::memcpy(text, setting.value.data(), setting.value.size());
-        char* end = nullptr;
-        const unsigned long parsed = std::strtoul(text, &end, 0);
-        if (end == text || *end != '\0' ||
-            parsed > std::numeric_limits<std::uint32_t>::max())
-        {
-            return 0U;
-        }
-        return static_cast<std::uint32_t>(parsed);
-    }();
-    return address;
-}
-
-// Task 628. How many of the most recent guest stack writes to print beside a
-// selected return. The slot filter Task 619 added answers "who wrote this
-// slot"; it cannot answer "what did the stack do just before this return",
-// because the writes immediately before a failure usually land on other slots.
-std::uint32_t LinuxX64ReturnStackTailCount()
-{
-    static const std::uint32_t count = [] {
-        const auto setting = repiu::platform::ReadEnvironmentSetting(
-            "REPIU_LINUX_X64_RETURN_STACK_TAIL", 32U);
-        if (!setting.present || setting.too_long || setting.value.empty())
-        {
-            return 0U;
-        }
-        char text[33] = {};
-        std::memcpy(text, setting.value.data(), setting.value.size());
-        char* end = nullptr;
-        const unsigned long parsed = std::strtoul(text, &end, 0);
-        if (end == text || *end != '\0')
-        {
-            return 0U;
-        }
-        if (parsed > REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY)
-        {
-            return static_cast<std::uint32_t>(
-                REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY);
-        }
-        return static_cast<std::uint32_t>(parsed);
-    }();
-    return count;
-}
-
-// Task 628. The ring in write order, oldest of the requested window first, so
-// a correct return and the failing one that follows it read as one sequence.
-void TraceLinuxX64ReturnStackTail(
-    const repiu::platform::LinuxX64AotDispatchFrame& frame,
-    const std::uint32_t sequence)
-{
-    const std::uint32_t requested = LinuxX64ReturnStackTailCount();
-    if (requested == 0U)
-    {
-        return;
-    }
-    const std::uint32_t written = frame.stack_trace_sequence;
-    const std::uint32_t printed = std::min(requested, written);
-    std::fprintf(stderr,
-                 "[repiu-x64-return-stack-tail] n=%u target=0x%08X "
-                 "sequence=%u printed=%u\n",
-                 static_cast<unsigned>(sequence),
-                 static_cast<unsigned>(frame.guest_source),
-                 static_cast<unsigned>(written),
-                 static_cast<unsigned>(printed));
-    for (std::uint32_t offset = printed; offset != 0U; --offset)
-    {
-        const std::uint32_t record_sequence = written - offset;
-        const std::uint32_t index = record_sequence &
-            (REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY - 1U);
-        const auto& record = frame.stack_trace[index];
-        if (record.site == 0U)
-        {
-            continue;
-        }
-        const char* const writer = record.fallthrough != 0U
-            ? "direct-call" : "guest-push";
-        std::fprintf(stderr,
-                     "[repiu-x64-return-stack-tail] index=%u writer=%s "
-                     "site=0x%08X fallthrough=0x%08X esp=0x%08X "
-                     "value=0x%08X\n",
-                     static_cast<unsigned>(index), writer,
-                     static_cast<unsigned>(record.site),
-                     static_cast<unsigned>(record.fallthrough),
-                     static_cast<unsigned>(record.guest_esp),
-                     static_cast<unsigned>(record.value));
-    }
-}
-
-void TraceLinuxX64ReturnRegisters(
-    ThreadContext* const context,
-    const repiu::platform::LinuxX64AotDispatchFrame& frame)
-{
-    const std::uint32_t watched = LinuxX64ReturnRegisterTraceAddress();
-    const bool legacy_match =
-        watched != 0U && frame.guest_source == watched;
-    const bool transfer_match =
-        AotTransferTargetTraceMatches(frame.guest_source);
-    if (!legacy_match && !transfer_match)
-    {
-        return;
-    }
-    static std::atomic<std::uint32_t> trace_count{0U};
-    const std::uint32_t sequence =
-        trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U;
-    if (sequence > 8U)
-    {
-        return;
-    }
-
-    std::uint32_t stack_words[4] = {};
-    std::uint32_t valid_mask = 0U;
-    const std::uint32_t guest_esp = frame.guest.esp;
-    const std::uint32_t stack_base = guest_esp >= 4U ? guest_esp - 4U : 0U;
-    if (context != nullptr && guest_esp >= 4U)
-    {
-        for (std::uint32_t index = 0U; index < 4U; ++index)
-        {
-            const std::uint32_t address = stack_base + index * 4U;
-            const void* const source = reinterpret_cast<const void*>(
-                static_cast<std::uintptr_t>(address));
-            if (!IsGuestRangeReadable(context, source, sizeof(std::uint32_t)) ||
-                !repiu::platform::CopyMemoryWithoutFaulting(
-                    &stack_words[index], source, sizeof(stack_words[index]))
-                     .complete)
-            {
-                continue;
-            }
-            valid_mask |= 1U << index;
-        }
-    }
-
-    const bool indirect_call = (frame.status & 0x80000000U) != 0U;
-    const std::uint32_t producer = frame.status & 0x7FFFFFFFU;
-    std::uint8_t producer_bytes[8] = {};
-    std::uint32_t producer_bytes_valid = 0U;
-    const void* const producer_pointer = reinterpret_cast<const void*>(
-        static_cast<std::uintptr_t>(producer));
-    if (context != nullptr &&
-        IsGuestRangeReadable(context, producer_pointer,
-                             sizeof(producer_bytes)) &&
-        repiu::platform::CopyMemoryWithoutFaulting(
-            producer_bytes, producer_pointer, sizeof(producer_bytes)).complete)
-    {
-        producer_bytes_valid = 1U;
-    }
-    if (transfer_match)
-    {
-        std::fprintf(
-            stderr,
-            "[repiu-aot-transfer-target] kind=%s origin=x64-thunk "
-            "source=0x%08X target=0x%08X "
-            "bytes=%02X%02X%02X%02X%02X%02X%02X%02X valid=%u "
-            "esp=0x%08X consumed=0x%08X stack_target=0x%08X "
-            "eax=0x%08X ebx=0x%08X ecx=0x%08X edx=0x%08X "
-            "esi=0x%08X edi=0x%08X ebp=0x%08X\n",
-            indirect_call ? "call" : "return", producer,
-            static_cast<unsigned>(frame.guest_source), producer_bytes[0],
-            producer_bytes[1], producer_bytes[2], producer_bytes[3],
-            producer_bytes[4], producer_bytes[5], producer_bytes[6],
-            producer_bytes[7], producer_bytes_valid,
-            static_cast<unsigned>(frame.guest.esp),
-            static_cast<unsigned>(stack_base),
-            static_cast<unsigned>(stack_words[0]),
-            static_cast<unsigned>(frame.guest.eax),
-            static_cast<unsigned>(frame.guest.ebx),
-            static_cast<unsigned>(frame.guest.ecx),
-            static_cast<unsigned>(frame.guest.edx),
-            static_cast<unsigned>(frame.guest.esi),
-            static_cast<unsigned>(frame.guest.edi),
-            static_cast<unsigned>(frame.guest.ebp));
-    }
-
-    std::fprintf(
-        stderr,
-        "[repiu-x64-return-reg] n=%u target=0x%08X "
-        "edi=0x%08X esi=0x%08X ebx=0x%08X edx=0x%08X "
-        "ecx=0x%08X eax=0x%08X ebp=0x%08X eip=0x%08X "
-        "esp=0x%08X eflags=0x%08X status=0x%08X "
-        "continuation=0x%08X metadata_esp=0x%08X "
-        "stack_base=0x%08X valid=0x%X m4=0x%08X m0=0x%08X "
-        "p4=0x%08X p8=0x%08X\n",
-        sequence,
-        static_cast<unsigned>(frame.guest_source),
-        static_cast<unsigned>(frame.guest.edi),
-        static_cast<unsigned>(frame.guest.esi),
-        static_cast<unsigned>(frame.guest.ebx),
-        static_cast<unsigned>(frame.guest.edx),
-        static_cast<unsigned>(frame.guest.ecx),
-        static_cast<unsigned>(frame.guest.eax),
-        static_cast<unsigned>(frame.guest.ebp),
-        static_cast<unsigned>(frame.guest.eip),
-        static_cast<unsigned>(frame.guest.esp),
-        static_cast<unsigned>(frame.guest.eflags),
-        static_cast<unsigned>(frame.status),
-        static_cast<unsigned>(frame.guest_continuation),
-        static_cast<unsigned>(frame.guest_metadata_esp),
-        static_cast<unsigned>(stack_base),
-        static_cast<unsigned>(valid_mask),
-        static_cast<unsigned>(stack_words[0]),
-        static_cast<unsigned>(stack_words[1]),
-        static_cast<unsigned>(stack_words[2]),
-        static_cast<unsigned>(stack_words[3]));
-    TraceLinuxX64ReturnStackTail(frame, sequence);
-    // Task 629. The same map dump the initial and final phases print, taken at
-    // this return instead. The failing run dies on SIGSEGV, so the final phase
-    // never arrives, and the block that fails has no initial entry to print.
-    // Reading the map here is safe for the reason the worker handshake gives:
-    // the translation worker only runs while the guest thread is parked, and
-    // this is the guest thread.
-    if (legacy_match && context != nullptr &&
-        context->aot_placement != nullptr)
-    {
-        TraceAotGuestMap(*context->aot_placement, context->runtime_base,
-                         "return-trace");
-    }
-}
-
-void TraceLinuxX64ReturnStackWriters(
-    const repiu::platform::LinuxX64AotDispatchFrame& frame)
-{
-    if (!LinuxX64ReturnTraceEnabled())
-    {
-        return;
-    }
-    const std::uint32_t consumed_slot = frame.guest.esp >= 4U
-        ? frame.guest.esp - 4U : 0U;
-    std::uint32_t match_count = 0U;
-    for (std::uint32_t index = 0U;
-         index < REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY; ++index)
-    {
-        const auto& record = frame.stack_trace[index];
-        if (record.site != 0U && record.guest_esp == consumed_slot)
-        {
-            ++match_count;
-        }
-    }
-    std::fprintf(stderr,
-                 "[repiu-x64-return-stack] source=0x%08X "
-                 "producer=0x%08X consumed=0x%08X sequence=%u matches=%u\n",
-                 static_cast<unsigned>(frame.guest_source),
-                 static_cast<unsigned>(frame.status),
-                 static_cast<unsigned>(consumed_slot),
-                 static_cast<unsigned>(frame.stack_trace_sequence),
-                 static_cast<unsigned>(match_count));
-    for (std::uint32_t index = 0U;
-         index < REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY; ++index)
-    {
-        const auto& record = frame.stack_trace[index];
-        if (record.site == 0U || record.guest_esp != consumed_slot)
-        {
-            continue;
-        }
-        const char* const writer = record.fallthrough != 0U
-            ? "direct-call" : "guest-push";
-        std::fprintf(stderr,
-                     "[repiu-x64-return-stack] index=%u writer=%s "
-                     "site=0x%08X fallthrough=0x%08X esp=0x%08X "
-                     "value=0x%08X\n",
-                     static_cast<unsigned>(index), writer,
-                     static_cast<unsigned>(record.site),
-                     static_cast<unsigned>(record.fallthrough),
-                     static_cast<unsigned>(record.guest_esp),
-                     static_cast<unsigned>(record.value));
-    }
-}
-
-// Task 578. Where an x64 host asks how to continue.
-//
-// The whole question is "where in the cache is this guest address", and the
-// engine already answers it for other callers, so this is an adapter rather
-// than a mechanism. Answering zero is not a failure path to avoid: Task 562's
-// thunk turns it into an INT3, which is the fail-closed boundary that keeps a
-// guest address the cache does not hold from continuing anywhere at all.
-std::uintptr_t LinuxX64EngineResolver(
-    void* resolver_context, repiu::platform::LinuxX64AotDispatchFrame* frame)
-{
-    auto* const context = static_cast<ThreadContext*>(resolver_context);
-    if (context != nullptr)
-    {
-        context->linux_x64_transfer_failure_provenance = {};
-    }
-    if (context == nullptr || frame == nullptr ||
-        context->aot_placement == nullptr)
-    {
-        TraceLinuxX64ReturnResolver("invalid-state",
-                                   frame != nullptr ? frame->guest_source : 0U,
-                                   0U);
-        return 0U;
-    }
-    if (frame->guest_source == 0U)
-    {
-        TraceLinuxX64ZeroReturnFrame(context, *frame);
-    }
-    else
-    {
-        TraceLinuxX64ReturnRegisters(context, *frame);
-        TraceLinuxX64ReturnStackWriters(*frame);
-    }
-    std::uint32_t cache_address = 0U;
-    const std::uint64_t dynamic_attempts_before =
-        context->aot_dynamic_attempt_count.load(std::memory_order_relaxed);
-    if (!ResolveAotTransferTarget(context, frame->guest_source, &cache_address))
-    {
-        const bool identical_first_instruction =
-            CanResumeLinuxX64LegacyTarget(context, frame->guest_source);
-        // Task 743. The legacy resume thunk sets TF and jumps, so the #DB
-        // names the target before anything there runs; the VEH's single-step
-        // path then dispatches the HLE and stack-bridge handlers at that EIP
-        // exactly as the indirect-transfer fallback does. Requiring a
-        // byte-identical first instruction here left every other
-        // untranslatable return target to the thunk's INT3, which nothing
-        // handles.
-        if (identical_first_instruction ||
-            (IsGuestInstructionPointer(context, frame->guest_source) &&
-             IsGuestRangeReadable(
-                 context,
-                 reinterpret_cast<const void*>(
-                     static_cast<std::uintptr_t>(frame->guest_source)),
-                 15U)))
-        {
-            frame->guest_continuation = frame->guest_source;
-            frame->guest.eip = frame->guest_source;
-            context->aot_reentry_pending = false;
-            context->aot_legacy_fallback = true;
-            context->enable_single_step_trace = true;
-            TraceLinuxX64ReturnResolver(
-                "legacy-fallback", frame->guest_source,
-                static_cast<std::uint32_t>(
-                    repiu::platform::LinuxX64LegacyResumeThunkAddress()),
-                identical_first_instruction
-                    ? "byte-identical first instruction"
-                    : "single-step fallback at a non-identical target",
-                frame->status, frame->guest.esp);
-            return repiu::platform::LinuxX64LegacyResumeThunkAddress();
-        }
-        const bool attempted_dynamic_translation =
-            context->aot_dynamic_attempt_count.load(std::memory_order_relaxed) !=
-            dynamic_attempts_before;
-        const auto failure_reason = attempted_dynamic_translation
-            ? LinuxX64TransferFailureReason::kTranslationFailed
-            : LinuxX64TransferFailureReason::kPolicyRefused;
-        context->linux_x64_transfer_failure_provenance =
-            MakeLinuxX64TransferFailureProvenance(
-                frame->status, frame->guest_source, frame->guest.esp,
-                failure_reason);
-        TraceLinuxX64ReturnResolver(
-            attempted_dynamic_translation ? "translation-failed"
-                                          : "policy-refused",
-            frame->guest_source, 0U,
-            attempted_dynamic_translation
-                ? context->aot_translation_result.message.c_str()
-                : "",
-            frame->status, frame->guest.esp);
-        return 0U;
-    }
-    TraceLinuxX64ReturnResolver("resolved", frame->guest_source,
-                                cache_address, "", frame->status,
-                                frame->guest.esp);
-    return static_cast<std::uintptr_t>(cache_address);
-}
-
-// Task 578. The third entry path: not the guest's bytes, but the placed cache.
-//
-// Guest ESP is seeded into R15D because there is no stack switch on x64 to put
-// it anywhere else -- the guest's stack and the host's are separate registers
-// from the start (Task 546 decision 3). The other guest registers start at zero,
-// which is what the i386 direct path effectively gives them too: it calls the
-// entry with whatever the ABI left behind and the guest's own prologue sets up
-// what it needs.
-void CallGuestCacheEntryTimed(ThreadContext* context)
-{
-    const ExecutionTimeScope guest_run_time_scope(
-        context != nullptr ? context->execution_time_profile.get() : nullptr,
-        ExecutionTimeBucket::kGuestRunTotal);
-    if (context == nullptr || context->aot_placement == nullptr ||
-        !context->aot_placement->placed)
-    {
-        return;
-    }
-    repiu::platform::LinuxX64AotDispatchFrame frame;
-    repiu::platform::InstallLinuxX64Dispatch(&frame, context,
-                                             &LinuxX64EngineResolver);
-    InstallGlideGateDirectDispatchResolver();
-    repiu::platform::LinuxX64GuestEntryState state;
-    state.guest_esp = static_cast<std::uint64_t>(context->guest_initial_esp);
-    void* const entry = reinterpret_cast<void*>(
-        static_cast<std::uintptr_t>(context->aot_placement->entry_address));
-    repiu::platform::RepiuLinuxX64GuestEntry(entry, &state);
-    repiu::platform::ClearLinuxX64Dispatch();
-}
-#endif
+// Task 759. What differed by execution model here -- the direct model's two
+// timed entries, and the cache model's resolver, entry and return traces -- is
+// in execution_trampoline_direct.cpp and execution_trampoline_cache.cpp, behind
+// execution_trampoline_model.h.
 
 // Task 503d-19. What both hosts' thread procedures do around the switch,
 // extracted rather than transcribed twice. Six fields and a memory query is
@@ -3754,7 +2817,6 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
     {
         if (context->use_guest_stack)
         {
-#if defined(_MSC_VER) && defined(_M_IX86)
             StackSwitchCallState state;
             FillGuestStackCallState(context, &state);
             g_repiu_active_thread_context = context;
@@ -3767,20 +2829,16 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
                 return 5;
             }
 
-            CallGuestEntryWithStackTimed(&state, context);
+            trampoline_model::EnterGuestWithStack(&state, context);
 
             std::uint32_t finished_exit_code = 0;
             if (FinishGuestStackCall(context, state, &finished_exit_code))
             {
                 return finished_exit_code;
             }
-#else
-            return 4;
-#endif
         }
         else
         {
-#if defined(_MSC_VER) && defined(_M_IX86)
             g_repiu_active_thread_context = context;
             context->vectored_handler = AddVectoredExceptionHandler(
                 1, GuestStackVectoredExceptionHandler);
@@ -3789,15 +2847,12 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
                 g_repiu_active_thread_context = nullptr;
                 return 5;
             }
-#endif
-            CallGuestEntryDirectTimed(context);
-#if defined(_MSC_VER) && defined(_M_IX86)
+            trampoline_model::EnterGuestDirect(context);
             g_repiu_active_thread_context = nullptr;
             if (context->process_exit)
             {
                 return 0;
             }
-#endif
         }
         context->returned = true;
         return 0;
@@ -3808,6 +2863,12 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
     {
         return 2;
     }
+}
+
+// Task 759. The Win32 host runs the direct model only.
+repiu::platform::HostThreadEntry SelectGuestThreadEntry()
+{
+    return &GuestEntryThreadProc;
 }
 #else   // !defined(_WIN32)
 
@@ -3834,18 +2895,16 @@ repiu::platform::FaultDisposition GuestThreadFaultCallback(
         DispatchGuestFault(*fault);
     if (disposition == repiu::platform::FaultDisposition::kResume)
     {
-#if defined(__x86_64__)
+        // Task 759. On the cache model a guest that has exited leaves through
+        // the cache's exit.
         auto* context = static_cast<ThreadContext*>(user_data);
-        if (context != nullptr && context->cache_entry_active &&
-            context->process_exit)
+        if (runtime::execution_model::RunsLongModeCodeCache() && context != nullptr &&
+            context->cache_entry_active && context->process_exit)
         {
             fault->registers->EFlags &= ~0x00000100U;
             fault->registers->EFlags &= ~0x00000400U;
-            fault->host_resume_address =
-                reinterpret_cast<std::uintptr_t>(
-                    &repiu::platform::RepiuLinuxX64GuestExit);
+            fault->host_resume_address = trampoline_model::CacheExitAddress();
         }
-#endif
         return disposition;
     }
 
@@ -3876,12 +2935,13 @@ repiu::platform::FaultDisposition GuestThreadFaultCallback(
 // SEH and with 3c where the vectored handler was.
 std::uint32_t GuestEntryThreadProc(void* parameter)
 {
-#if !defined(_M_IX86) && !defined(__i386__)
     // The current Linux guest entry is a 32-bit native ABI. Do not let an x64
     // host reach it through a truncated guest function pointer or stack state.
-    (void)parameter;
-    return 4;
-#else
+    // Task 759: which is to say, it is the direct model's.
+    if (!runtime::execution_model::RunsGuestBytesDirectly())
+    {
+        return 4;
+    }
     ThreadContext* context = static_cast<ThreadContext*>(parameter);
     if (context == nullptr)
     {
@@ -3905,7 +2965,7 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
         // says one is installed, which is what the teardown reads.
         context->vectored_handler = context;
 
-        CallGuestEntryWithStackTimed(&state, context);
+        trampoline_model::EnterGuestWithStack(&state, context);
 
         std::uint32_t finished_exit_code = 0;
         if (FinishGuestStackCall(context, state, &finished_exit_code))
@@ -3923,7 +2983,7 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
             return 5;
         }
         context->vectored_handler = context;
-        CallGuestEntryDirectTimed(context);
+        trampoline_model::EnterGuestDirect(context);
         g_repiu_active_thread_context = nullptr;
         if (context->process_exit)
         {
@@ -3932,10 +2992,8 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
     }
     context->returned = true;
     return 0;
-#endif
 }
 
-#if defined(__x86_64__)
 // Task 578. The x64 thread procedure.
 //
 // The same shape as the i386 direct path above -- install the fault handler,
@@ -3964,7 +3022,7 @@ std::uint32_t GuestCacheEntryThreadProc(void* parameter)
     // record. Cleared immediately after, so a fault taken outside the run is
     // declined here exactly as it was before.
     context->cache_entry_active = true;
-    CallGuestCacheEntryTimed(context);
+    trampoline_model::EnterGuestCache(context);
     context->cache_entry_active = false;
     g_repiu_active_thread_context = nullptr;
     if (context->process_exit)
@@ -3974,10 +3032,24 @@ std::uint32_t GuestCacheEntryThreadProc(void* parameter)
     context->returned = true;
     return 0;
 }
-#endif
+
+// Task 759. The thread procedure of this host's execution model.
+repiu::platform::HostThreadEntry SelectGuestThreadEntry()
+{
+    return runtime::execution_model::RunsLongModeCodeCache()
+        ? &GuestCacheEntryThreadProc
+        : &GuestEntryThreadProc;
+}
 #endif  // defined(_WIN32)
 
 }  // namespace
+
+void TraceAotGuestMapForModel(const AotCodeCachePlacement& placement,
+                              const std::uint32_t runtime_base,
+                              const char* const phase)
+{
+    TraceAotGuestMap(placement, runtime_base, phase);
+}
 
 bool DispatchGuestHleInstruction(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context)
@@ -4079,7 +3151,12 @@ LegacyResumeCodeMode(const ThreadContext* context,
 bool CanResumeLinuxX64LegacyTargetUncached(ThreadContext* context,
                                            const std::uint32_t guest_target)
 {
-#if defined(__x86_64__)
+    // Task 759. A question of the cache model; as before, a host that does
+    // not run the long-mode cache answers false.
+    if (!runtime::execution_model::RunsLongModeCodeCache())
+    {
+        return false;
+    }
     constexpr std::size_t kMaximumX86InstructionBytes = 15U;
     const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
         static_cast<std::uintptr_t>(guest_target));
@@ -4100,11 +3177,6 @@ bool CanResumeLinuxX64LegacyTargetUncached(ThreadContext* context,
                instruction, kMaximumX86InstructionBytes, *code_mode)
                .compatibility ==
         runtime::LongModeByteCompatibility::kIdenticalBytes;
-#else
-    (void)context;
-    (void)guest_target;
-    return false;
-#endif
 }
 
 // Task 741. The answer depends on the guest bytes and the code segment's
@@ -4124,15 +3196,16 @@ bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
         return CanResumeLinuxX64LegacyTargetUncached(context, guest_target);
     }
     std::uint8_t code_mode = 0U;
-#if defined(__x86_64__)
-    if (const std::optional<runtime::GuestCodeDefaultOperandSize> mode =
-            LegacyResumeCodeMode(context, guest_target);
-        mode.has_value())
+    if (runtime::execution_model::RunsLongModeCodeCache())
     {
-        code_mode = static_cast<std::uint8_t>(
-            static_cast<std::uint32_t>(*mode) + 1U);
+        if (const std::optional<runtime::GuestCodeDefaultOperandSize> mode =
+                LegacyResumeCodeMode(context, guest_target);
+            mode.has_value())
+        {
+            code_mode = static_cast<std::uint8_t>(
+                static_cast<std::uint32_t>(*mode) + 1U);
+        }
     }
-#endif
     if ((entry->computed & 0x04U) != 0U &&
         entry->long_mode_code_mode == code_mode)
     {
@@ -4743,14 +3816,16 @@ void RecoverFromHleExit(repiu::platform::GuestCpuContext* win32_context,
 {
     thread_context->process_exit = true;
     thread_context->returned = true;
-#if defined(__x86_64__)
-    // Linux x64 leaves host RSP on the cache call frame. The signal callback
-    // installs the full-width host RIP for RepiuLinuxX64GuestExit, so writing
-    // the 32-bit guest EIP to an x64 recovery symbol here would be wrong.
-    win32_context->EFlags &= ~0x00000100U;
-    win32_context->EFlags &= ~0x00000400U;
-    return;
-#else
+    if (runtime::execution_model::RunsLongModeCodeCache())
+    {
+        // Linux x64 leaves host RSP on the cache call frame. The signal
+        // callback installs the full-width host RIP for the cache's exit, so
+        // writing the 32-bit guest EIP to a recovery symbol here would be
+        // wrong.
+        win32_context->EFlags &= ~0x00000100U;
+        win32_context->EFlags &= ~0x00000400U;
+        return;
+    }
     if (thread_context->use_guest_stack)
     {
         RecoverToHost(win32_context, thread_context);
@@ -4760,7 +3835,6 @@ void RecoverFromHleExit(repiu::platform::GuestCpuContext* win32_context,
         win32_context->Eip = static_cast<decltype(win32_context->Eip)>(
             reinterpret_cast<std::uintptr_t>(&RecoverHostStackException));
     }
-#endif
 }
 
 void RecordHandledDosInterrupt(ThreadContext* context,
@@ -4874,15 +3948,13 @@ std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
             host_entry = g_recovery_host_es;
             break;
         case 2:
-#if defined(_M_X64) || defined(__x86_64__)
             // Linux x64 does not report SS in ucontext_t. The logical guest
             // selector is therefore authoritative once the execution setup
             // has seeded it from the LE stack object.
-            if (shadow != 0)
+            if (runtime::execution_model::RunsLongModeCodeCache() && shadow != 0)
             {
                 return shadow;
             }
-#endif
             return static_cast<std::uint16_t>(win32_context->SegSs);
         case 3:
             physical = static_cast<std::uint16_t>(win32_context->SegDs);
@@ -5085,9 +4157,52 @@ std::uint64_t GuestCliHoldClockNanoseconds()
             .count());
 }
 
+namespace
+{
+
+// Task 759. The continuation after a boundary the engine handled has moved
+// EIP off `boundary_eip`. On the direct model the guest resumes at the new
+// address as it is. On the cache model a raw guest address cannot be run, so
+// the continuation enters the cache (Tasks 702 and 703), or the original bytes
+// where they read the same in long mode; false when neither is possible, and
+// the event has to be declined.
+bool ResumeHandledBoundary(repiu::platform::GuestCpuContext* const win32_context,
+                           ThreadContext* const context,
+                           const std::uint32_t boundary_eip)
+{
+    if (!runtime::execution_model::RunsLongModeCodeCache())
+    {
+        return true;
+    }
+    if (context->aot_placement != nullptr &&
+        static_cast<std::uint32_t>(win32_context->Eip) != boundary_eip)
+    {
+        const bool resumed = TryResumeAotAfterHandledHle(
+            win32_context,
+            context,
+            boundary_eip,
+            AotHleResumeOrigin::kHandledGuestBoundary);
+        if (!resumed &&
+            !CanResumeLinuxX64LegacyTarget(
+                context,
+                static_cast<std::uint32_t>(win32_context->Eip)))
+        {
+            win32_context->EFlags &= ~0x00000100U;
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
 bool CanEnterTimerInterruptHandler(ThreadContext* const context)
 {
-#if defined(__x86_64__)
+    // Task 759. On the direct model the handler runs as it is.
+    if (!runtime::execution_model::RunsLongModeCodeCache())
+    {
+        return true;
+    }
     if (context == nullptr || context->aot_placement == nullptr)
     {
         return true;
@@ -5103,10 +4218,6 @@ bool CanEnterTimerInterruptHandler(ThreadContext* const context)
     return FindAotCacheAddress(*context->aot_placement, shadow.offset,
                                &cache_address) ||
         CanResumeLinuxX64LegacyTarget(context, shadow.offset);
-#else
-    (void)context;
-    return true;
-#endif
 }
 
 std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_context,
@@ -5206,62 +4317,63 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
     std::uint32_t eflags = win32_context->EFlags & ~0x00000100U;
     std::uint32_t segcs = win32_context->SegCs;
     std::uint32_t eip = win32_context->Eip;
-#if defined(__x86_64__)
-    // Task 714. On this host the interrupt frame holds a guest address, always.
-    //
-    // At a handled boundary EIP already is one. At an AOT timer safe point it is
-    // not: EIP is the cache byte after the int3. That broke delivery twice over.
-    // Looking a cache address up in the guest selector table found nothing, so
-    // every safe-point tick was deferred and then dropped -- 0 of 3,859 injected
-    // in a 30-second pumpit2a run, against 5,667 of 5,719 on Win32, which left
-    // the guest's clock about 3.3 times slow. And once the lookup was made to
-    // succeed, the frame still carried the cache address, which Task 704's IRETD
-    // HLE rightly refuses as a return target outside every guest code
-    // descriptor, so the ISR died on its IRET.
-    //
-    // So the cache address is mapped to the guest instruction it executes -- at
-    // a safe point, the backward edge it guards -- and that is used for both the
-    // selector and the frame. Returning there re-runs the safe point, finds the
-    // request already cleared, and falls into the branch with the guest's flags
-    // intact, which is what resuming after the int3 would have done. On i386 the
-    // guest's own IRET runs natively and returns to the cache address directly,
-    // so that host is left as it was.
-    //
-    // Task 718: on by default. It was opt-in while runs with it on died at
-    // about 28 seconds -- first on the CS-override boundary Task 716 removed,
-    // then on the ES fold Task 717 fixed. `=0` restores the old behavior, in
-    // which safe-point ticks are deferred and dropped.
-    static const bool safe_point_injection =
-        runtime::ResolveTimerSafePointInjection(
-            std::getenv("REPIU_LINUX_X64_SAFE_POINT_INJECTION"));
-    if (safe_point_injection && context->aot_placement != nullptr &&
-        IsAotCacheAddress(context, eip))
+    if (runtime::execution_model::RunsLongModeCodeCache())
     {
-        std::uint32_t guest_address = 0U;
-        if (!FindAotGuestAddress(*context->aot_placement, eip,
-                                 &guest_address))
+        // Task 714. On this host the interrupt frame holds a guest address, always.
+        //
+        // At a handled boundary EIP already is one. At an AOT timer safe point it is
+        // not: EIP is the cache byte after the int3. That broke delivery twice over.
+        // Looking a cache address up in the guest selector table found nothing, so
+        // every safe-point tick was deferred and then dropped -- 0 of 3,859 injected
+        // in a 30-second pumpit2a run, against 5,667 of 5,719 on Win32, which left
+        // the guest's clock about 3.3 times slow. And once the lookup was made to
+        // succeed, the frame still carried the cache address, which Task 704's IRETD
+        // HLE rightly refuses as a return target outside every guest code
+        // descriptor, so the ISR died on its IRET.
+        //
+        // So the cache address is mapped to the guest instruction it executes -- at
+        // a safe point, the backward edge it guards -- and that is used for both the
+        // selector and the frame. Returning there re-runs the safe point, finds the
+        // request already cleared, and falls into the branch with the guest's flags
+        // intact, which is what resuming after the int3 would have done. On i386 the
+        // guest's own IRET runs natively and returns to the cache address directly,
+        // so that host is left as it was.
+        //
+        // Task 718: on by default. It was opt-in while runs with it on died at
+        // about 28 seconds -- first on the CS-override boundary Task 716 removed,
+        // then on the ES fold Task 717 fixed. `=0` restores the old behavior, in
+        // which safe-point ticks are deferred and dropped.
+        static const bool safe_point_injection =
+            runtime::ResolveTimerSafePointInjection(
+                std::getenv("REPIU_LINUX_X64_SAFE_POINT_INJECTION"));
+        if (safe_point_injection && context->aot_placement != nullptr &&
+            IsAotCacheAddress(context, eip))
+        {
+            std::uint32_t guest_address = 0U;
+            if (!FindAotGuestAddress(*context->aot_placement, eip,
+                                     &guest_address))
+            {
+                RecordTimerTickDeferred(&context->timer_tick_delivery);
+                return 0U;
+            }
+            eip = guest_address;
+        }
+        std::uint16_t logical_cs = 0U;
+        if (!runtime::FindSelectorForLinearAddress(
+                context->selector_table, eip, &logical_cs))
         {
             RecordTimerTickDeferred(&context->timer_tick_delivery);
             return 0U;
         }
-        eip = guest_address;
+        const runtime::GuestDescriptor* const code_descriptor =
+            runtime::FindDescriptor(context->selector_table, logical_cs);
+        if (code_descriptor == nullptr || !code_descriptor->executable)
+        {
+            RecordTimerTickDeferred(&context->timer_tick_delivery);
+            return 0U;
+        }
+        segcs = logical_cs;
     }
-    std::uint16_t logical_cs = 0U;
-    if (!runtime::FindSelectorForLinearAddress(
-            context->selector_table, eip, &logical_cs))
-    {
-        RecordTimerTickDeferred(&context->timer_tick_delivery);
-        return 0U;
-    }
-    const runtime::GuestDescriptor* const code_descriptor =
-        runtime::FindDescriptor(context->selector_table, logical_cs);
-    if (code_descriptor == nullptr || !code_descriptor->executable)
-    {
-        RecordTimerTickDeferred(&context->timer_tick_delivery);
-        return 0U;
-    }
-    segcs = logical_cs;
-#endif
 
     // Task 366: with the backlog opt-in off this returns false and the two lines
     // below behave exactly as before -- one injection, flag cleared. With it on,
@@ -5415,13 +4527,11 @@ struct VehExitRecorder
             (context->aot_reentry_pending ? 0x04U : 0U) |
             (context->aot_legacy_fallback ? 0x08U : 0U) |
             (context->enable_single_step_trace ? 0x10U : 0U));
-#if defined(__x86_64__)
-        TraceLinuxX64GuestEntry(
+        trampoline_model::TraceGuestEntry(
             context, fault_eip, fault_kind, entry_eip, exit_eip,
             entry_esp,
             static_cast<std::uint32_t>(win32_context->Esp),
             static_cast<std::uint32_t>(win32_context->EFlags));
-#endif
         if (!arena_single_step)
         {
             return;
@@ -6025,38 +5135,39 @@ repiu::platform::FaultDisposition DispatchGuestFault(
                                     &safe_point_guest_source))
         {
             NoteVehExitSite(context, VehExitSite::kAotTimerSafePoint);
-#if defined(__x86_64__)
-            // Task 710. When no tick was due, EIP is the cache byte after the
-            // int3 and resuming there is ordinary. When INT 8 was injected, EIP
-            // is now the guest's handler -- a raw guest address that long mode
-            // cannot run -- so it has to enter the cache the way Tasks 702 and
-            // 703 made the Glide gate and the timer chain enter it. The IRET
-            // frame's return address is the cache byte after the int3, which
-            // the IRETD HLE from Task 704 already knows how to resume.
-            const std::uint32_t resumed_eip =
-                static_cast<std::uint32_t>(win32_context->Eip);
-            AotCodeCachePlacement* const safe_point_placement =
-                context->aot_placement;
-            const bool eip_in_cache =
-                safe_point_placement != nullptr &&
-                resumed_eip >= safe_point_placement->base_address &&
-                resumed_eip < safe_point_placement->base_address +
-                    safe_point_placement->size;
-            if (safe_point_placement != nullptr && !eip_in_cache)
+            if (runtime::execution_model::RunsLongModeCodeCache())
             {
-                const bool resumed = TryResumeAotAfterHandledHle(
-                    win32_context,
-                    context,
-                    safe_point_guest_source,
-                    AotHleResumeOrigin::kHandledGuestBoundary);
-                if (!resumed &&
-                    !CanResumeLinuxX64LegacyTarget(context, resumed_eip))
+                // Task 710. When no tick was due, EIP is the cache byte after the
+                // int3 and resuming there is ordinary. When INT 8 was injected, EIP
+                // is now the guest's handler -- a raw guest address that long mode
+                // cannot run -- so it has to enter the cache the way Tasks 702 and
+                // 703 made the Glide gate and the timer chain enter it. The IRET
+                // frame's return address is the cache byte after the int3, which
+                // the IRETD HLE from Task 704 already knows how to resume.
+                const std::uint32_t resumed_eip =
+                    static_cast<std::uint32_t>(win32_context->Eip);
+                AotCodeCachePlacement* const safe_point_placement =
+                    context->aot_placement;
+                const bool eip_in_cache =
+                    safe_point_placement != nullptr &&
+                    resumed_eip >= safe_point_placement->base_address &&
+                    resumed_eip < safe_point_placement->base_address +
+                        safe_point_placement->size;
+                if (safe_point_placement != nullptr && !eip_in_cache)
                 {
-                    win32_context->EFlags &= ~0x00000100U;
-                    return repiu::platform::FaultDisposition::kNotHandled;
+                    const bool resumed = TryResumeAotAfterHandledHle(
+                        win32_context,
+                        context,
+                        safe_point_guest_source,
+                        AotHleResumeOrigin::kHandledGuestBoundary);
+                    if (!resumed &&
+                        !CanResumeLinuxX64LegacyTarget(context, resumed_eip))
+                    {
+                        win32_context->EFlags &= ~0x00000100U;
+                        return repiu::platform::FaultDisposition::kNotHandled;
+                    }
                 }
             }
-#endif
             return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
@@ -6245,25 +5356,10 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     {
         InjectPendingInterrupts(win32_context, context);
         NoteVehExitSite(context, VehExitSite::kGlideGateBoundary);
-#if defined(__x86_64__)
-        if (context->aot_placement != nullptr &&
-            static_cast<std::uint32_t>(win32_context->Eip) != glide_gate_eip)
+        if (!ResumeHandledBoundary(win32_context, context, glide_gate_eip))
         {
-            const bool resumed = TryResumeAotAfterHandledHle(
-                win32_context,
-                context,
-                glide_gate_eip,
-                AotHleResumeOrigin::kHandledGuestBoundary);
-            if (!resumed &&
-                !CanResumeLinuxX64LegacyTarget(
-                    context,
-                    static_cast<std::uint32_t>(win32_context->Eip)))
-            {
-                win32_context->EFlags &= ~0x00000100U;
-                return repiu::platform::FaultDisposition::kNotHandled;
-            }
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-#endif
         return repiu::platform::FaultDisposition::kResume;
     }
     // Task 325: the non-Glide boundary gates. Glide keeps its own bucket from
@@ -6277,26 +5373,10 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         if (HandleTimerInterruptChainBoundary(win32_context, context))
         {
             NoteVehExitSite(context, VehExitSite::kTimerChainBoundary);
-#if defined(__x86_64__)
-            if (context->aot_placement != nullptr &&
-                static_cast<std::uint32_t>(win32_context->Eip) !=
-                    timer_chain_eip)
+            if (!ResumeHandledBoundary(win32_context, context, timer_chain_eip))
             {
-                const bool resumed = TryResumeAotAfterHandledHle(
-                    win32_context,
-                    context,
-                    timer_chain_eip,
-                    AotHleResumeOrigin::kHandledGuestBoundary);
-                if (!resumed &&
-                    !CanResumeLinuxX64LegacyTarget(
-                        context,
-                        static_cast<std::uint32_t>(win32_context->Eip)))
-                {
-                    win32_context->EFlags &= ~0x00000100U;
-                    return repiu::platform::FaultDisposition::kNotHandled;
-                }
+                return repiu::platform::FaultDisposition::kNotHandled;
             }
-#endif
             return repiu::platform::FaultDisposition::kResume;
         }
         if (HandleLinexeFarTransferBoundary(win32_context, context))
@@ -6450,25 +5530,10 @@ repiu::platform::FaultDisposition DispatchGuestFault(
             InjectPendingInterrupts(win32_context, context,
                                     TimerInjectionSite::kAfterHandlerReturn);
         }
-#if defined(__x86_64__)
-        if (context->aot_placement != nullptr &&
-            static_cast<std::uint32_t>(win32_context->Eip) != iretd_eip)
+        if (!ResumeHandledBoundary(win32_context, context, iretd_eip))
         {
-            const bool resumed = TryResumeAotAfterHandledHle(
-                win32_context,
-                context,
-                iretd_eip,
-                AotHleResumeOrigin::kHandledGuestBoundary);
-            if (!resumed &&
-                !CanResumeLinuxX64LegacyTarget(
-                    context,
-                    static_cast<std::uint32_t>(win32_context->Eip)))
-            {
-                win32_context->EFlags &= ~0x00000100U;
-                return repiu::platform::FaultDisposition::kNotHandled;
-            }
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-#endif
         return repiu::platform::FaultDisposition::kResume;
     }
 
@@ -6491,28 +5556,10 @@ repiu::platform::FaultDisposition DispatchGuestFault(
             InjectPendingInterrupts(win32_context, context);
         }
         NoteVehExitSite(context, VehExitSite::kHleChainPrivileged);
-#if defined(__x86_64__)
-        if (context->aot_placement != nullptr &&
-            static_cast<std::uint32_t>(win32_context->Eip) !=
-                privileged_resume_eip)
+        if (!ResumeHandledBoundary(win32_context, context, privileged_resume_eip))
         {
-            const bool resumed = TryResumeAotAfterHandledHle(
-                win32_context,
-                context,
-                privileged_resume_eip,
-                AotHleResumeOrigin::kHandledGuestBoundary);
-            if (!resumed &&
-                !CanResumeLinuxX64LegacyTarget(
-                    context,
-                    static_cast<std::uint32_t>(win32_context->Eip)))
-            {
-                win32_context->EFlags &= ~0x00000100U;
-                return repiu::platform::FaultDisposition::kNotHandled;
-            }
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-#else
-        (void)privileged_resume_eip;
-#endif
         return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_privileged_trap_hle &&
@@ -6836,24 +5883,10 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     if (HandleOriginalFatalBreakpoint(fault, context))
     {
         NoteVehExitSite(context, VehExitSite::kFatalBreakpoint);
-#if defined(__x86_64__)
-        if (context->aot_placement != nullptr &&
-            static_cast<std::uint32_t>(win32_context->Eip) !=
-                fatal_breakpoint_eip)
+        if (!ResumeHandledBoundary(win32_context, context, fatal_breakpoint_eip))
         {
-            const bool resumed = TryResumeAotAfterHandledHle(
-                win32_context, context, fatal_breakpoint_eip,
-                AotHleResumeOrigin::kHandledGuestBoundary);
-            if (!resumed &&
-                !CanResumeLinuxX64LegacyTarget(
-                    context,
-                    static_cast<std::uint32_t>(win32_context->Eip)))
-            {
-                win32_context->EFlags &= ~0x00000100U;
-                return repiu::platform::FaultDisposition::kNotHandled;
-            }
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-#endif
         return repiu::platform::FaultDisposition::kResume;
     }
 
@@ -6926,8 +5959,8 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     // does not happen.
     if (context->use_guest_stack && context->active_call_state == nullptr)
     {
-#if defined(__x86_64__)
-        if (fault.kind == repiu::platform::FaultKind::kSingleStep &&
+        if (runtime::execution_model::RunsLongModeCodeCache() &&
+            fault.kind == repiu::platform::FaultKind::kSingleStep &&
             IsGuestInstructionPointer(
                 context, static_cast<std::uint32_t>(win32_context->Eip)))
         {
@@ -6935,7 +5968,6 @@ repiu::platform::FaultDisposition DispatchGuestFault(
                 context, static_cast<std::uint32_t>(win32_context->Eip),
                 "unhandled-single-step");
         }
-#endif
         NoteVehExitSite(context, VehExitSite::kNoHostFrameToUnwind);
         return repiu::platform::FaultDisposition::kNotHandled;
     }
@@ -7240,15 +6272,8 @@ bool RecoverGuestThreadForShutdownCommon(
     position.low_half_in_guest_code =
         IsGuestInstructionPointer(request->context, eip) ||
         IsAotCacheAddress(request->context, eip);
-#if defined(__x86_64__) && !defined(_WIN32)
-    position.host_address_required = true;
-    position.host_address =
-        repiu::platform::ReadHostInstructionPointer(host_context);
-    position.host_address_known = host_context != nullptr;
-#else
-    position.host_address = static_cast<std::uintptr_t>(eip);
-    position.host_address_known = true;
-#endif
+    trampoline_model::ReadShutdownRecoveryPosition(eip, host_context,
+                                                   &position);
     request->last_host_ip = position.host_address;
     const ShutdownRecoveryDecision decision = DecideShutdownRecovery(position);
     request->last_decision = decision;
@@ -7291,23 +6316,17 @@ bool RecoverGuestThreadForShutdownCommon(
     }
     RecordFaultRecoveryProvenance(
         request->context, eip, FaultRecoveryPath::kShutdownInterrupt);
-#if defined(__x86_64__) && !defined(_WIN32)
-    // The x64 cache runs with the host stack in RSP. Returning through the
-    // cache-exit trampoline is therefore the only valid shutdown unwind. Eip
-    // cannot carry its full address, so prime native RIP first and then leave
-    // the low half in GuestCpuContext for StoreGuestCpuContext's merge.
-    const std::uintptr_t resume_address = reinterpret_cast<std::uintptr_t>(
-        &repiu::platform::RepiuLinuxX64GuestExit);
-    if (host_context == nullptr ||
-        !repiu::platform::StoreHostInstructionPointer(
-            resume_address, host_context))
+    if (runtime::execution_model::RunsLongModeCodeCache())
     {
-        return false;
+        // The x64 cache runs with the host stack in RSP. Returning through the
+        // cache's exit is therefore the only valid shutdown unwind.
+        if (!trampoline_model::RedirectToCacheExit(registers, host_context))
+        {
+            return false;
+        }
+        request->recovered = true;
+        return true;
     }
-    registers->Eip = static_cast<decltype(registers->Eip)>(resume_address);
-    registers->EFlags &= ~0x00000100U;
-    registers->EFlags &= ~0x00000400U;
-#else
 #if defined(_WIN32)
     if (request->trace_enabled)
     {
@@ -7342,7 +6361,6 @@ bool RecoverGuestThreadForShutdownCommon(
                     : sizeof(line) - 1U);
         }
     }
-#endif
 #endif
     request->recovered = true;
     return true;
@@ -7522,14 +6540,13 @@ bool RunExecutionThread(
         context.mscdex_command_trace->base_tick =
             static_cast<std::uint32_t>(repiu::platform::MillisecondTicks());
     }
-    // Task 503d-19: the shared section stays Windows-only, as 3d-16 left its
-    // type. Everything downstream already tests the pointer for null, so Linux
-    // simply runs with no external observer attached.
-#if defined(_WIN32)
+    // Task 503d-19: the shared section exists on Windows only. Everything
+    // downstream already tests the pointer for null, so Linux simply runs with
+    // no external observer attached.
+    // Task 759: the platform layer answers, and answers "none" on Linux.
     SharedTelemetryMapping shared_telemetry =
         OpenSharedTelemetryMapping();
     context.shared_live_telemetry = shared_telemetry.telemetry;
-#endif
     if (context.shared_live_telemetry != nullptr)
     {
         repiu::platform::AtomicExchange(&context.shared_live_telemetry->host_phase, 1);
@@ -8292,13 +7309,8 @@ bool RunExecutionThread(
     context.glide_backend.BindHostThread();
     repiu::platform::HostThread thread;
     std::uint32_t create_error = 0;
-#if defined(__x86_64__)
     const repiu::platform::HostThreadEntry guest_thread_proc =
-        &GuestCacheEntryThreadProc;
-#else
-    const repiu::platform::HostThreadEntry guest_thread_proc =
-        &GuestEntryThreadProc;
-#endif
+        SelectGuestThreadEntry();
     if (!repiu::platform::CreateHostThread(guest_thread_proc, &context,
                                            &thread, &create_error))
     {
@@ -8554,26 +7566,19 @@ bool RunExecutionThread(
                 : "timeout reached; guest thread was not in recoverable code";
         }
 
-#if defined(_WIN32)
-        // Task 503d-19: resolved where it is used rather than at the top of a
-        // function that no longer needs the table for anything else.
-        //
-        // Task 507: still Windows-only, and still deliberately so. Nothing in
-        // POSIX stops a thread that is not asking to be stopped -- pthread_cancel
-        // acts at cancellation points and guest code has none -- so on Linux a
-        // guest thread that refused the interrupt keeps running, and what
-        // changes below is only that the loader stops waiting for it.
-        const repiu::platform::win32::Win32ThreadApi& api =
-        repiu::platform::win32::GetWin32ThreadApi();
-        if (!gracefully_interrupted && api.terminate_thread != nullptr)
+        // Task 507: Windows only, and deliberately so. Nothing in POSIX stops a
+        // thread that is not asking to be stopped -- pthread_cancel acts at
+        // cancellation points and guest code has none -- so on Linux a guest
+        // thread that refused the interrupt keeps running, and what changes
+        // below is only that the loader stops waiting for it.
+        // Task 759: the platform layer says whether it asked the thread to stop.
+        if (!gracefully_interrupted &&
+            repiu::platform::TerminateHostThread(
+                thread, static_cast<std::uint32_t>(interruption_exit_code)))
         {
-            auto* thread_handle = static_cast<HANDLE>(thread.handle);
-            api.terminate_thread(thread_handle,
-                                 static_cast<DWORD>(interruption_exit_code));
             gracefully_interrupted =
                 repiu::platform::JoinHostThread(thread, 5000U, nullptr);
         }
-#endif
 
         // Task 507: written here rather than left to the loader's summary,
         // because that summary is printed after teardown, and a teardown that

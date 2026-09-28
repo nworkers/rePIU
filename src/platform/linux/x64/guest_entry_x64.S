@@ -19,7 +19,7 @@
 // zero here for the reason Task 558 gives: an access through guest ESP is
 // emitted as `[r15]`, where the whole 64-bit register is the address.
 
-#include "repiu/platform/linux_x64_guest_entry.h"
+#include "repiu/platform/linux/x64/linux_x64_guest_entry.h"
 
     .intel_syntax noprefix
     .text

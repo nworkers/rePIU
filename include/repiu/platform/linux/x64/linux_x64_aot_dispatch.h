@@ -10,7 +10,7 @@
 // address. Nothing at emit time joins those, so the emitted slot jumps to a
 // thunk and the thunk asks.
 
-#include "repiu/platform/linux_x64_aot_frame.h"
+#include "repiu/platform/linux/x64/linux_x64_aot_frame.h"
 
 #include <cstdint>
 

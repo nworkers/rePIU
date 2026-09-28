@@ -2,31 +2,22 @@
 
 #if !defined(_WIN32)
 
+#include "fault_handler_arch.h"
+#include "fault_report_writer.h"
 #include "repiu/engine/guest_write_trace.h"
 
 #include <csignal>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <pthread.h>
 #if defined(__linux__)
-#include <fcntl.h>
-#include <linux/hw_breakpoint.h>
-#include <linux/perf_event.h>
-#include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #endif
 #include <ucontext.h>
 #include <unistd.h>
 
-#if defined(__x86_64__)
-extern "C" volatile std::uint64_t repiu_linux_x64_guest_entry_rsp;
-extern "C" volatile std::uint64_t repiu_linux_x64_cache_call_rsp;
-extern "C" volatile std::uint64_t repiu_linux_x64_return_thunk_rsp;
-extern "C" volatile std::uint32_t repiu_linux_x64_guest_esp_trace_site;
-extern "C" volatile std::uint32_t repiu_linux_x64_guest_esp_trace_value;
-#endif
+// Task 757. The part of the Linux fault handler both architectures share.
+// Register access that differs between i386 and x86-64, and the diagnostics
+// only the x64 code cache has, are behind fault_handler_arch.h.
 
 namespace repiu::platform
 {
@@ -48,30 +39,16 @@ struct sigaction g_previous[kHandledSignalCount];
 stack_t g_previous_stack;
 bool g_replaced_stack = false;
 
-#if defined(__x86_64__)
-// Task 673. These values describe the last signal whose callback actually
-// resumed execution. The current unhandled fault is intentionally not written
-// here, so the report can distinguish the last successful boundary from the
-// faulting instruction itself.
-volatile std::uint32_t g_last_resumed_signal = 0U;
-volatile std::uint32_t g_last_resumed_fault_kind = 0U;
-volatile std::uint64_t g_last_resumed_rip = 0U;
-volatile std::uint64_t g_last_resumed_rsp = 0U;
-volatile std::uint64_t g_last_resumed_r10 = 0U;
-volatile std::uint64_t g_last_resumed_r14 = 0U;
-volatile std::uint64_t g_last_resumed_r15 = 0U;
-volatile std::uint32_t g_last_resumed_guest_eip = 0U;
-volatile std::uint32_t g_last_resumed_guest_esp = 0U;
-volatile std::uint32_t g_first_low_resumed_signal = 0U;
-volatile std::uint32_t g_first_low_resumed_fault_kind = 0U;
-volatile std::uint64_t g_first_low_resumed_rip = 0U;
-volatile std::uint64_t g_first_low_resumed_rsp = 0U;
-volatile std::uint64_t g_first_low_resumed_r10 = 0U;
-volatile std::uint64_t g_first_low_resumed_r14 = 0U;
-volatile std::uint64_t g_first_low_resumed_r15 = 0U;
-volatile std::uint32_t g_first_low_resumed_guest_eip = 0U;
-volatile std::uint32_t g_first_low_resumed_guest_esp = 0U;
-#endif
+using linux_fault::AppendArchFaultFields;
+using linux_fault::HandleArchDiagnosticTrap;
+using linux_fault::HostDispatchRegisters;
+using linux_fault::HostStackPointer;
+using linux_fault::RecordLastResumedSignal;
+using linux_fault::WriteByteHex;
+using linux_fault::WriteFaultGuestStackDump;
+using linux_fault::WriteHex;
+using linux_fault::WriteNamedHex;
+using linux_fault::WriteNamedHex64;
 
 // The handler must be able to run when the guest stack is damaged or being
 // switched, so it gets its own. SIGSTKSZ is not a constant expression on newer
@@ -132,114 +109,9 @@ FaultKind ClassifySignal(const int signal_number, const siginfo_t& info)
 // Subtracting one from the truncated half and dereferencing it reads an address
 // that was never mapped -- a fault raised inside the fault handler, which is
 // the one place it cannot be reported.
-std::uintptr_t HostInstructionPointer(const void* host_context)
-{
-    const auto* context = static_cast<const ucontext_t*>(host_context);
-#if defined(__i386__)
-    return static_cast<std::uintptr_t>(context->uc_mcontext.gregs[REG_EIP]);
-#elif defined(__x86_64__)
-    return static_cast<std::uintptr_t>(context->uc_mcontext.gregs[REG_RIP]);
-#else
-    (void)context;
-    return 0U;
-#endif
-}
-
-std::uintptr_t HostStackPointer(const void* host_context)
-{
-    const auto* context = static_cast<const ucontext_t*>(host_context);
-#if defined(__i386__)
-    return static_cast<std::uintptr_t>(context->uc_mcontext.gregs[REG_ESP]);
-#elif defined(__x86_64__)
-    return static_cast<std::uintptr_t>(context->uc_mcontext.gregs[REG_RSP]);
-#else
-    (void)context;
-    return 0U;
-#endif
-}
-
-void HostDispatchRegisters(const void* host_context,
-                           std::uint64_t* r10,
-                           std::uint64_t* r14,
-                           std::uint64_t* r15)
-{
-    if (r10 == nullptr || r14 == nullptr || r15 == nullptr)
-    {
-        return;
-    }
-    *r10 = 0U;
-    *r14 = 0U;
-    *r15 = 0U;
-    const auto* context = static_cast<const ucontext_t*>(host_context);
-#if defined(__x86_64__)
-    *r10 = static_cast<std::uint64_t>(context->uc_mcontext.gregs[REG_R10]);
-    *r14 = static_cast<std::uint64_t>(context->uc_mcontext.gregs[REG_R14]);
-    *r15 = static_cast<std::uint64_t>(context->uc_mcontext.gregs[REG_R15]);
-#else
-    (void)context;
-#endif
-}
-
-#if defined(__x86_64__)
-bool LinuxX64SignalBoundaryTraceEnabled()
-{
-    static const bool enabled = [] {
-        const char* const value = std::getenv(
-            "REPIU_LINUX_X64_SIGNAL_BOUNDARY_TRACE");
-        return value != nullptr && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
-
-void RecordLastResumedSignal(const int signal_number,
-                             const FaultKind fault_kind,
-                             const void* host_context,
-                             const GuestCpuContext& registers)
-{
-    if (!LinuxX64SignalBoundaryTraceEnabled())
-    {
-        return;
-    }
-    std::uint64_t r10 = 0U;
-    std::uint64_t r14 = 0U;
-    std::uint64_t r15 = 0U;
-    HostDispatchRegisters(host_context, &r10, &r14, &r15);
-    // Publish the validity marker last. The handler is normally single-threaded
-    // for this process, but this order also keeps a concurrent crash report
-    // from mistaking a partially written snapshot for a complete one.
-    g_last_resumed_signal = 0U;
-    g_last_resumed_fault_kind = static_cast<std::uint32_t>(fault_kind);
-    g_last_resumed_rip = HostInstructionPointer(host_context);
-    g_last_resumed_rsp = HostStackPointer(host_context);
-    g_last_resumed_r10 = r10;
-    g_last_resumed_r14 = r14;
-    g_last_resumed_r15 = r15;
-    g_last_resumed_guest_eip = registers.Eip;
-    g_last_resumed_guest_esp = registers.Esp;
-    g_last_resumed_signal = static_cast<std::uint32_t>(signal_number);
-    const std::uint64_t rsp = HostStackPointer(host_context);
-    if (rsp <= UINT64_C(0xFFFFFFFF) && g_first_low_resumed_signal == 0U)
-    {
-        g_first_low_resumed_fault_kind =
-            static_cast<std::uint32_t>(fault_kind);
-        g_first_low_resumed_rip = HostInstructionPointer(host_context);
-        g_first_low_resumed_rsp = rsp;
-        g_first_low_resumed_r10 = r10;
-        g_first_low_resumed_r14 = r14;
-        g_first_low_resumed_r15 = r15;
-        g_first_low_resumed_guest_eip = registers.Eip;
-        g_first_low_resumed_guest_esp = registers.Esp;
-        // Publish the first-low marker last for the same reason as the last
-        // resumed marker above.
-        g_first_low_resumed_signal =
-            static_cast<std::uint32_t>(signal_number);
-    }
-}
-#endif
-
 void RewindPastBreakpoint(GuestCpuContext* registers, const void* host_context)
 {
-    const std::uintptr_t host_instruction = HostInstructionPointer(
+    const std::uintptr_t host_instruction = ReadHostInstructionPointer(
         host_context);
     if (host_instruction == 0U)
     {
@@ -253,49 +125,6 @@ void RewindPastBreakpoint(GuestCpuContext* registers, const void* host_context)
         // what it does not own.
         registers->Eip = static_cast<std::uint32_t>(candidate);
     }
-}
-
-// Task 578. The unhandled-fault line, written with `write` alone.
-//
-// Nothing here may allocate, lock, or call into a logging library: this runs on
-// a signal handler that is about to let the process die, and a handler that
-// hangs replaces a diagnosable crash with an undiagnosable one.
-void WriteHex(char* out, std::size_t* length, std::uint64_t value)
-{
-    out[(*length)++] = '0';
-    out[(*length)++] = 'x';
-    bool leading = true;
-    for (int shift = 60; shift >= 0; shift -= 4)
-    {
-        const auto digit = static_cast<unsigned>((value >> shift) & 0xFU);
-        if (leading && digit == 0U && shift != 0)
-        {
-            continue;
-        }
-        leading = false;
-        out[(*length)++] = static_cast<char>(
-            digit < 10U ? '0' + digit : 'a' + (digit - 10U));
-    }
-}
-
-void WriteNamedHex(char* out, std::size_t* length, const char* name,
-                   std::uint32_t value)
-{
-    for (const char* cursor = name; *cursor != '\0'; ++cursor)
-    {
-        out[(*length)++] = *cursor;
-    }
-    WriteHex(out, length, value);
-}
-
-void WriteNamedHex64(char* out, std::size_t* length, const char* name,
-                     std::uint64_t value)
-{
-    for (const char* cursor = name; *cursor != '\0'; ++cursor)
-    {
-        out[(*length)++] = *cursor;
-    }
-    WriteHex(out, length, value);
 }
 
 // Task 597. Read the instruction bytes without dereferencing an arbitrary
@@ -388,12 +217,6 @@ FaultGuestStackWords ReadFaultGuestStackWords(
     return result;
 }
 
-void WriteByteHex(char* out, std::size_t* length, const std::uint8_t value)
-{
-    const char digits[] = "0123456789abcdef";
-    out[(*length)++] = digits[(value >> 4U) & 0x0FU];
-    out[(*length)++] = digits[value & 0x0FU];
-}
 
 void WriteFaultInstructionBytes(char* out, std::size_t* length,
                                 const std::uintptr_t host_instruction_address,
@@ -447,53 +270,6 @@ void WriteFaultGuestStack(char* out, std::size_t* length,
     }
 }
 
-// Task 717. Sixty-four guest stack words from ESP on a line of their own, so
-// the return addresses above an unhandled fault name the call chain that led to
-// it. Read through process_vm_readv like the four words above, which returns a
-// short count rather than faulting when the range runs off mapped memory.
-void WriteFaultGuestStackDump(const std::uint32_t guest_esp)
-{
-    constexpr std::size_t kWords = 64U;
-    std::uint32_t words[kWords] = {};
-    std::size_t count = 0U;
-#if defined(__linux__) && defined(SYS_process_vm_readv)
-    struct iovec local = {};
-    local.iov_base = words;
-    local.iov_len = sizeof(words);
-    struct iovec remote = {};
-    remote.iov_base = reinterpret_cast<void*>(
-        static_cast<std::uintptr_t>(guest_esp));
-    remote.iov_len = sizeof(words);
-    const long copied = syscall(
-        SYS_process_vm_readv, static_cast<long>(getpid()), &local, 1U,
-        &remote, 1U, 0U);
-    if (copied > 0L)
-    {
-        count = static_cast<std::size_t>(copied) / sizeof(std::uint32_t);
-    }
-#endif
-    if (count == 0U)
-    {
-        return;
-    }
-    char line[kWords * 12U + 64U];
-    std::size_t length = 0;
-    const char prefix[] = "[repiu-fault-stack] esp=";
-    for (std::size_t index = 0; index + 1U < sizeof(prefix); ++index)
-    {
-        line[length++] = prefix[index];
-    }
-    WriteHex(line, &length, guest_esp);
-    for (std::size_t index = 0; index < count; ++index)
-    {
-        line[length++] = ' ';
-        WriteHex(line, &length, words[index]);
-    }
-    line[length++] = static_cast<char>(10);  // newline
-    const ssize_t written = write(2, line, length);
-    (void)written;
-}
-
 void ReportUnhandledFault(const int signal_number,
                           const std::uintptr_t host_instruction_address,
                           const std::uintptr_t host_stack_pointer,
@@ -527,46 +303,7 @@ void ReportUnhandledFault(const int signal_number,
         line[length++] = rsp_text[index];
     }
     WriteHex(line, &length, host_stack_pointer);
-#if defined(__x86_64__)
-    WriteNamedHex64(line, &length, " entry_rsp=",
-                    repiu_linux_x64_guest_entry_rsp);
-    WriteNamedHex64(line, &length, " cache_rsp=",
-                    repiu_linux_x64_cache_call_rsp);
-    WriteNamedHex64(line, &length, " thunk_rsp=",
-                    repiu_linux_x64_return_thunk_rsp);
-    WriteNamedHex64(line, &length, " trace_site=",
-                    repiu_linux_x64_guest_esp_trace_site);
-    WriteNamedHex64(line, &length, " trace_esp=",
-                    repiu_linux_x64_guest_esp_trace_value);
-    WriteNamedHex64(line, &length, " last_signal=",
-                    g_last_resumed_signal);
-    WriteNamedHex64(line, &length, " last_kind=",
-                    g_last_resumed_fault_kind);
-    WriteNamedHex64(line, &length, " last_rip=", g_last_resumed_rip);
-    WriteNamedHex64(line, &length, " last_rsp=", g_last_resumed_rsp);
-    WriteNamedHex64(line, &length, " last_r10=", g_last_resumed_r10);
-    WriteNamedHex64(line, &length, " last_r14=", g_last_resumed_r14);
-    WriteNamedHex64(line, &length, " last_r15=", g_last_resumed_r15);
-    WriteNamedHex64(line, &length, " last_exit_site=",
-                    repiu_last_veh_exit_site);
-    WriteNamedHex64(line, &length, " last_exit_eip=",
-                    repiu_last_veh_exit_eip);
-    WriteNamedHex64(line, &length, " last_eip=", g_last_resumed_guest_eip);
-    WriteNamedHex64(line, &length, " last_esp=", g_last_resumed_guest_esp);
-    WriteNamedHex64(line, &length, " first_low_signal=",
-                    g_first_low_resumed_signal);
-    WriteNamedHex64(line, &length, " first_low_kind=",
-                    g_first_low_resumed_fault_kind);
-    WriteNamedHex64(line, &length, " first_low_rip=", g_first_low_resumed_rip);
-    WriteNamedHex64(line, &length, " first_low_rsp=", g_first_low_resumed_rsp);
-    WriteNamedHex64(line, &length, " first_low_r10=", g_first_low_resumed_r10);
-    WriteNamedHex64(line, &length, " first_low_r14=", g_first_low_resumed_r14);
-    WriteNamedHex64(line, &length, " first_low_r15=", g_first_low_resumed_r15);
-    WriteNamedHex64(line, &length, " first_low_eip=",
-                    g_first_low_resumed_guest_eip);
-    WriteNamedHex64(line, &length, " first_low_esp=",
-                    g_first_low_resumed_guest_esp);
-#endif
+    AppendArchFaultFields(line, &length);
     WriteNamedHex64(line, &length, " r10=", host_r10);
     WriteNamedHex64(line, &length, " r14=", host_r14);
     WriteNamedHex64(line, &length, " r15=", host_r15);
@@ -608,82 +345,6 @@ void ReportUnhandledFault(const int signal_number,
     WriteFaultGuestStackDump(registers.Esp);
 }
 
-#if defined(__linux__) && defined(__x86_64__)
-// Task 717. A hardware write watchpoint on one guest address, reported and
-// resumed. The kernel delivers it as SIGTRAP with si_code TRAP_PERF, after the
-// write, with RIP on the next instruction -- so the report names the writing
-// host instruction by the bytes just before RIP, and the guest registers as
-// they stand after it.
-constexpr int kTrapPerf = 6;  // TRAP_PERF, absent from older headers
-constexpr std::uint32_t kDataWatchPrintLimit = 16U;
-volatile std::uint32_t g_data_watch_hits = 0U;
-
-bool IsDataWatchTrap(const int signal_number, const siginfo_t& info)
-{
-    return signal_number == SIGTRAP && info.si_code == kTrapPerf;
-}
-
-void ReportDataWatchHit(void* host_context, const GuestCpuContext& registers)
-{
-    const std::uint32_t hit = ++g_data_watch_hits;
-    if (hit > kDataWatchPrintLimit)
-    {
-        return;
-    }
-    char line[512];
-    std::size_t length = 0;
-    const char prefix[] = "[repiu-data-watch] hit=";
-    for (std::size_t index = 0; index + 1U < sizeof(prefix); ++index)
-    {
-        line[length++] = prefix[index];
-    }
-    WriteHex(line, &length, hit);
-    const std::uintptr_t rip = HostInstructionPointer(host_context);
-    WriteNamedHex64(line, &length, " rip=", rip);
-    // Sixteen bytes before RIP, read without faulting.
-    std::uint8_t before[16] = {};
-    std::size_t before_count = 0U;
-    if (rip >= sizeof(before))
-    {
-        struct iovec local = {before, sizeof(before)};
-        struct iovec remote = {reinterpret_cast<void*>(rip - sizeof(before)),
-                               sizeof(before)};
-        const long copied = syscall(SYS_process_vm_readv,
-                                    static_cast<long>(getpid()), &local, 1U,
-                                    &remote, 1U, 0U);
-        before_count = copied > 0L ? static_cast<std::size_t>(copied) : 0U;
-    }
-    const char bytes_text[] = " before=";
-    for (std::size_t index = 0; index + 1U < sizeof(bytes_text); ++index)
-    {
-        line[length++] = bytes_text[index];
-    }
-    for (std::size_t index = 0; index < before_count; ++index)
-    {
-        WriteByteHex(line, &length, before[index]);
-    }
-    std::uint64_t host_r10 = 0U;
-    std::uint64_t host_r14 = 0U;
-    std::uint64_t host_r15 = 0U;
-    HostDispatchRegisters(host_context, &host_r10, &host_r14, &host_r15);
-    WriteNamedHex64(line, &length, " r15=", host_r15);
-    WriteNamedHex(line, &length, " eax=", registers.Eax);
-    WriteNamedHex(line, &length, " ebx=", registers.Ebx);
-    WriteNamedHex(line, &length, " ecx=", registers.Ecx);
-    WriteNamedHex(line, &length, " edx=", registers.Edx);
-    WriteNamedHex(line, &length, " esi=", registers.Esi);
-    WriteNamedHex(line, &length, " edi=", registers.Edi);
-    WriteNamedHex(line, &length, " ebp=", registers.Ebp);
-    line[length++] = static_cast<char>(10);  // newline
-    const ssize_t written = write(2, line, length);
-    (void)written;
-    if (host_r15 != 0U)
-    {
-        WriteFaultGuestStackDump(static_cast<std::uint32_t>(host_r15));
-    }
-}
-#endif
-
 void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
 {
     if (g_callback == nullptr || info == nullptr || host_context == nullptr)
@@ -698,13 +359,10 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
         // from registers that were never read would be worse than dying here.
         return;
     }
-#if defined(__linux__) && defined(__x86_64__)
-    if (IsDataWatchTrap(signal_number, *info))
+    if (HandleArchDiagnosticTrap(signal_number, *info, host_context, registers))
     {
-        ReportDataWatchHit(host_context, registers);
         return;
     }
-#endif
 
     FaultEvent event;
     event.kind = ClassifySignal(signal_number, *info);
@@ -741,7 +399,7 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
         std::uint64_t host_r15 = 0U;
         HostDispatchRegisters(host_context, &host_r10, &host_r14, &host_r15);
         ReportUnhandledFault(signal_number,
-                             HostInstructionPointer(host_context),
+                             ReadHostInstructionPointer(host_context),
                              HostStackPointer(host_context),
                              host_r10,
                              host_r14,
@@ -789,9 +447,7 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
     // Task 673. Capture the pre-resume native boundary only after the callback
     // accepts the event. The current fault is therefore excluded from the
     // snapshot printed above.
-#if defined(__x86_64__)
     RecordLastResumedSignal(signal_number, event.kind, host_context, registers);
-#endif
 
     // Writing the registers back is what makes the return a resume: the kernel
     // restores from this context, so an edited Eip or EFlags takes effect.
@@ -803,50 +459,6 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
 }
 
 }  // namespace
-
-// Task 717. REPIU_LINUX_X64_DATA_WATCH=<address>: a four-byte hardware write
-// watchpoint on the calling thread, reported by the handler above. Diagnostic
-// only; nothing is armed when the variable is unset.
-bool ArmLinuxDataWatchFromEnvironment()
-{
-#if defined(__linux__) && defined(__x86_64__)
-    const char* const text = std::getenv("REPIU_LINUX_X64_DATA_WATCH");
-    if (text == nullptr || *text == 0)
-    {
-        return false;
-    }
-    const unsigned long address = std::strtoul(text, nullptr, 0);
-    if (address == 0UL)
-    {
-        return false;
-    }
-    struct perf_event_attr attr = {};
-    attr.type = PERF_TYPE_BREAKPOINT;
-    attr.size = sizeof(attr);
-    attr.bp_type = HW_BREAKPOINT_W;
-    attr.bp_addr = address;
-    attr.bp_len = HW_BREAKPOINT_LEN_4;
-    attr.sample_period = 1U;
-    attr.exclude_kernel = 1U;
-    attr.exclude_hv = 1U;
-    attr.sigtrap = 1U;
-    attr.remove_on_exec = 1U;
-    const long fd = syscall(SYS_perf_event_open, &attr, 0, -1, -1,
-                            PERF_FLAG_FD_CLOEXEC);
-    char line[128];
-    const int length = std::snprintf(
-        line, sizeof(line), "[repiu-data-watch] armed address=0x%08lX fd=%ld\n",
-        address, fd);
-    if (length > 0)
-    {
-        const ssize_t written = write(2, line, static_cast<std::size_t>(length));
-        (void)written;
-    }
-    return fd >= 0;
-#else
-    return false;
-#endif
-}
 
 bool InstallFaultHandler(FaultCallback callback, void* user_data)
 {

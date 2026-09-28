@@ -13,16 +13,8 @@
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/fault_handler.h"
 
-// Task 503d-2. The only thing left in this header that needs the Win32 headers
-// is the translation worker's entry point below: CreateThread dictates its
-// return type and calling convention, so they are the operating system's to
-// name. Everything else moved to the platform-neutral types.
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
+// Task 758. This header included <windows.h> for the translation worker's entry
+// point; Task 503d-6 made that an ordinary function, so nothing here needs it.
 
 // Task 503d-2. EXCEPTION_POINTERS is forward declared by its underlying tag so
 // this header needs no <windows.h>: a pointer to an incomplete type is all a

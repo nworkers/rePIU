@@ -8,7 +8,7 @@ Task 584에서 정리. 이 문서는 **Linux x86-64 호스트에서 폴트가 �
 
 ## 확인됨 — `DS`·`ES`·`SS`는 관측이 아니다
 
-`src/platform/linux/guest_cpu_context.cpp`의 x86-64 로드 경로:
+`src/platform/linux/x64/guest_cpu_context.cpp`의 x86-64 로드 경로:
 
 ```c
 const std::uint64_t selectors = static_cast<std::uint64_t>(
@@ -88,7 +88,7 @@ repeatedly.
 
 ## Confirmed — `DS`, `ES` and `SS` are not observations
 
-The x86-64 load path in `src/platform/linux/guest_cpu_context.cpp`:
+The x86-64 load path in `src/platform/linux/x64/guest_cpu_context.cpp`:
 
 ```c
 const std::uint64_t selectors = static_cast<std::uint64_t>(

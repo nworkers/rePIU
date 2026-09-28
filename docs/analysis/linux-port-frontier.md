@@ -1101,7 +1101,7 @@ host는 기존 i386 timed entry를 호출하지 않고 unsupported code 4를 반
 i386 guest entry 경로는 그대로 유지합니다.
 
 그 결과 Linux x64 C++ 단계는 통과했지만, 첫 assembler 장벽이
-`src/platform/linux/aot_dbt_dispatch_thunks.S`에서 확인되었습니다.
+`src/platform/linux/x86/aot_dbt_dispatch_thunks.S`에서 확인되었습니다.
 
 ```text
 Error: `pusha' is not supported in 64-bit mode
@@ -1120,7 +1120,7 @@ An x64 host returns unsupported code 4 instead of calling the existing i386 time
 entry, while the i386 guest-entry path remains unchanged.
 
 The Linux x64 C++ stage then passed, but the first assembler barrier appeared in
-`src/platform/linux/aot_dbt_dispatch_thunks.S`:
+`src/platform/linux/x86/aot_dbt_dispatch_thunks.S`:
 
 ```text
 Error: `pusha' is not supported in 64-bit mode
@@ -2823,7 +2823,7 @@ block은 control flow로 끝나고 그것이 아직 하나도 방출되지 않�
 
 핵심 파일:
 
-* `include/repiu/platform/linux_x64_guest_registers.h` — mapping 결정, static assertion
+* `include/repiu/platform/linux/x64/linux_x64_guest_registers.h` — mapping 결정, static assertion
 * `include/repiu/runtime/aot_long_mode_compatibility.h` — 판정기·lowering 계약, **전제 문장**
 * `src/runtime/aot_long_mode_compatibility.cpp` — 판정과 시퀀스 생성
 * `src/runtime/aot_code_cache.cpp` — `EmitLongModeCopy`, 방출 루프, 검증기
@@ -2856,10 +2856,10 @@ block은 control flow로 끝나고 그것이 아직 하나도 방출되지 않�
 * `CALL`/`RET`은 guest stack에 **guest 주소**를 밀고 꺼내는데, 점프 목표는 **cache 주소**
   입니다. 둘을 잇는 것이 resolver의 일이고, `R15D`를 통한 push/pop은 Task 559의 시퀀스가
   이미 합니다.
-* frame은 `include/repiu/platform/linux_x64_aot_frame.h`(Task 547)에 이미 있고 offset
+* frame은 `include/repiu/platform/linux/x64/linux_x64_aot_frame.h`(Task 547)에 이미 있고 offset
   매크로가 assembly에서 쓸 수 있게 정의돼 있습니다. `RepiuLinuxX64AotFrameAbiProbe`가
   SysV 계약(callee-saved·정렬·XMM)을 이미 통과시켰습니다.
-* i386 thunk는 `src/platform/linux/aot_dbt_dispatch_thunks.S`이고 **i386 assembly**입니다.
+* i386 thunk는 `src/platform/linux/x86/aot_dbt_dispatch_thunks.S`이고 **i386 assembly**입니다.
   x64는 새로 써야 합니다. resolver의 i386 쪽 계약은
   `src/engine/aot/aot_dbt_hle_dispatch.cpp`의 `ResolveAotDbtHleFrame`이 `pushad` 순서
   `uint32_t*`를 받는 형태입니다 — x64는 named frame을 받아야 합니다.
@@ -2990,7 +2990,7 @@ Execution is still effectively zero.
 
 The files that matter:
 
-* `include/repiu/platform/linux_x64_guest_registers.h` — the mapping decision, with static
+* `include/repiu/platform/linux/x64/linux_x64_guest_registers.h` — the mapping decision, with static
   assertions
 * `include/repiu/runtime/aot_long_mode_compatibility.h` — the classifier and lowering
   contract, and **the premise sentence**
@@ -3026,10 +3026,10 @@ What the next session needs to know:
 * `CALL` and `RET` push and pop a **guest address** on the guest stack while the jump
   target is a **cache address**. Joining the two is the resolver's job; the push and pop
   through `R15D` are already what Task 559's sequences do.
-* The frame already exists in `include/repiu/platform/linux_x64_aot_frame.h` (Task 547),
+* The frame already exists in `include/repiu/platform/linux/x64/linux_x64_aot_frame.h` (Task 547),
   with offset macros usable from assembly, and `RepiuLinuxX64AotFrameAbiProbe` has already
   passed the SysV contract (callee-saved, alignment, XMM).
-* The i386 thunk is `src/platform/linux/aot_dbt_dispatch_thunks.S` and is **i386
+* The i386 thunk is `src/platform/linux/x86/aot_dbt_dispatch_thunks.S` and is **i386
   assembly**; x64 needs its own. The i386 resolver contract is
   `ResolveAotDbtHleFrame` in `src/engine/aot/aot_dbt_hle_dispatch.cpp`, which takes a
   `pushad`-ordered `uint32_t*` -- x64 must take the named frame instead.
@@ -6711,7 +6711,7 @@ undefined reference to `RecoverGuestStackException'
 undefined reference to `RecoverHostStackException'
 ```
 
-둘 다 `src/platform/linux/guest_stack_switch.S`에 있고, Task 545가 i386 실행 계약
+둘 다 `src/platform/linux/x86/guest_stack_switch.S`에 있고, Task 545가 i386 실행 계약
 이라는 이유로 `if(CMAKE_SIZEOF_VOID_P EQUAL 4)` 안에 넣어 x64 빌드에서 제외했다.
 그 밖의 미해결 심볼은 **하나도 없다.**
 
@@ -6736,7 +6736,7 @@ target이 동적인 것은 Task 562의 return thunk로 나간다. **이 항목�
 
 ### 확인됨 — 진짜 4단계 공백은 fault 경로의 guest 상태 어댑터다
 
-`src/platform/linux/guest_cpu_context.cpp`의 x64 분기:
+`src/platform/linux/x64/guest_cpu_context.cpp`의 x64 분기:
 
 ```cpp
 registers->Eip = Register(machine, REG_RIP);   // host RIP의 하위 32비트
@@ -6821,7 +6821,7 @@ undefined reference to `RecoverGuestStackException'
 undefined reference to `RecoverHostStackException'
 ```
 
-Both live in `src/platform/linux/guest_stack_switch.S`, which Task 545 placed
+Both live in `src/platform/linux/x86/guest_stack_switch.S`, which Task 545 placed
 inside `if(CMAKE_SIZEOF_VOID_P EQUAL 4)` as an i386 execution contract. There is
 **not one other** unresolved symbol.
 
@@ -6847,7 +6847,7 @@ thunk. **The remaining work in this row is zero.**
 
 ### Confirmed — the real step-4 gap is the fault path's guest-state adapter
 
-The x64 branch of `src/platform/linux/guest_cpu_context.cpp`:
+The x64 branch of `src/platform/linux/x64/guest_cpu_context.cpp`:
 
 ```cpp
 registers->Eip = Register(machine, REG_RIP);   // low 32 bits of host RIP
@@ -16531,7 +16531,7 @@ Task 706 상태의 Linux x64 `pumpit2a`는 Glide 렌더 루프에 도달하지�
 확인한 정상 동작은 640x480 화면 좌표이므로, 좌표를 만드는 x87 연산이 깨져
 있다는 뜻이다.
 
-근인은 `src/platform/linux/guest_cpu_context.cpp`의 x86-64 전용 x87 변환이다.
+근인은 `src/platform/linux/x64/guest_cpu_context.cpp`의 x86-64 전용 x87 변환이다.
 `ClassifyFloatingTag`는 `empty`(`0x03`)를 반환하는 경로가 없었고,
 `StoreFloatingSave`는 `tag != 0x03`인 레지스터의 `ftw` 비트를 세웠다. 따라서
 signal 문맥을 통과한 x87 상태는 **항상 `ftw = 0xFF`**가 되어 여덟 레지스터가
@@ -16597,7 +16597,7 @@ submitted were `0x7FC00000`, a QNaN. Task 254 confirmed the correct behavior is
 640x480 screen coordinates, so the x87 arithmetic producing them was broken.
 
 The cause is the x86-64 x87 conversion in
-`src/platform/linux/guest_cpu_context.cpp`. `ClassifyFloatingTag` had no path
+`src/platform/linux/x64/guest_cpu_context.cpp`. `ClassifyFloatingTag` had no path
 returning `empty` (`0x03`), and `StoreFloatingSave` set the `ftw` bit for every
 register whose tag was not `0x03`. x87 state passing through a signal context
 therefore came back with **`ftw = 0xFF` every time**, restoring all eight

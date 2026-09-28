@@ -8,7 +8,6 @@
 namespace repiu::engine
 {
 
-#if defined(_WIN32)
 bool PushX87Float(repiu::platform::GuestCpuContext* context, float value)
 {
     if (context == nullptr || !std::isfinite(value))
@@ -69,6 +68,5 @@ bool PushX87Float(repiu::platform::GuestCpuContext* context, float value)
     context->FloatSave.TagWord = tag;
     return true;
 }
-#endif
 
 }  // namespace repiu::engine

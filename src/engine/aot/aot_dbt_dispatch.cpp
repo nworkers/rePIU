@@ -1,3 +1,4 @@
+#include "repiu/runtime/execution_model.h"
 #include "aot_dbt_dispatch.h"
 
 #include "aot_runtime_dispatch.h"
@@ -433,18 +434,15 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
         const char* span_reason = nullptr;
         const bool span_safe = IsImmediateHleReentrySpanSafe(
             context, current, &span_reason);
-#if defined(__x86_64__)
         // A cache hit is already a long-mode-safe lowering. The span guard is
         // still useful for the original-byte bridge, but it must not force a
         // non-identical x64 continuation back through guest bytes merely
         // because another HLE boundary appears nearby.
-        const bool long_mode_identical =
-            CanResumeLinuxX64LegacyTarget(context, current);
+        // Task 759: a question of the cache model only; the direct model runs
+        // the guest's bytes as they are.
         const bool non_identical_cache_resume =
-            !span_safe && !long_mode_identical;
-#else
-        const bool non_identical_cache_resume = false;
-#endif
+            runtime::execution_model::RunsLongModeCodeCache() &&
+            !span_safe && !CanResumeLinuxX64LegacyTarget(context, current);
         TraceHleReentry(
             span_safe ? "cache-hit-span-safe" : "cache-hit-span-unsafe",
             context, win32_context, handled_guest_eip, current, true, span_safe, false, false,
@@ -467,16 +465,13 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
         // found this branch unreachable in practice; this proves it per run.
         ++context->hle_reentry_reject_cache_miss;
         const bool post_hle_enabled = PostHleTranslationEnabled();
-#if defined(__x86_64__)
         // A disabled post-HLE translation setting may retain the original-byte
         // path only when the first instruction has identical long-mode bytes.
         // Non-identical code must use the resolver, otherwise a mode16 guest
         // can silently change the host instruction boundary.
         const bool non_identical_target =
+            runtime::execution_model::RunsLongModeCodeCache() &&
             !CanResumeLinuxX64LegacyTarget(context, current);
-#else
-        const bool non_identical_target = false;
-#endif
         TraceHleReentry(
             post_hle_enabled
                 ? "cache-miss-gate-enabled"

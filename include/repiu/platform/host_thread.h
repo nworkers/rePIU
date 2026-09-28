@@ -81,6 +81,13 @@ struct HostThreadStatus
 // exited wants `DetachHostThread` instead.
 void CloseHostThread(HostThread* thread);
 
+// Task 507, Task 759. Stops a thread that is not asking to be stopped, with
+// `exit_code` as its exit code. True when the host was asked to; the caller
+// then waits for the thread as usual. False where the host has no such call:
+// nothing in POSIX stops a thread outside a cancellation point, and guest code
+// has none.
+bool TerminateHostThread(const HostThread& thread, std::uint32_t exit_code);
+
 // Task 507. The other half of `CloseHostThread`, for the caller that cannot
 // establish the thread stopped.
 //

@@ -1,6 +1,11 @@
-#include "host_crash_report.h"
+#include "repiu/platform/host_crash_report.h"
 
-#if defined(_WIN32)
+// Task 759. The Win32 unhandled-exception report: dbghelp walks and names the
+// host stack. Linux reports unhandled faults from its fault handler instead
+// (Task 578), and its reporter installs nothing.
+#if !defined(_M_IX86)
+#error "the Win32 host is built as x86 only"
+#endif
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -8,11 +13,9 @@
 
 #include <cstdio>
 #include "repiu/platform/guest_cpu_context.h"
-#endif
 
-namespace repiu::engine
+namespace repiu::platform
 {
-#if defined(_WIN32)
 namespace
 {
 
@@ -117,17 +120,10 @@ LONG WINAPI ReportUnhandledException(EXCEPTION_POINTERS* pointers)
     // A copy, because StackWalk64 modifies the context it walks.
     repiu::platform::GuestCpuContext context = *pointers->ContextRecord;
     STACKFRAME64 frame = {};
-#if defined(_M_IX86)
     frame.AddrPC.Offset = context.Eip;
     frame.AddrFrame.Offset = context.Ebp;
     frame.AddrStack.Offset = context.Esp;
     const DWORD machine = IMAGE_FILE_MACHINE_I386;
-#else
-    frame.AddrPC.Offset = context.Rip;
-    frame.AddrFrame.Offset = context.Rbp;
-    frame.AddrStack.Offset = context.Rsp;
-    const DWORD machine = IMAGE_FILE_MACHINE_AMD64;
-#endif
     frame.AddrPC.Mode = AddrModeFlat;
     frame.AddrFrame.Mode = AddrModeFlat;
     frame.AddrStack.Mode = AddrModeFlat;
@@ -157,13 +153,10 @@ LONG WINAPI ReportUnhandledException(EXCEPTION_POINTERS* pointers)
 }
 
 }  // namespace
-#endif
 
 void InstallHostCrashReporter()
 {
-#if defined(_WIN32)
     SetUnhandledExceptionFilter(&ReportUnhandledException);
-#endif
 }
 
-}  // namespace repiu::engine
+}  // namespace repiu::platform

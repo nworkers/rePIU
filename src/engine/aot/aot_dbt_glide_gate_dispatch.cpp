@@ -16,12 +16,19 @@
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/thunk_calling_convention.h"
 #include "repiu/platform/virtual_memory.h"
-#if !defined(_WIN32) && defined(__x86_64__)
-#include "repiu/platform/linux_x64_aot_dispatch.h"
-#endif
+#include "aot_dbt_glide_gate_dispatch_state.h"
 
 namespace repiu::engine
 {
+namespace glide_gate_dispatch_state
+{
+
+std::atomic<std::uint32_t> entry_count{0};
+std::atomic<std::uint32_t> success_count{0};
+std::atomic<std::uint32_t> terminal_failure_count{0};
+
+}  // namespace glide_gate_dispatch_state
+
 namespace
 {
 
@@ -44,10 +51,15 @@ std::atomic<std::uint32_t> g_relinked_cache_target_count{0};
 // combined counter cannot.
 std::atomic<std::uint32_t> g_relink_content_patch_count{0};
 std::atomic<std::uint32_t> g_relink_fixup_patch_count{0};
-std::atomic<std::uint32_t> g_entry_count{0};
-std::atomic<std::uint32_t> g_success_count{0};
+// Task 759. These three are shared with the cache model's resolver
+// (aot_dbt_glide_gate_dispatch_state.h).
+std::atomic<std::uint32_t>& g_entry_count =
+    glide_gate_dispatch_state::entry_count;
+std::atomic<std::uint32_t>& g_success_count =
+    glide_gate_dispatch_state::success_count;
 std::atomic<std::uint32_t> g_target_miss_count{0};
-std::atomic<std::uint32_t> g_terminal_failure_count{0};
+std::atomic<std::uint32_t>& g_terminal_failure_count =
+    glide_gate_dispatch_state::terminal_failure_count;
 
 extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtGlideGateFrame(
     ThreadContext* context, std::uint32_t* frame)
@@ -158,143 +170,6 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtGlideGateFrame(
     g_target_miss_count.fetch_add(1U, std::memory_order_relaxed);
 }
 
-#if defined(_MSC_VER) && defined(_M_IX86)
-extern "C" __declspec(naked) void AotDbtGlideGateDispatchThunk()
-{
-    __asm
-    {
-        pushfd
-        pushad
-        cld
-
-        mov esi, esp
-        mov ecx, dword ptr [g_repiu_active_thread_context]
-        test ecx, ecx
-        jz fail_without_host
-        mov eax, dword ptr [g_repiu_dbt_host_esp]
-        test eax, eax
-        jz fail_without_host
-
-        mov edx, dword ptr [g_repiu_dbt_host_stack_base]
-        mov dword ptr fs:[4], edx
-        mov edx, dword ptr [g_repiu_dbt_host_stack_limit]
-        mov dword ptr fs:[8], edx
-        mov esp, eax
-        sub esp, 512
-        and esp, -16
-        fxsave [esp]
-        mov edi, esp
-        push esi
-        push ecx
-        call ResolveAotDbtGlideGateFrame
-        fxrstor [edi]
-
-        mov eax, dword ptr [g_repiu_dbt_guest_stack_base]
-        mov dword ptr fs:[4], eax
-        mov eax, dword ptr [g_repiu_dbt_guest_stack_limit]
-        mov dword ptr fs:[8], eax
-        mov esp, esi
-        popad
-        popfd
-        ret
-
-    fail_without_host:
-        int 3
-    }
-}
-#endif
-
-#if !defined(_MSC_VER) && defined(__i386__)
-// Task 503d-12: the same thunk on Linux, one instantiation of the shared
-// bridge macro in src/platform/linux/aot_dbt_dispatch_thunks.S. GCC has no
-// naked functions on x86, so only the declaration is here.
-extern "C" void AotDbtGlideGateDispatchThunk();
-#endif
-
-#if !defined(_WIN32) && defined(__x86_64__)
-// Task 720. The x64 counterpart of ResolveAotDbtGlideGateFrame, reached from
-// RepiuLinuxX64GlideGateThunk with the guest state in the dispatch frame
-// rather than in a PUSHAD image on the guest stack.
-//
-// The checks are the i386 resolver's: the export must decode, the handler must
-// move EIP off the gate, and ESP must move by exactly the return address plus
-// the stdcall arguments. What differs is the continuation. The i386 thunk
-// resolves the cache target itself; this one only reports the guest return
-// address, and the thunk hands it to the return thunk, whose lookup, dynamic
-// translation and legacy resume every emitted `ret` already relies on.
-std::uint32_t ResolveLinuxX64GlideGateFrame(
-    void* resolver_context,
-    repiu::platform::LinuxX64AotDispatchFrame* frame)
-{
-    auto* const context = static_cast<ThreadContext*>(resolver_context);
-    if (context == nullptr || frame == nullptr)
-    {
-        g_terminal_failure_count.fetch_add(1U, std::memory_order_relaxed);
-        return 0U;
-    }
-    context->aot_dbt_glide_dispatch_entry_count.fetch_add(
-        1U, std::memory_order_relaxed);
-    g_entry_count.fetch_add(1U, std::memory_order_relaxed);
-
-    const std::uint32_t gate_address = frame->guest.eip;
-    const std::uint32_t original_esp = frame->guest.esp;
-    repiu::platform::GuestCpuContext guest_context{};
-    guest_context.ContextFlags =
-        repiu::platform::kGuestCpuContextIntegerControlSegments;
-    guest_context.Edi = frame->guest.edi;
-    guest_context.Esi = frame->guest.esi;
-    guest_context.Ebp = frame->guest.ebp;
-    guest_context.Esp = original_esp;
-    guest_context.Ebx = frame->guest.ebx;
-    guest_context.Edx = frame->guest.edx;
-    guest_context.Ecx = frame->guest.ecx;
-    guest_context.Eax = frame->guest.eax;
-    guest_context.EFlags = frame->guest.eflags;
-    guest_context.Eip = gate_address;
-    guest_context.SegEs = context->guest_es;
-    guest_context.SegSs = context->guest_ss;
-    guest_context.SegDs = context->guest_ds;
-    guest_context.SegFs = context->guest_fs;
-    guest_context.SegGs = context->guest_gs;
-
-    const repiu::hle::GlideExportGate* gate =
-        repiu::hle::DecodeGlideGate(
-            context->glide_gate_plan,
-            gate_address - context->linexe_arena_layout.gate_code_base);
-    const std::uint32_t expected_adjust =
-        gate != nullptr ? 4U + gate->argument_byte_count : 0U;
-    if (gate == nullptr || expected_adjust >
-            std::numeric_limits<std::uint16_t>::max() ||
-        !HandleGlideGateBoundary(&guest_context, context) ||
-        static_cast<std::uint32_t>(guest_context.Eip) == gate_address ||
-        // Task 750: a tick injected while the swap gate waits pops the return
-        // address and leaves an interrupt frame (EFLAGS, CS, EIP) returning
-        // to the call, instead of the gate's own return.
-        static_cast<std::uint32_t>(guest_context.Esp) !=
-            (context->glide_gate_interrupt_injected
-                 ? original_esp + 4U - 12U
-                 : original_esp + expected_adjust))
-    {
-        context->aot_terminal_failure.store(true, std::memory_order_release);
-        g_terminal_failure_count.fetch_add(1U, std::memory_order_relaxed);
-        return 0U;
-    }
-
-    frame->guest.edi = guest_context.Edi;
-    frame->guest.esi = guest_context.Esi;
-    frame->guest.ebp = guest_context.Ebp;
-    frame->guest.ebx = guest_context.Ebx;
-    frame->guest.edx = guest_context.Edx;
-    frame->guest.ecx = guest_context.Ecx;
-    frame->guest.eax = guest_context.Eax;
-    frame->guest.esp = static_cast<std::uint32_t>(guest_context.Esp);
-    frame->guest.eflags = guest_context.EFlags & ~0x00000100U;
-    frame->guest.eip = static_cast<std::uint32_t>(guest_context.Eip);
-    frame->guest_source = static_cast<std::uint32_t>(guest_context.Eip);
-    g_success_count.fetch_add(1U, std::memory_order_relaxed);
-    return 1U;
-}
-#endif
 
 }  // namespace
 
@@ -540,25 +415,8 @@ ReadGlideGateDirectDispatchStats()
     };
 }
 
-void* GetGlideGateDirectDispatchThunkAddress()
-{
-#if (defined(_MSC_VER) && defined(_M_IX86)) || defined(__i386__)
-    return reinterpret_cast<void*>(&AotDbtGlideGateDispatchThunk);
-#elif !defined(_WIN32) && defined(__x86_64__)
-    // Task 720.
-    return reinterpret_cast<void*>(
-        repiu::platform::LinuxX64GlideGateThunkAddress());
-#else
-    return nullptr;
-#endif
-}
-
-void InstallGlideGateDirectDispatchResolver()
-{
-#if !defined(_WIN32) && defined(__x86_64__)
-    repiu::platform::InstallLinuxX64GlideGateResolver(
-        &ResolveLinuxX64GlideGateFrame);
-#endif
-}
+// Task 759. GetGlideGateDirectDispatchThunkAddress and
+// InstallGlideGateDirectDispatchResolver are in
+// aot_dbt_dispatch_thunks_direct.cpp and aot_dbt_dispatch_thunks_cache.cpp.
 
 }  // namespace repiu::engine

@@ -1,5 +1,7 @@
 #include "repiu/engine/guest_position_census.h"
 
+#include "repiu/platform/host_symbols.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cstdio>
@@ -9,13 +11,6 @@
 #include <iomanip>
 #include <system_error>
 #include <vector>
-
-#if defined(_WIN32)
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <dbghelp.h>
-#endif
 
 namespace repiu::engine
 {
@@ -326,142 +321,6 @@ GuestPositionCensusSnapshot SnapshotGuestPositionCensus(
     return snapshot;
 }
 
-#if defined(_WIN32)
-namespace
-{
-
-// Resolves one address to its module file name and offset. Returns false when
-// the address belongs to no loaded module, which is normal for guest addresses.
-bool ResolveModule(std::uint32_t address,
-                   std::string* module_name,
-                   std::uint32_t* module_offset)
-{
-    HMODULE module = nullptr;
-    if (!GetModuleHandleExA(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCSTR>(static_cast<std::uintptr_t>(address)),
-            &module) ||
-        module == nullptr)
-    {
-        return false;
-    }
-    char path[MAX_PATH] = {};
-    const DWORD length = GetModuleFileNameA(module, path, MAX_PATH);
-    if (length == 0U)
-    {
-        return false;
-    }
-    const char* leaf = std::strrchr(path, '\\');
-    *module_name = leaf != nullptr ? leaf + 1 : path;
-    *module_offset = address -
-        static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(module));
-    return true;
-}
-
-// Symbol resolution is best-effort: without a PDB beside the binary this
-// answers nothing and the caller falls back to module+offset.
-class SymbolSession
-{
-public:
-    SymbolSession()
-    {
-        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
-        initialised_ = SymInitialize(GetCurrentProcess(), nullptr, TRUE) != 0;
-    }
-
-    ~SymbolSession()
-    {
-        if (initialised_)
-        {
-            SymCleanup(GetCurrentProcess());
-        }
-    }
-
-    SymbolSession(const SymbolSession&) = delete;
-    SymbolSession& operator=(const SymbolSession&) = delete;
-
-    bool Resolve(std::uint32_t address, std::string* name) const
-    {
-        if (!initialised_)
-        {
-            return false;
-        }
-        alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 512] = {};
-        SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
-        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-        symbol->MaxNameLen = 511;
-        DWORD64 displacement = 0;
-        if (!SymFromAddr(GetCurrentProcess(),
-                         static_cast<DWORD64>(address),
-                         &displacement,
-                         symbol))
-        {
-            return false;
-        }
-        *name = symbol->Name;
-        if (displacement != 0)
-        {
-            *name += "+0x";
-            char digits[32] = {};
-            std::snprintf(digits, sizeof(digits), "%llX",
-                          static_cast<unsigned long long>(displacement));
-            *name += digits;
-        }
-        return true;
-    }
-
-private:
-    bool initialised_ = false;
-};
-
-}  // namespace
-
-void ResolveGuestPositionCensusSymbols(
-    GuestPositionCensusSnapshot* snapshot)
-{
-    if (snapshot == nullptr || !snapshot->enabled)
-    {
-        return;
-    }
-    const SymbolSession symbols;
-    for (std::uint32_t index = 0; index < snapshot->top_count; ++index)
-    {
-        std::string name;
-        std::uint32_t offset = 0;
-        if (ResolveModule(snapshot->top[index].address, &name, &offset))
-        {
-            snapshot->top_module_names[index] = name;
-            snapshot->top_module_offsets[index] = offset;
-        }
-    }
-    for (std::uint32_t index = 0; index < snapshot->host_site_top_count;
-         ++index)
-    {
-        GuestPositionHostSiteSample& site =
-            snapshot->host_site_top[index];
-        std::string name;
-        std::uint32_t offset = 0;
-        if (ResolveModule(site.address, &name, &offset))
-        {
-            site.module_name = name;
-            site.module_offset = offset;
-        }
-        std::string symbol;
-        if (symbols.Resolve(site.address, &symbol))
-        {
-            site.symbol = symbol;
-        }
-    }
-}
-#else
-void ResolveGuestPositionCensusSymbols(
-    GuestPositionCensusSnapshot* snapshot)
-{
-    (void)snapshot;
-}
-#endif
-
 std::filesystem::path ResolveGuestPositionCensusDumpPath(
     std::string_view setting)
 {
@@ -567,6 +426,48 @@ bool WriteGuestPositionCensusDumpIfEnabled(GuestPositionCensus* census,
         *resolved_path = path.string();
     }
     return WriteGuestPositionCensusDump(path, census, written_entry_count);
+}
+
+// Task 412. Module and symbol names for the census's addresses, looked up
+// after the guest thread has stopped. Task 759: the lookups are the platform
+// layer's; a host that resolves nothing leaves the raw addresses.
+void ResolveGuestPositionCensusSymbols(
+    GuestPositionCensusSnapshot* snapshot)
+{
+    if (snapshot == nullptr || !snapshot->enabled)
+    {
+        return;
+    }
+    const repiu::platform::HostSymbolSession symbols;
+    for (std::uint32_t index = 0; index < snapshot->top_count; ++index)
+    {
+        std::string name;
+        std::uint32_t offset = 0;
+        if (repiu::platform::ResolveHostModule(
+                snapshot->top[index].address, &name, &offset))
+        {
+            snapshot->top_module_names[index] = name;
+            snapshot->top_module_offsets[index] = offset;
+        }
+    }
+    for (std::uint32_t index = 0; index < snapshot->host_site_top_count;
+         ++index)
+    {
+        GuestPositionHostSiteSample& site =
+            snapshot->host_site_top[index];
+        std::string name;
+        std::uint32_t offset = 0;
+        if (repiu::platform::ResolveHostModule(site.address, &name, &offset))
+        {
+            site.module_name = name;
+            site.module_offset = offset;
+        }
+        std::string symbol;
+        if (symbols.Resolve(site.address, &symbol))
+        {
+            site.symbol = symbol;
+        }
+    }
 }
 
 }  // namespace repiu::engine

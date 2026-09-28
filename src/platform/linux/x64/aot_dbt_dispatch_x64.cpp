@@ -1,4 +1,4 @@
-#include "repiu/platform/linux_x64_aot_dispatch.h"
+#include "repiu/platform/linux/x64/linux_x64_aot_dispatch.h"
 
 #if !defined(_WIN32) && defined(__x86_64__)
 

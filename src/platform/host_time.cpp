@@ -1,68 +1,15 @@
 #include "repiu/platform/host_time.h"
 
+#include "host_time_platform.h"
+
+// Task 758. The part of host time every host shares: the local wall clock,
+// cached per second. The counters, the calendar conversion and the yield are
+// per platform (host_time_platform.h, win32/, linux/, web/).
+
 #include <ctime>
-
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-#include <intrin.h>
-#elif defined(__i386__) || defined(__x86_64__)
-#include <x86intrin.h>
-#endif
-
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <sched.h>
-#include <time.h>
-
-#include <cerrno>
-#endif
 
 namespace repiu::platform
 {
-
-std::uint64_t ReadCycleCounter()
-{
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-    return __rdtsc();
-#elif defined(__i386__) || defined(__x86_64__)
-    return __rdtsc();
-#else
-    // Not cycles, but monotonic and fine-grained, which is all the callers ask
-    // of it: every one of them subtracts two readings.
-    return static_cast<std::uint64_t>(
-        std::chrono::steady_clock::now().time_since_epoch().count());
-#endif
-}
-
-std::int64_t PerformanceCounterFrequency()
-{
-    static const std::int64_t frequency = []() -> std::int64_t {
-#if defined(_WIN32)
-        LARGE_INTEGER value = {};
-        QueryPerformanceFrequency(&value);
-        return value.QuadPart != 0 ? value.QuadPart : 1;
-#else
-        // steady_clock is nanoseconds on every implementation this builds
-        // against, and the ratio says so rather than the number being assumed.
-        return static_cast<std::int64_t>(
-            std::chrono::steady_clock::period::den /
-            std::chrono::steady_clock::period::num);
-#endif
-    }();
-    return frequency;
-}
-
-std::int64_t PerformanceCounterTicks()
-{
-#if defined(_WIN32)
-    LARGE_INTEGER value = {};
-    QueryPerformanceCounter(&value);
-    return value.QuadPart;
-#else
-    return static_cast<std::int64_t>(
-        std::chrono::steady_clock::now().time_since_epoch().count());
-#endif
-}
 
 LocalWallClock ReadLocalWallClock()
 {
@@ -85,11 +32,7 @@ LocalWallClock ReadLocalWallClock()
     {
         cached_seconds = seconds;
         std::tm converted{};
-#if defined(_WIN32)
-        cached_valid = localtime_s(&converted, &seconds) == 0;
-#else
-        cached_valid = localtime_r(&seconds, &converted) != nullptr;
-#endif
+        cached_valid = host_time_platform::ConvertLocalTime(seconds, &converted);
         cached_parts = converted;
     }
     if (!cached_valid)
@@ -124,40 +67,6 @@ LocalWallClock ReadLocalWallClock()
         static_cast<std::uint16_t>(remainder.count());
 
     return wall_clock;
-}
-
-// Task 503d-19. `Sleep(0)` on Windows yields to a ready thread of equal
-// priority and returns immediately; `sched_yield` is the POSIX counterpart, and
-// `nanosleep` is not -- it would enter the kernel's timer machinery for a
-// request that is about scheduling.
-//
-// For a non-zero request, `nanosleep` rather than `usleep`: the second is
-// obsolescent, and the first is the one that resumes correctly after a signal
-// without the caller having to think about it. This path is interrupted by
-// signals routinely, because that is how the engine delivers faults.
-void YieldMilliseconds(const std::uint32_t milliseconds)
-{
-#if defined(_WIN32)
-    Sleep(static_cast<DWORD>(milliseconds));
-#else
-    if (milliseconds == 0U)
-    {
-        sched_yield();
-        return;
-    }
-    timespec request{};
-    request.tv_sec = static_cast<time_t>(milliseconds / 1000U);
-    request.tv_nsec = static_cast<long>(milliseconds % 1000U) * 1000000L;
-    timespec remaining{};
-    // A signal shortens the sleep, and the remainder is what is left to serve.
-    // Resuming it keeps the loop's cadence from drifting with fault traffic.
-    // Only EINTR is resumed: any other failure is a malformed request, and
-    // retrying it forever would hang the loop this function exists to pace.
-    while (nanosleep(&request, &remaining) != 0 && errno == EINTR)
-    {
-        request = remaining;
-    }
-#endif
 }
 
 }  // namespace repiu::platform

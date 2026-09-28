@@ -33,7 +33,7 @@ DOS/4G binaries as native x86 while providing DOS, DPMI, and hardware boundaries
   `src/platform/win32/` 안에 있었고, 이름과 내용이 어긋난 채 Linux가 그것을 컴파일했다.**
 * `src/platform/win32/`: Win32 백엔드 — 3a~3d 계층의 Windows 구현(폴트 전달, 가상 메모리,
   워커 신호, 안전한 메모리 복사, 환경 변수, 자식 프로세스)
-* `src/platform/linux/`: Linux 전용 세부 구현
+* `src/platform/linux/`: Linux 전용 세부 구현 중 i386·x86-64 공용 부분. 아키텍처별 부분은 `x86/`(i386 machine context, FSAVE, i386 thunk·스택 전환)과 `x64/`(x86-64 machine context, FXSAVE, R15 guest ESP, long-mode thunk·guest entry, x64 fault 진단)에 있고 CMake가 포인터 크기로 고릅니다. x64 공개 헤더(`linux_x64_aot_dispatch.h`, `linux_x64_aot_frame.h`, `linux_x64_guest_entry.h`, `linux_x64_guest_registers.h`)는 같은 규칙으로 `include/repiu/platform/linux/x64/`에 있습니다(Task 757)
 * `src/platform/web/`: Web 전용 세부 구현
 
 현재 추가되는 디렉터리:
@@ -96,7 +96,7 @@ Planned shared structure:
   compiled it anyway.**
 * `src/platform/win32/`: the Win32 backend -- the Windows implementations of the 3a-3d layer (fault
   delivery, virtual memory, worker signals, safe memory copy, environment, child processes)
-* `src/platform/linux/`: Linux-specific details
+* `src/platform/linux/`: the Linux-specific details shared by i386 and x86-64. Per-architecture parts live in `x86/` (i386 machine context, FSAVE, i386 thunks and stack switch) and `x64/` (x86-64 machine context, FXSAVE, R15 as guest ESP, long-mode thunks and guest entry, x64 fault diagnostics), chosen by CMake by pointer size. The x64 public headers (`linux_x64_aot_dispatch.h`, `linux_x64_aot_frame.h`, `linux_x64_guest_entry.h`, `linux_x64_guest_registers.h`) follow the same rule in `include/repiu/platform/linux/x64/` (Task 757)
 * `src/platform/web/`: Web-specific details
 
 Directories added now:
@@ -1459,7 +1459,7 @@ Task 503a부터 게스트 레지스터 상태는 `repiu::platform::GuestCpuConte
 Windows에서는 `CONTEXT`의 별칭이라 기존 900여 곳의 필드 접근이 그대로 컴파일되고, 그 밖의
 플랫폼에서는 **같은 필드 이름**을 가진 구조체입니다. 필드 이름을 유지하는 것이 요점입니다 —
 호출부를 새 접근자 API로 고치는 편집 자체가 이식에서 가장 큰 회귀 원인이 되기 때문입니다.
-플랫폼 차이는 `src/platform/linux/guest_cpu_context.cpp`의 `ucontext_t` 변환 두 함수로
+플랫폼 차이는 `src/platform/linux/x86/guest_cpu_context.cpp`의 `ucontext_t` 변환 두 함수로
 모입니다. `ContextFlags`는 Linux에서 무시되고, `FloatSave`는 glibc `_libc_fpstate`가 FSAVE
 이미지 그대로라 필드 대 필드로 옮겨지며, 디버그 레지스터는 항상 0입니다 — Linux 사용자
 공간은 자기 스레드의 디버그 레지스터를 쓸 수 없어 이를 쓰는 `native_linear_span`은 비활성입니다.
@@ -1509,13 +1509,13 @@ Task 503d부터 Linux 바이너리는 **non-PIE로, 텍스트 세그먼트를 0x
 0x01000000~0x09000000 안입니다. 세그먼트를 들어 올리면 그 범위가 비워집니다.
 
 다섯 개 디스패치 thunk는 부르는 resolver만 다르므로 Linux에서는 복사본 다섯이 아니라
-`src/platform/linux/stack_bridge.inc.S`의 **매크로 하나**입니다. MSVC 원본과 줄 단위로 대조되도록
+`src/platform/linux/x86/stack_bridge.inc.S`의 **매크로 하나**입니다. MSVC 원본과 줄 단위로 대조되도록
 Intel 문법으로 씁니다. Windows가 thunk마다 하는 `fs:[4]`·`fs:[8]` 조작(28곳)은 Linux 매크로에
 **없습니다** — 커널이 시그널을 `sigaltstack`으로 준 스택에 얹고 중단된 스택이 어디인지 묻지 않기
 때문이며, 이는 전환된 스택 위에서 폴트를 일으키는 probe로 확인했습니다.
 
 Task 503d-16부터 트램폴린이 게스트로 들어가는 세 진입점도 GAS에 있습니다 —
-`src/platform/linux/guest_stack_switch.S`의 `CallGuestEntryWithStack`(스택 전환 자체)과 폴트
+`src/platform/linux/x86/guest_stack_switch.S`의 `CallGuestEntryWithStack`(스택 전환 자체)과 폴트
 복귀 둘입니다. `StackSwitchCallState`의 필드 오프셋은
 `include/repiu/platform/guest_stack_switch.h`에 `#define`으로 한 번만 두고, `.S`가 C
 전처리기를 거치므로 어셈블리 두 벌과 C++ `static_assert`가 같은 숫자를 읽습니다.
@@ -1582,7 +1582,7 @@ Since Task 503a the guest's register state is named `repiu::platform::GuestCpuCo
 with the same field names elsewhere. Keeping the names is the point, because rewriting call sites
 onto a new accessor API would itself be the port's largest source of regressions. The platform
 difference collapses into the two `ucontext_t` conversions in
-`src/platform/linux/guest_cpu_context.cpp`. `ContextFlags` is ignored on Linux; `FloatSave` converts
+`src/platform/linux/x86/guest_cpu_context.cpp`. `ContextFlags` is ignored on Linux; `FloatSave` converts
 field for field because glibc's `_libc_fpstate` is the same FSAVE image Windows calls
 `FLOATING_SAVE_AREA`; and the debug registers are always zero, since Linux user space cannot write
 its own thread's, which is why `native_linear_span` stays disabled there.
@@ -1633,14 +1633,14 @@ self-modifying code with; while plain `-no-pie` puts an i386 image at 0x08048000
 0x01000000-0x09000000 range the guest's relocated image needs.
 
 The five dispatch thunks differ only in which resolver they call, so on Linux they are one macro in
-`src/platform/linux/stack_bridge.inc.S` rather than five copies, written in Intel syntax so it reads
+`src/platform/linux/x86/stack_bridge.inc.S` rather than five copies, written in Intel syntax so it reads
 line for line against the MSVC originals. What the macro does not carry is the `fs:[4]`/`fs:[8]`
 swapping each Windows thunk performs — 28 sites — because the kernel delivers a signal onto the stack
 given to `sigaltstack` and asks nothing about where the interrupted stack lives. A probe that faults
 while on the switched stack confirms it.
 
 Since Task 503d-16 the trampoline's three entries into the guest are in GAS as well, in
-`src/platform/linux/guest_stack_switch.S`: `CallGuestEntryWithStack`, which is the stack switch
+`src/platform/linux/x86/guest_stack_switch.S`: `CallGuestEntryWithStack`, which is the stack switch
 itself, and the two fault recoveries. `StackSwitchCallState`'s field offsets are defined once as
 `#define`s in `include/repiu/platform/guest_stack_switch.h`, and because a `.S` goes through the C
 preprocessor both assemblies and the C++ `static_assert`s read the same numbers.
@@ -4584,3 +4584,89 @@ The swap pacer (`PaceSwapAfterPresent`) resynchronises only when more than a per
 deadline (the previous deadline plus a period), and a late frame is not held. Before the window opens
 `SelectWslD3d12Driver` chooses WSL's D3D12 driver (when `/dev/dxg` and `d3d12_dri.so` exist and the user
 chose no driver).
+
+# 실행 모델과 플랫폼 계층의 경계 (Task 759)
+
+엔진·런타임·HLE·도구 디렉터리에는 플랫폼·아키텍처 하위 디렉터리가 없습니다. 호스트에 따라 달라지는 것은 두
+곳으로 갑니다.
+
+* **OS에 의존하는 것은 플랫폼 계층**(`include/repiu/platform/`의 계약, `src/platform/<OS>/[<아키텍처>/]`의
+  구현)에 있습니다. 플랫폼 계층은 엔진의 타입을 쓰지 않습니다. 엔진이 호스트에 묻는 것 가운데 게스트 실행과
+  무관한 것들: `host_crash_report.h`(처리되지 않은 예외 보고), `host_fault_report.h`(호스트 언어 예외 보고,
+  페이지의 호스트 고유 번호, 폴트 보고용 메모리 읽기), `host_gpu_driver.h`(WSL의 D3D12 드라이버 선택),
+  `host_symbols.h`(주소의 모듈·심볼 이름), `host_telemetry.h`(로더 이미지 범위, 스레드 시간, 다른 프로세스가
+  만든 공유 섹션, 정지한 스레드의 레지스터), `host_trace_descriptor.h`(추적 덤프 쓰기),
+  `host_thread.h`의 `TerminateHostThread`. Linux는 이 가운데 대부분에 "없음"으로 답합니다.
+* **기계어 thunk와 스택 전환은 플랫폼 계층**에 있습니다. Win32는 MSVC 인라인 어셈블리
+  (`src/platform/win32/aot_dbt_dispatch_thunks_win32.cpp`, `guest_stack_switch_win32.cpp`), Linux i386은
+  `src/platform/linux/x86/`의 `.S`, Linux x64는 `src/platform/linux/x64/`의 `.S`입니다. 엔진의 resolver와
+  스레드 컨텍스트는 C 심볼 이름으로 가리킵니다.
+* **CPU 아키텍처에 따른 차이는 실행 모델**입니다. `direct`는 게스트의 바이트를 이 프로세스에서 그대로
+  실행하고(Win32, Linux i386), `cache`는 번역한 long mode 코드 캐시를 실행하며(Linux x64), `none`은 게스트를
+  실행하지 않습니다(웹 빌드). 공용 코드는 `include/repiu/runtime/execution_model.h`의 함수
+  (`RunsGuestBytesDirectly`, `RunsLongModeCodeCache`, `LongModeReturnThunkAddress`,
+  `InjectsTicksDuringSwapWait`)로 묻고, 구현은 `src/runtime/execution_model_{direct,cache,none}.cpp`입니다.
+  CMake의 `REPIU_EXECUTION_MODEL`이 고릅니다.
+* **모델에 따라 다르고 엔진의 타입이 필요한 코드**는 공용 파일 옆에 `<이름>_direct.cpp`,
+  `<이름>_cache.cpp`로 있습니다.
+
+  | 공용 파일 | 내부 인터페이스 | 모델 파일이 맡는 것 |
+  |---|---|---|
+  | `execution/execution_trampoline.cpp` | `execution_trampoline_model.h` | direct: 게스트로의 두 진입. cache: 반환 thunk가 묻는 resolver, 캐시 진입, 캐시 출구, 종료 복구의 호스트 주소, 반환 추적 |
+  | `aot/aot_dbt_*_dispatch.cpp` | 각 헤더의 `Get…ThunkAddress` | `aot_dbt_dispatch_thunks_direct.cpp`: 다섯 thunk의 주소. `_cache.cpp`: long mode Glide 게이트 thunk와 그 resolver |
+  | `native_phase_sampler.cpp` | `native_phase_sampler_model.h` | 샘플을 어떻게 뜨는가 |
+
+  공용 파일에 남은 모델 분기는 `if (runtime::execution_model::RunsLongModeCodeCache())`로 감싼 같은
+  코드입니다. 처리한 경계 뒤의 재개는 `ResumeHandledBoundary` 하나가 맡습니다.
+
+한 호스트에서만 만든 진단(`src/engine/telemetry/linux_x64_native_write_trace.cpp`, `aot_code_cache.cpp`의 스택
+쓰기 추적)은 디렉터리로 나누지 않고 그 자리에서 그 호스트에서만 빌드됩니다.
+
+**아직 엔진에 남은 Win32 코드**: `execution_trampoline.cpp`의 Win32 스레드 프로시저(SEH), 예외 진입
+(`DispatchGuestException`, `exception_rescue_win32.cpp`), 종료 복구의 vectored handler들입니다. 모두 엔진의
+상태를 쥐고 있어, 플랫폼 계층이 콜백을 받는 형태로 바꿔야 옮길 수 있습니다.
+
+# The execution model and the boundary of the platform layer (Task 759)
+
+The engine, runtime, HLE and tool directories have no platform or architecture subdirectories. What
+differs by host goes to one of two places.
+
+* **What depends on the OS is in the platform layer** (contracts in `include/repiu/platform/`,
+  implementations in `src/platform/<OS>/[<arch>/]`). The platform layer uses none of the engine's types.
+  What the engine asks of the host beyond running the guest: `host_crash_report.h` (the report of an
+  unhandled exception), `host_fault_report.h` (the report of a host language exception, a page's own host
+  numbers, memory reads for a fault report), `host_gpu_driver.h` (the choice of WSL's D3D12 driver),
+  `host_symbols.h` (module and symbol names for addresses), `host_telemetry.h` (the loader's image range,
+  thread times, a section another process created, the registers of a suspended thread),
+  `host_trace_descriptor.h` (writing a trace dump) and `TerminateHostThread` in `host_thread.h`. Linux
+  answers most of these with "none".
+* **The machine-code thunks and the stack switch are in the platform layer.** Win32 has MSVC inline
+  assembly (`src/platform/win32/aot_dbt_dispatch_thunks_win32.cpp`, `guest_stack_switch_win32.cpp`),
+  Linux i386 the `.S` files of `src/platform/linux/x86/`, Linux x64 those of `src/platform/linux/x64/`.
+  They name the engine's resolvers and thread context by their C symbols.
+* **The difference by CPU architecture is the execution model.** `direct` runs the guest's bytes in this
+  process as they are (Win32, Linux i386), `cache` runs the translated long-mode code cache (Linux x64),
+  and `none` runs no guest (the web build). Shared code asks through the functions of
+  `include/repiu/runtime/execution_model.h` (`RunsGuestBytesDirectly`, `RunsLongModeCodeCache`,
+  `LongModeReturnThunkAddress`, `InjectsTicksDuringSwapWait`), implemented in
+  `src/runtime/execution_model_{direct,cache,none}.cpp`. CMake's `REPIU_EXECUTION_MODEL` picks.
+* **Code that differs by model and needs the engine's types** sits next to its shared file as
+  `<name>_direct.cpp` and `<name>_cache.cpp`.
+
+  | Shared file | Internal interface | What the model files hold |
+  |---|---|---|
+  | `execution/execution_trampoline.cpp` | `execution_trampoline_model.h` | direct: the two entries into the guest. cache: the resolver the return thunk asks, the entry into the cache, the cache's exit, the host address for shutdown recovery, the return traces |
+  | `aot/aot_dbt_*_dispatch.cpp` | `Get…ThunkAddress` in each header | `aot_dbt_dispatch_thunks_direct.cpp`: the five thunks' addresses. `_cache.cpp`: the long-mode Glide gate thunk and its resolver |
+  | `native_phase_sampler.cpp` | `native_phase_sampler_model.h` | how a sample is taken |
+
+  The model branches left in shared files are the same code inside
+  `if (runtime::execution_model::RunsLongModeCodeCache())`. The continuation after a handled boundary is
+  one function, `ResumeHandledBoundary`.
+
+A diagnostic built on one host (`src/engine/telemetry/linux_x64_native_write_trace.cpp`, the stack write
+trace in `aot_code_cache.cpp`) is not put in a directory; it is built where it is, on that host only.
+
+**Win32 code still in the engine**: the Win32 thread procedure (SEH) in `execution_trampoline.cpp`, the
+exception entry (`DispatchGuestException`, `exception_rescue_win32.cpp`) and the shutdown recovery's
+vectored handlers. All of them hold engine state, and they can move only once the platform layer takes
+callbacks for them.

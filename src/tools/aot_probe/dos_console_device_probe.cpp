@@ -26,6 +26,19 @@ std::filesystem::path MakeScratchRoot()
     return error ? std::filesystem::path{} : root;
 }
 
+// Task 758. Whether a host file of that name appeared, without throwing.
+//
+// `CON:` is not a valid Windows file name, and the throwing overload of
+// `std::filesystem::exists` raises `filesystem_error` for it -- uncaught, that
+// aborted the whole Win32 core probe here and hid every probe after this one.
+// A name the host cannot even hold is a name no file has, which is the answer
+// this check wants.
+bool HostFileExists(const std::filesystem::path& path)
+{
+    std::error_code error;
+    return std::filesystem::exists(path, error) && !error;
+}
+
 }  // namespace
 
 bool RunDosConsoleDeviceProbe()
@@ -52,7 +65,7 @@ bool RunDosConsoleDeviceProbe()
         resolved.host_path.empty() &&
         IsDosConsoleFileHandle(state, handle) &&
         IsDosFileHandleWritable(state, handle) &&
-        !std::filesystem::exists(root / "CON") &&
+        !HostFileExists(root / "CON") &&
         state.host_file_open_count == 0U;
 
     std::uint16_t dos_error = 0;
@@ -67,7 +80,7 @@ bool RunDosConsoleDeviceProbe()
         IsDosConsoleFileHandle(state, colon_handle) &&
         IsDosFileHandleWritable(state, colon_handle) &&
         colon_resolved.host_path.empty() &&
-        !std::filesystem::exists(root / "CON:");
+        !HostFileExists(root / "CON:");
     const bool colon_closed = colon_opened &&
         CloseDosFile(&state, colon_handle, &dos_error) && dos_error == 0U;
 

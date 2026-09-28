@@ -1,9 +1,11 @@
 #include "repiu/runtime/aot_code_cache.h"
 
+#include "repiu/runtime/execution_model.h"
+
 #include "repiu/runtime/aot_long_mode_compatibility.h"
 
 #if !defined(_WIN32) && defined(__x86_64__)
-#include "repiu/platform/linux_x64_aot_dispatch.h"
+#include "repiu/platform/linux/x64/linux_x64_aot_dispatch.h"
 #include "repiu/engine/glide_lfb_native_store_census.h"
 #endif
 
@@ -414,11 +416,7 @@ bool EmitLongMode16BitLoopNz(const AotInstructionRecord& instruction,
 // before, so nothing changes for i386 or Windows by this returning nothing.
 std::uintptr_t LongModeReturnThunkAddress()
 {
-#if !defined(_WIN32) && defined(__x86_64__)
-    return repiu::platform::LinuxX64ReturnThunkAddress();
-#else
-    return 0U;
-#endif
+    return execution_model::LongModeReturnThunkAddress();
 }
 
 // Task 560. The two control-flow kinds a long-mode host can emit as they are.
@@ -2957,11 +2955,7 @@ bool LongModeJumpTableEmittable(const AotInstructionRecord& instruction)
 
 bool HostRequiresLongModeEmission()
 {
-#if defined(__x86_64__) || defined(_M_X64)
-    return true;
-#else
-    return false;
-#endif
+    return execution_model::RunsLongModeCodeCache();
 }
 
 bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,

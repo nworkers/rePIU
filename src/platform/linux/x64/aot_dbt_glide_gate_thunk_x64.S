@@ -16,7 +16,7 @@
 // the gate's `ud2` and went through a signal: 2.42 million of them in Task 719's
 // 180-second run.
 
-#include "repiu/platform/linux_x64_aot_frame.h"
+#include "repiu/platform/linux/x64/linux_x64_aot_frame.h"
 
     .intel_syntax noprefix
     .text
