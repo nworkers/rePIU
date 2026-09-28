@@ -95,3 +95,31 @@ rePIU pins upstream `minimp3` commit
 `ea99364f61c14656440e8d77e9c233ccf3124633` through FetchContent for frame decoding of the
 PIU10 MAS3507D MP3 stream. `minimp3` is offered under CC0 1.0 Universal. rePIU does not
 incorporate MAME's MAS3507D or MP3 wrapper code.
+
+## Galmuri 2.40.3 (project site font)
+
+### 한국어
+
+프로젝트 사이트(`docs/sites/`)는 한글을 포함한 픽셀 폰트 Galmuri 2.40.3의 `Galmuri14`, `Galmuri11-Bold`,
+`GalmuriMono11` woff2 파일을 `docs/sites/static/fonts/`에 포함합니다. Galmuri는 SIL Open Font License 1.1로
+제공되며, 라이선스 전문을 같은 디렉터리의 `OFL.txt`로 함께 배포합니다. 폰트는 수정하지 않았습니다. 사이트에만
+쓰이며 rePIU 실행 파일에는 포함되지 않습니다.
+
+- Project: https://github.com/quiple/galmuri
+- License: [`docs/sites/static/fonts/OFL.txt`](docs/sites/static/fonts/OFL.txt) (SIL OFL 1.1, Reserved Font Name "Galmuri")
+
+### English
+
+The project site (`docs/sites/`) ships the `Galmuri14`, `Galmuri11-Bold` and `GalmuriMono11` woff2 files of
+Galmuri 2.40.3, a pixel font with Hangul, in `docs/sites/static/fonts/`. Galmuri is offered under the SIL
+Open Font License 1.1, whose full text is distributed alongside as `OFL.txt`. The fonts are unmodified.
+They are used by the site only and are not part of the rePIU executables.
+
+## Project site build tools
+
+The site build (`scripts/site/`) installs these Python packages at build time; none is vendored or shipped
+in the rePIU executables. Pinned in [`scripts/site/requirements.txt`](scripts/site/requirements.txt).
+
+- markdown-it-py 4.2.0, mdit-py-plugins 0.6.1, mdurl 0.1.2 — MIT — https://github.com/executablebooks/markdown-it-py
+- Jinja2 3.1.6, MarkupSafe 3.0.3 — BSD 3-Clause — https://github.com/pallets/jinja
+- Mermaid 11.17.2 (loaded from jsDelivr by site pages that contain a diagram) — MIT — https://github.com/mermaid-js/mermaid

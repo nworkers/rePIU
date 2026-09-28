@@ -18,6 +18,18 @@ docs/post/2026-07-10-010119-preserving-dos4gw-execution-wip.md
 
 본문은 한국어 전체 문서를 먼저 작성하고, 그 다음에 같은 내용을 영어 전체 문서로 작성한다.
 
+## 사이트 게시
+
+main에 머지된 글은 [프로젝트 사이트](https://nworkers.github.io/rePIU/)의 개발 기록에 자동으로 게시된다
+([사이트 README](../sites/README.md)). 사이트 빌드가 두 언어를 나누는 규칙을 지킨다.
+
+* 한국어 문서와 영어 문서 사이에는 `---` 한 줄만 둔다. 그 다음 비어 있지 않은 줄은 영어 문서의 `#` 제목이어야
+  한다. 코드 블록 안의 `---`와 `#` 줄은 분리에 쓰이지 않는다.
+* 각 언어 문서의 첫 줄은 `#` 제목이다. 사이트는 이 제목을 페이지 제목으로 쓰고 본문에서 뺀다.
+* 글 목록의 요약은 제목 뒤 첫 문단 중 60자 이상인 첫 문단이다. 범위 링크 줄 다음에 글을 소개하는 문단을 둔다.
+* 저장소 안 파일을 가리키는 상대 링크는 GitHub의 해당 파일로, 다른 글을 가리키는 링크는 사이트의 글 페이지로
+  바뀐다.
+
 ## 필수 구성
 
 한국어 문서에는 아래 소제목 이름을 유지한다.
@@ -69,6 +81,21 @@ docs/post/2026-07-10-010119-preserving-dos4gw-execution-wip.md
 The post title must be English-only.
 
 Write the complete Korean document first, followed by the complete English document for the same content.
+
+## Site Publishing
+
+Posts merged to main are published automatically in the dev log of the
+[project site](https://nworkers.github.io/rePIU/) ([site README](../sites/README.md)). Keep to the rules
+the site build uses to separate the two languages.
+
+* Put a single `---` line between the Korean and English documents. The next non-blank line must be the
+  English document's `#` title. `---` and `#` lines inside code blocks are never used for the split.
+* Each language document starts with its `#` title. The site uses it as the page title and removes it from
+  the body.
+* The excerpt in the post list is the first paragraph after the title with at least 60 characters. Put a
+  paragraph introducing the post after the range-link line.
+* Relative links to files in the repository become links to those files on GitHub, and links to another
+  post become links to that post's site page.
 
 ## Required Structure
 

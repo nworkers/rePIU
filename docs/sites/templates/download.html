@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% macro size(bytes) -%}
+  {%- if bytes >= 1048576 -%}{{ "%.1f" | format(bytes / 1048576) }} MB
+  {%- elif bytes >= 1024 -%}{{ "%.0f" | format(bytes / 1024) }} KB
+  {%- else -%}{{ bytes }} B{%- endif -%}
+{%- endmacro %}
+{% block main %}
+<div class="wrap">
+  <header class="post-header">
+    <p class="prompt" aria-hidden="true"><span class="path">C:\REPIU&gt;</span> dir *.zip<span class="cursor"></span></p>
+    <h1>{{ t.download.title }}</h1>
+    <p class="lead">{{ t.download.lead }}</p>
+  </header>
+
+  <section class="box" aria-labelledby="latest-title">
+    <h2 id="latest-title">{{ t.download.latest }}</h2>
+    {% if latest %}
+    <div class="release-head">
+      <span class="version">{{ latest.tag }}</span>
+      {% if latest.date %}<span class="meta">{{ t.download.released }} <strong>{{ latest.date }}</strong></span>{% endif %}
+    </div>
+    {% if latest.package %}
+    <div class="actions">
+      <a class="btn" href="{{ latest.package.url }}">{{ t.download.primary }} <small>{{ size(latest.package.size) }}</small></a>
+    </div>
+    {% endif %}
+    {% if latest.assets %}
+    <ul class="plain-list assets">
+      {% for asset in latest.assets %}
+      <li>
+        <a href="{{ asset.url }}">{{ asset.name }}</a>
+        <span class="asset-meta">
+          {% if asset.kind == "package" %}{{ t.download.package }}{% elif asset.kind == "report" %}{{ t.download.report }} — {{ t.download.report_desc }}{% endif %}
+          · {{ t.download.size }} {{ size(asset.size) }}
+          {% if asset.sha256 %}<br><span class="hash">{{ t.download.sha256 }} {{ asset.sha256 }}</span>{% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if latest.body_html %}
+    <details>
+      <summary>{{ t.download.notes }}</summary>
+      <div class="notes prose">{{ latest.body_html | safe }}</div>
+    </details>
+    {% endif %}
+    {% else %}
+    <p class="notice">{{ t.download.none }}</p>
+    {% endif %}
+    <p><a href="{{ repo_url }}/releases">{{ t.download.all_releases }} &gt;</a></p>
+  </section>
+
+  <section class="box" aria-labelledby="steps-title">
+    <h2 id="steps-title">{{ t.download.steps_title }}</h2>
+    <ol class="steps">
+      {% for step in t.download.steps %}
+      <li>{{ step | safe }}</li>
+      {% endfor %}
+    </ol>
+    <h3>{{ t.download.requirements_title }}</h3>
+    <ul>
+      {% for item in t.download.requirements %}
+      <li>{{ item | safe }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  {% if older %}
+  <section class="box box--plain" aria-labelledby="older-title">
+    <h2 id="older-title">{{ t.download.older_title }}</h2>
+    <div class="table-wrap">
+      <table class="releases-table">
+        <thead>
+          <tr><th scope="col">{{ t.download.col_version }}</th><th scope="col">{{ t.download.col_date }}</th><th scope="col">{{ t.download.col_files }}</th></tr>
+        </thead>
+        <tbody>
+          {% for release in older %}
+          <tr>
+            <td><a href="{{ home }}wip.html#{{ release.tag }}">{{ release.tag }}</a></td>
+            <td class="date">{{ release.date or "—" }}</td>
+            <td>
+              {% if release.package %}<a href="{{ release.package.url }}">win32</a>{% endif %}
+              {% if release.report %} · <a href="{{ release.report.url }}">{{ t.download.report }}</a>{% endif %}
+              {% if not release.package and not release.report %}<a href="{{ release.url }}">GitHub</a>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="box box--plain" aria-labelledby="source-title">
+    <h2 id="source-title">{{ t.download.source_title }}</h2>
+    <p>{{ t.download.source_body | replace("{repo_url}", repo_url) | safe }}</p>
+  </section>
+
+  <section class="box box--warn" aria-labelledby="legal-title">
+    <h2 id="legal-title">{{ t.download.legal_title }}</h2>
+    <p>{{ t.download.legal_body }}</p>
+  </section>
+</div>
+{% endblock %}

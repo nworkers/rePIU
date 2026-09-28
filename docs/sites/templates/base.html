@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="{{ t.meta.html_lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ page_title }}{% endblock %}</title>
+  <meta name="description" content="{{ description }}">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#000000">
+  {% if canonical %}<link rel="canonical" href="{{ canonical }}">{% endif %}
+  {% for alt in alternates %}
+  <link rel="alternate" hreflang="{{ alt.hreflang }}" href="{{ alt.href }}">
+  {% endfor %}
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{{ page_title }}">
+  <meta property="og:description" content="{{ description }}">
+  {% if canonical %}<meta property="og:url" content="{{ canonical }}">{% endif %}
+  <link rel="icon" href="{{ static }}favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="{{ static }}fonts/Galmuri14.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="{{ static }}css/site.css">
+  {% if first_visit_redirect %}
+  <script>
+    // First visit to a Korean page from a non-Korean browser: go to the English page.
+    (function () {
+      var stored = null;
+      try { stored = window.localStorage.getItem("repiu-lang"); } catch (error) {}
+      if (stored) { return; }
+      var langs = navigator.languages || [navigator.language || ""];
+      for (var i = 0; i < langs.length; i++) {
+        if (String(langs[i]).toLowerCase().indexOf("ko") === 0) { return; }
+      }
+      window.location.replace({{ first_visit_redirect | tojson }} + window.location.hash);
+    })();
+  </script>
+  {% endif %}
+  <script src="{{ static }}js/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">{{ t.meta.skip_to_content }}</a>
+
+  <header class="menubar">
+    <div class="wrap">
+      <a class="brand" href="{{ home }}index.html">rePIU</a>
+      <nav aria-label="{{ t.nav.menu_label }}">
+        <ul class="menu">
+          <li><a href="{{ home }}index.html"{% if page == "index" %} aria-current="page"{% endif %}><kbd>F1</kbd>{{ t.nav.about }}</a></li>
+          <li><a href="{{ home }}wip.html"{% if page in ("wip", "post") %} aria-current="page"{% endif %}><kbd>F2</kbd>{{ t.nav.wip }}</a></li>
+          <li><a href="{{ home }}download.html"{% if page == "download" %} aria-current="page"{% endif %}><kbd>F3</kbd>{{ t.nav.download }}</a></li>
+          <li><a href="{{ repo_url }}"><kbd>F4</kbd>{{ t.nav.github }}</a></li>
+        </ul>
+      </nav>
+      <p class="lang" aria-label="{{ t.nav.lang_label }}">
+        {% for alt in lang_links %}
+          {% if alt.current %}
+          <span aria-current="true" lang="{{ alt.lang }}">{{ alt.short }}</span>
+          {% else %}
+          <a href="{{ alt.href }}" hreflang="{{ alt.lang }}" lang="{{ alt.lang }}" title="{{ alt.label }}" data-lang-switch="{{ alt.lang }}">{{ alt.short }}</a>
+          {% endif %}
+        {% endfor %}
+      </p>
+    </div>
+  </header>
+
+  <main id="main">
+    {% block main %}{% endblock %}
+  </main>
+
+  <footer class="statusbar">
+    <div class="wrap">
+      <span>{{ t.footer.disclaimer }}</span>
+      <span>{{ t.footer.font | safe }} · {{ t.footer.built }} {{ build_date }}{% if latest_version %} · v{{ latest_version }}{% endif %}</span>
+    </div>
+  </footer>
+
+  {% if has_mermaid %}
+  <script type="module">
+    import mermaid from {{ mermaid_url | tojson }};
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "base",
+      fontFamily: "Galmuri14, sans-serif",
+      themeVariables: {
+        darkMode: true,
+        background: "#000000",
+        fontFamily: "Galmuri14, sans-serif",
+        fontSize: "15px",
+        primaryColor: "#000000",
+        primaryTextColor: "#aaaaaa",
+        primaryBorderColor: "#55ffff",
+        secondaryColor: "#0000aa",
+        secondaryTextColor: "#ffffff",
+        secondaryBorderColor: "#5555ff",
+        tertiaryColor: "#000000",
+        tertiaryTextColor: "#aaaaaa",
+        tertiaryBorderColor: "#555555",
+        lineColor: "#aaaaaa",
+        textColor: "#aaaaaa",
+        mainBkg: "#000000",
+        nodeBorder: "#55ffff",
+        clusterBkg: "#000000",
+        clusterBorder: "#555555",
+        titleColor: "#55ffff",
+        edgeLabelBackground: "#000000",
+        actorBkg: "#000000",
+        actorBorder: "#55ffff",
+        actorTextColor: "#ffffff",
+        actorLineColor: "#555555",
+        signalColor: "#aaaaaa",
+        signalTextColor: "#aaaaaa",
+        labelBoxBkgColor: "#000000",
+        labelBoxBorderColor: "#55ffff",
+        labelTextColor: "#ffffff",
+        loopTextColor: "#aaaaaa",
+        noteBkgColor: "#0000aa",
+        noteTextColor: "#ffffff",
+        noteBorderColor: "#5555ff",
+        activationBkgColor: "#555555",
+        activationBorderColor: "#aaaaaa",
+        sequenceNumberColor: "#000000",
+        xyChart: {
+          backgroundColor: "#000000",
+          titleColor: "#55ffff",
+          xAxisLabelColor: "#aaaaaa",
+          xAxisTitleColor: "#aaaaaa",
+          xAxisTickColor: "#555555",
+          xAxisLineColor: "#555555",
+          yAxisLabelColor: "#aaaaaa",
+          yAxisTitleColor: "#aaaaaa",
+          yAxisTickColor: "#555555",
+          yAxisLineColor: "#555555",
+          plotColorPalette: "#55ff55, #ffff55, #55ffff, #ff5555, #ff55ff, #5555ff"
+        }
+      }
+    });
+  </script>
+  {% endif %}
+</body>
+</html>

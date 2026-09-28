@@ -1,0 +1,140 @@
+# English strings for the rePIU site (Task 756).
+# Values may carry short inline HTML (<code>, <a>, <strong>); templates print it as is.
+
+[meta]
+html_lang = "en"
+label = "English"
+short = "EN"
+description = "rePIU is an experimental runtime that runs the original 32-bit x86 code of DOS/4G games natively, without DOSBox or a PC emulator."
+skip_to_content = "Skip to content"
+
+[nav]
+about = "About"
+wip = "WIP"
+download = "Download"
+github = "GitHub"
+menu_label = "Main menu"
+lang_label = "Language"
+
+[hero]
+command = "repiu.exe"
+tagline = "The original DOS/4G game code, as it is, on a modern PC."
+lead = "rePIU is an experimental runtime that executes the original 32-bit x86 code of DOS/4G-based PIU binaries natively, without DOSBox or a full PC emulator. Game logic stays in the original code; only the DOS, DPMI, memory, file-system and hardware boundaries are replaced with High Level Emulation (HLE)."
+latest = "Latest"
+cta_download = "Download"
+cta_wip = "See progress"
+warning = "This is research-stage software, not a finished game launcher. Per-title compatibility is still under development."
+
+[about]
+title = "Principles"
+items = [
+  "<strong>Original logic preserved</strong> — gameplay is not rewritten in C++; the original x86 code stays the primary execution path.",
+  "<strong>Selective HLE</strong> — only the observed DOS interrupts, DPMI, port I/O and memory behaviour are replaced, narrowly.",
+  "<strong>DOS/4GW LE analysis</strong> — executable objects, fixups, relocations and runtime image placement are handled directly.",
+  "<strong>Replaceable parts</strong> — loader, memory, selectors, DOS file system and HLE profiles are kept apart.",
+  "<strong>Reproducible records</strong> — designs, work orders, analysis and work logs accumulate as repository documents.",
+]
+
+[how]
+title = "How it works"
+body = [
+  "The loader reads the original LE executable, applies its fixups and places it in memory; the original code then runs on the host CPU as it is.",
+  "Only when that code reaches a DOS or DPMI call, a privileged instruction or a hardware port does the HLE layer step in, answering from a virtual DOS file system, a memory arena with selectors, and interrupt and port I/O services, then hand control back to the original code.",
+]
+
+[targets]
+title = "Supported ROM sets"
+lead = "The MAME-format PIU profiles in the current built-in catalog. Each needs its matching ROM ZIP and CHD, legally owned by the user. Per-title compatibility is still under development."
+col_id = "Set"
+col_title = "Title"
+col_parent = "Clone of"
+count = "profiles"
+
+[platforms]
+title = "Platforms"
+
+[platforms.win32]
+name = "Windows (Win32 x86)"
+detail = "The primary host. Every release ships built executables."
+
+[platforms.linux]
+name = "Linux x64"
+detail = "Port in progress. Build from source to run it."
+
+[platforms.web]
+name = "Web (WebAssembly)"
+detail = "The platform-neutral core builds for wasm; the execution backend is on hold."
+
+[states]
+release = "RELEASE"
+wip = "WIP"
+hold = "HOLD"
+
+[links]
+title = "More"
+repo = "Source repository"
+readme = "README — building and running"
+architecture = "ARCHITECTURE — code structure"
+docs = "docs — design and analysis"
+
+[wip]
+title = "Work in progress"
+lead = "Write-ups of the problems met along the way and how they were solved, and what changed in each release."
+posts_title = "Dev log"
+posts_empty = "No posts yet."
+read_more = "Read"
+timeline_title = "Release timeline"
+full_notes = "Full release notes"
+no_notes = "This release has no written notes."
+on_github = "View on GitHub"
+latest_badge = "LATEST"
+
+[post]
+back = "Back to WIP"
+source = "Markdown source"
+published = "Posted"
+
+[download]
+title = "Download"
+lead = "Windows builds are published as GitHub releases. When a tag is pushed, CI publishes only what passed the Release build and the sample tests."
+latest = "Latest release"
+released = "Released"
+primary = "Download for Windows"
+report = "Test report"
+report_desc = "The OpenWatcom DOS/4GW sample-test results run against this binary."
+package = "Executable package"
+size = "Size"
+sha256 = "SHA-256"
+notes = "What changed in this version"
+all_releases = "All releases on GitHub"
+none = "The published releases could not be loaded. Please check the GitHub releases page."
+steps_title = "Getting started"
+steps = [
+  "Unzip the archive into a folder of your choice.",
+  "Create <code>roms\\</code> in that folder and put <code>roms\\&lt;set&gt;.zip</code> and <code>roms\\&lt;set&gt;\\&lt;disc&gt;.chd</code> there.",
+  "Run <code>repiu.exe</code> to open the launcher. Picking a ROM set starts it in the same window; sets that cannot run are dimmed with the reason.",
+  "From a command line, with that folder as the current directory, <code>repiu.exe pumpit1</code> starts a set directly.",
+]
+requirements_title = "Requirements"
+requirements = [
+  "Windows 10/11 (runs as a 32-bit x86 program on a 64-bit OS)",
+  "Legally owned MAME-format PIU ROM ZIP and CHD",
+]
+older_title = "Earlier releases"
+col_version = "Version"
+col_date = "Date"
+col_files = "Files"
+source_title = "Build from source"
+source_body = "For the Linux x64 build and development builds, follow <a href=\"{repo_url}#시작하기--getting-started\">Getting started in the README</a>."
+legal_title = "Notice"
+legal_body = "rePIU is an unofficial project and is not affiliated with the rights holders of the original games. This site and its releases do not include or distribute any ROM, CHD or original executable."
+
+[footer]
+disclaimer = "Unofficial project · not affiliated with the rights holders · no ROM/CHD included"
+built = "Built"
+font = "Font: <a href=\"https://galmuri.quiple.dev/\">Galmuri</a> (SIL OFL 1.1)"
+
+[notfound]
+title = "404 — File not found"
+body = "The page you asked for does not exist."
+home = "Go home"

@@ -1,0 +1,35 @@
+# Language-neutral settings for the rePIU project site (Task 756).
+# Language-specific text lives in i18n/<lang>.toml.
+
+[site]
+name = "rePIU"
+repo = "nworkers/rePIU"
+branch = "main"
+# Overridden in CI by actions/configure-pages (base_url).
+default_url = "https://nworkers.github.io/rePIU/"
+default_lang = "ko"
+languages = ["ko", "en"]
+
+[sources]
+posts = "docs/post"
+release_notes = "docs/release-notes"
+# The ROM set list is read from the built-in catalog so the site never drifts from the code.
+target_catalog = "src/target/target_profile.cpp"
+
+[mermaid]
+# Loaded from jsDelivr only on pages that contain a diagram (MIT).
+url = "https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.esm.min.mjs"
+
+# Platform status shown on the introduction page. Labels come from i18n [platforms.<key>].
+# state: release | wip | hold
+[[platforms]]
+key = "win32"
+state = "release"
+
+[[platforms]]
+key = "linux"
+state = "wip"
+
+[[platforms]]
+key = "web"
+state = "hold"

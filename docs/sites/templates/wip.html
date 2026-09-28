@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="wrap">
+  <header class="post-header">
+    <p class="prompt" aria-hidden="true"><span class="path">C:\REPIU&gt;</span> type WIP.TXT<span class="cursor"></span></p>
+    <h1>{{ t.wip.title }}</h1>
+    <p class="lead">{{ t.wip.lead }}</p>
+  </header>
+
+  <section class="box" aria-labelledby="posts-title">
+    <h2 id="posts-title">{{ t.wip.posts_title }}</h2>
+    {% if posts %}
+    <ul class="plain-list posts">
+      {% for post in posts %}
+      <li>
+        <span class="date">{{ post.date }}</span>
+        <h3><a href="{{ home }}posts/{{ post.slug }}.html">{{ post.title_html | safe }}</a></h3>
+        {% if post.excerpt %}<p>{{ post.excerpt }}</p>{% endif %}
+        <a href="{{ home }}posts/{{ post.slug }}.html" aria-hidden="true" tabindex="-1">{{ t.wip.read_more }} &gt;</a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p>{{ t.wip.posts_empty }}</p>
+    {% endif %}
+  </section>
+
+  <section class="box" aria-labelledby="timeline-title">
+    <h2 id="timeline-title">{{ t.wip.timeline_title }}</h2>
+    <ol class="timeline">
+      {% for release in releases %}
+      <li{% if loop.first %} class="is-latest"{% endif %} id="{{ release.tag }}">
+        <span class="date">{{ release.date or "—" }}</span>
+        <h3><a href="{{ release.url }}">{{ release.tag }}</a>{% if loop.first %} <span class="badge badge--latest">{{ t.wip.latest_badge }}</span>{% endif %}</h3>
+        {% if release.summary_html %}<p>{{ release.summary_html | safe }}</p>{% endif %}
+        {% if release.body_html %}
+        <details>
+          <summary>{{ t.wip.full_notes }}</summary>
+          <div class="notes prose">{{ release.body_html | safe }}</div>
+        </details>
+        {% elif not release.summary_html %}
+        <p class="meta">{{ t.wip.no_notes }} <a href="{{ release.url }}">{{ t.wip.on_github }}</a></p>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+</div>
+{% endblock %}

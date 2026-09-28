@@ -1,0 +1,140 @@
+# rePIU 사이트 한국어 문자열 (Task 756).
+# 값에는 짧은 인라인 HTML(<code>, <a>, <strong>)을 쓸 수 있다. 템플릿이 그대로 출력한다.
+
+[meta]
+html_lang = "ko"
+label = "한국어"
+short = "KO"
+description = "rePIU는 DOSBox나 PC 에뮬레이터 없이 원본 DOS/4G 게임의 32비트 x86 코드를 네이티브로 실행하는 실험적 런타임입니다."
+skip_to_content = "본문으로 건너뛰기"
+
+[nav]
+about = "소개"
+wip = "진행 상황"
+download = "다운로드"
+github = "GitHub"
+menu_label = "주 메뉴"
+lang_label = "언어"
+
+[hero]
+command = "repiu.exe"
+tagline = "원본 DOS/4G 게임 코드를, 그대로, 현대 PC에서."
+lead = "rePIU는 DOSBox나 전체 PC 에뮬레이터를 쓰지 않고, 원본 DOS/4G 기반 PIU 실행 파일의 32비트 x86 코드를 네이티브로 실행하는 실험적 런타임입니다. 게임 로직은 원본 코드에 그대로 두고 DOS, DPMI, 메모리, 파일 시스템, 하드웨어 경계만 High Level Emulation(HLE)으로 대신합니다."
+latest = "최신 버전"
+cta_download = "다운로드"
+cta_wip = "진행 상황 보기"
+warning = "연구·개발 단계의 소프트웨어이며 완성된 게임 런처가 아닙니다. 타이틀별 호환성은 계속 개발 중입니다."
+
+[about]
+title = "원칙"
+items = [
+  "<strong>원본 로직 보존</strong> — 게임플레이를 C++로 다시 쓰지 않고 원본 x86 코드를 주 실행 경로로 유지합니다.",
+  "<strong>선별적 HLE</strong> — 관찰된 DOS interrupt, DPMI, port I/O와 메모리 동작만 좁은 범위로 대체합니다.",
+  "<strong>DOS/4GW LE 분석</strong> — executable object, fixup, relocation과 runtime image 배치를 직접 다룹니다.",
+  "<strong>교체 가능한 구조</strong> — loader, 메모리, selector, DOS 파일 시스템, HLE profile을 서로 분리합니다.",
+  "<strong>재현 가능한 기록</strong> — 설계, 작업 지시, 분석과 작업 로그를 저장소 문서로 누적합니다.",
+]
+
+[how]
+title = "동작 방식"
+body = [
+  "로더가 원본 LE 실행 파일을 읽어 fixup을 적용하고 메모리에 배치하면, 원본 코드는 호스트 CPU에서 그대로 실행됩니다.",
+  "코드가 DOS·DPMI 호출이나 특권 명령, 하드웨어 port에 닿는 순간에만 HLE 계층이 가로채 가상 DOS 파일 시스템, 메모리 arena와 selector, interrupt·port I/O 서비스로 응답한 뒤 원본 코드로 돌려보냅니다.",
+]
+
+[targets]
+title = "지원 ROM 세트"
+lead = "현재 내장 카탈로그의 MAME 형식 PIU profile입니다. 각 profile은 사용자가 합법적으로 보유한 해당 ROM ZIP과 CHD가 있어야 실행됩니다. 타이틀별 호환성은 계속 개발 중입니다."
+col_id = "세트"
+col_title = "타이틀"
+col_parent = "원본 세트"
+count = "개 profile"
+
+[platforms]
+title = "플랫폼"
+
+[platforms.win32]
+name = "Windows (Win32 x86)"
+detail = "기본 호스트입니다. 릴리스마다 빌드된 실행 파일을 제공합니다."
+
+[platforms.linux]
+name = "Linux x64"
+detail = "이식 진행 중입니다. 소스에서 빌드해 실행합니다."
+
+[platforms.web]
+name = "Web (WebAssembly)"
+detail = "플랫폼 공용 코어의 wasm 빌드까지 진행했고, 실행 backend는 보류 중입니다."
+
+[states]
+release = "배포"
+wip = "진행 중"
+hold = "보류"
+
+[links]
+title = "더 보기"
+repo = "소스 저장소"
+readme = "README — 빌드와 실행 방법"
+architecture = "ARCHITECTURE — 코드 구조"
+docs = "docs — 설계와 분석 문서"
+
+[wip]
+title = "진행 상황"
+lead = "개발 과정에서 부딪힌 문제와 해결을 기록한 글, 그리고 릴리스마다 바뀐 내용입니다."
+posts_title = "개발 기록"
+posts_empty = "아직 게시된 글이 없습니다."
+read_more = "읽기"
+timeline_title = "릴리스 타임라인"
+full_notes = "전체 릴리스 노트"
+no_notes = "이 릴리스에는 작성된 노트가 없습니다."
+on_github = "GitHub에서 보기"
+latest_badge = "최신"
+
+[post]
+back = "진행 상황으로"
+source = "원문 Markdown"
+published = "게시"
+
+[download]
+title = "다운로드"
+lead = "Windows용 빌드는 GitHub 릴리스로 배포합니다. 태그가 올라가면 CI가 Release 빌드와 샘플 테스트를 통과한 결과만 게시합니다."
+latest = "최신 릴리스"
+released = "게시일"
+primary = "Windows용 다운로드"
+report = "테스트 보고서"
+report_desc = "이 바이너리로 돌린 OpenWatcom DOS/4GW 샘플 테스트 결과입니다."
+package = "실행 파일 패키지"
+size = "크기"
+sha256 = "SHA-256"
+notes = "이 버전의 변경 내용"
+all_releases = "GitHub의 모든 릴리스"
+none = "아직 게시된 릴리스를 불러오지 못했습니다. GitHub 릴리스 페이지를 확인해 주세요."
+steps_title = "시작하기"
+steps = [
+  "zip을 원하는 폴더에 풉니다.",
+  "그 폴더에 <code>roms\\</code>를 만들고 <code>roms\\&lt;세트&gt;.zip</code>과 <code>roms\\&lt;세트&gt;\\&lt;디스크&gt;.chd</code>를 둡니다.",
+  "<code>repiu.exe</code>를 실행하면 런처가 열립니다. 목록에서 롬셋을 고르면 같은 창에서 실행됩니다. 실행할 수 없는 세트는 이유와 함께 흐리게 표시됩니다.",
+  "명령줄에서는 그 폴더를 현재 폴더로 두고 <code>repiu.exe pumpit1</code>처럼 세트 이름을 줘 바로 실행할 수 있습니다.",
+]
+requirements_title = "요구 사항"
+requirements = [
+  "Windows 10/11 (64비트 OS에서 32비트 x86 프로그램으로 실행)",
+  "합법적으로 보유한 MAME 형식 PIU ROM ZIP과 CHD",
+]
+older_title = "이전 릴리스"
+col_version = "버전"
+col_date = "날짜"
+col_files = "파일"
+source_title = "소스에서 빌드"
+source_body = "Linux x64 빌드와 개발용 빌드는 <a href=\"{repo_url}#시작하기--getting-started\">README의 시작하기</a>를 따릅니다."
+legal_title = "알림"
+legal_body = "rePIU는 비공식 프로젝트이며 원작의 권리자와 관계가 없습니다. 이 사이트와 릴리스는 ROM, CHD, 원본 실행 파일을 포함하거나 배포하지 않습니다."
+
+[footer]
+disclaimer = "비공식 프로젝트 · 권리자와 무관 · ROM/CHD 미포함"
+built = "빌드"
+font = "글꼴: <a href=\"https://galmuri.quiple.dev/\">Galmuri</a> (SIL OFL 1.1)"
+
+[notfound]
+title = "404 — 파일을 찾을 수 없음"
+body = "요청한 페이지가 없습니다."
+home = "처음으로"

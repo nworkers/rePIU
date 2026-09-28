@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="wrap">
+  <header class="post-header">
+    <p><a href="{{ home }}wip.html">&lt; {{ t.post.back }}</a></p>
+    <span class="date">{{ t.post.published }} {{ post.date }}</span>
+    <h1>{{ post.title_html | safe }}</h1>
+    <p class="meta"><a href="{{ post.source_url }}">{{ t.post.source }}</a></p>
+  </header>
+
+  <article class="prose">
+    {{ post.body_html | safe }}
+  </article>
+
+  <nav class="post-nav" aria-label="{{ t.wip.posts_title }}">
+    <span>{% if newer %}<a href="{{ newer.slug }}.html">&lt; {{ newer.title_text }}</a>{% endif %}</span>
+    <span>{% if older %}<a href="{{ older.slug }}.html">{{ older.title_text }} &gt;</a>{% endif %}</span>
+  </nav>
+</div>
+{% endblock %}

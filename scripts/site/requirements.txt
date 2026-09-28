@@ -1,0 +1,6 @@
+# Build dependencies of the project site (Task 756). Licences: MIT, MIT, MIT, BSD-3-Clause.
+markdown-it-py==4.2.0
+mdit-py-plugins==0.6.1
+mdurl==0.1.2
+Jinja2==3.1.6
+MarkupSafe==3.0.3

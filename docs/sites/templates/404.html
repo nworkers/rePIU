@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{#- Served by GitHub Pages for any missing path, so every URL on this page is absolute. #}
+{% block main %}
+<div class="wrap">
+  <section class="hero">
+    <p class="prompt"><span class="path">C:\REPIU&gt;</span> cd <span id="missing-path"></span></p>
+    {% for lang in notfound_langs %}
+    <div lang="{{ lang.t.meta.html_lang }}">
+      <h1>{{ lang.t.notfound.title }}</h1>
+      <p>{{ lang.t.notfound.body }}</p>
+      <p><a class="btn" href="{{ lang.home }}index.html">{{ lang.t.notfound.home }}</a></p>
+    </div>
+    {% endfor %}
+    <p class="prompt">Abort, Retry, Fail?<span class="cursor"></span></p>
+  </section>
+</div>
+<script>
+  document.getElementById("missing-path").textContent = window.location.pathname;
+</script>
+{% endblock %}

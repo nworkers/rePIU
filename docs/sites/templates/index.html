@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="wrap">
+  <section class="hero">
+    <p class="prompt" aria-hidden="true"><span class="path">C:\REPIU&gt;</span> {{ t.hero.command }}<span class="cursor"></span></p>
+    <h1 class="hero-title">rePIU</h1>
+    <p class="tagline">{{ t.hero.tagline }}</p>
+    <p class="lead">{{ t.hero.lead }}</p>
+    <div class="actions">
+      <a class="btn" href="{{ home }}download.html">{{ t.hero.cta_download }}{% if latest_version %} <small>v{{ latest_version }}</small>{% endif %}</a>
+      <a class="btn btn--secondary" href="{{ home }}wip.html">{{ t.hero.cta_wip }}</a>
+    </div>
+    <p class="notice">{{ t.hero.warning }}</p>
+  </section>
+
+  <section class="box" aria-labelledby="about-title">
+    <h2 id="about-title">{{ t.about.title }}</h2>
+    <ul>
+      {% for item in t.about["items"] %}
+      <li>{{ item | safe }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section class="box" aria-labelledby="how-title">
+    <h2 id="how-title">{{ t.how.title }}</h2>
+{#- GalmuriMono11 draws box-drawing glyphs full width, so the diagram is plain ASCII. #}
+<pre class="diagram" aria-hidden="true"> <span class="hl">PIU.EXE</span>  DOS/4G LE executable
+    |
+    v  loader · fixups · relocation
+ +================================+
+ | native 32-bit x86 execution    |&lt;---+
+ +===============+================+    |
+                 | INT · DPMI · port   | iret
+                 v                     |
+ +================================+    |
+ | <span class="hl">HLE layer</span>                      |----+
+ |  <span class="dim">-</span> virtual DOS file system     |
+ |  <span class="dim">-</span> memory arena · selectors    |
+ |  <span class="dim">-</span> interrupts · port I/O       |
+ +================================+</pre>
+    {% for paragraph in t.how.body %}
+    <p>{{ paragraph | safe }}</p>
+    {% endfor %}
+  </section>
+
+  <section class="box" aria-labelledby="platforms-title">
+    <h2 id="platforms-title">{{ t.platforms.title }}</h2>
+    <ul class="plain-list platforms">
+      {% for platform in platforms %}
+      <li>
+        <span class="badge badge--{{ platform.state }}">{{ t.states[platform.state] }}</span>
+        <span><strong>{{ t.platforms[platform.key].name }}</strong>{{ t.platforms[platform.key].detail }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section class="box" aria-labelledby="targets-title">
+    <h2 id="targets-title">{{ t.targets.title }}</h2>
+    <p>{{ t.targets.lead }} <span class="meta">({{ targets | length }} {{ t.targets.count }})</span></p>
+    <div class="table-wrap">
+      <table class="targets">
+        <thead>
+          <tr><th scope="col">{{ t.targets.col_id }}</th><th scope="col">{{ t.targets.col_title }}</th><th scope="col">{{ t.targets.col_parent }}</th></tr>
+        </thead>
+        <tbody>
+          {% for target in targets %}
+          <tr><td>{{ target.id }}</td><td>{{ target.title }}</td><td>{{ target.clone_of or "—" }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="box box--plain" aria-labelledby="links-title">
+    <h2 id="links-title">{{ t.links.title }}</h2>
+    <ul>
+      <li><a href="{{ repo_url }}">{{ t.links.repo }}</a></li>
+      <li><a href="{{ repo_url }}/blob/{{ branch }}/README.md">{{ t.links.readme }}</a></li>
+      <li><a href="{{ repo_url }}/blob/{{ branch }}/ARCHITECTURE.md">{{ t.links.architecture }}</a></li>
+      <li><a href="{{ repo_url }}/tree/{{ branch }}/docs">{{ t.links.docs }}</a></li>
+    </ul>
+  </section>
+</div>
+{% endblock %}

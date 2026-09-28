@@ -425,11 +425,13 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 | `docs/analysis/` | PIU 바이너리와 실행에서 확인한 프로젝트 고유 분석 |
 | `docs/kb/` | DOS/4GW, DPMI, x86와 HLE 배경 지식 |
 | `docs/design/`, `docs/work-orders/`, `docs/work-logs/` | 설계와 작업 이력 |
+| `docs/sites/`, `scripts/site/` | 프로젝트 사이트 소스와 빌드 / project site source and build |
 
 자세한 구성은 [ARCHITECTURE.md](ARCHITECTURE.md)를 참고하십시오.
 
 ## 문서와 지원 / Documentation and support
 
+* [프로젝트 사이트](https://nworkers.github.io/rePIU/) — 소개, 개발 기록과 릴리스 타임라인, 다운로드(한국어/English). 소스는 [docs/sites/](docs/sites/README.md)
 * [프로젝트 헌장](docs/PROJECT_CHARTER.md) — 목표와 비목표
 * [아키텍처](ARCHITECTURE.md) — 현재 subsystem과 실행 구조
 * [포팅 계획](docs/DOS4G_HLE_PORTING_PLAN.md) — 장기 구현 단계
@@ -440,7 +442,7 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 
 질문, 재현 가능한 결함 보고와 제안은 [GitHub Issues](https://github.com/nworkers/rePIU/issues)에 남겨 주십시오. 보안 문제나 비공개 연락 경로는 아직 별도로 정의되어 있지 않습니다.
 
-*Use the linked architecture, analysis, knowledge-base, style, and workflow documents for project guidance. Questions and reproducible bug reports belong in GitHub Issues; a private security-reporting channel has not yet been defined.*
+*The [project site](https://nworkers.github.io/rePIU/) introduces the project and carries the dev log, the release timeline, and downloads in Korean and English; its source is [docs/sites/](docs/sites/README.md). Use the linked architecture, analysis, knowledge-base, style, and workflow documents for project guidance. Questions and reproducible bug reports belong in GitHub Issues; a private security-reporting channel has not yet been defined.*
 
 ## 유지보수와 기여 / Maintainers and contributing
 

@@ -42,3 +42,6 @@ cfg/
 # Per-ROM-set NVRAM. The guest writes its own cabinet settings here; the
 # eeprom.dat entry above stays because it is now the carry-forward source.
 nvram/
+
+# Python bytecode (scripts/site)
+__pycache__/
