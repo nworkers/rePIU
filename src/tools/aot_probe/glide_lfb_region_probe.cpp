@@ -299,9 +299,63 @@ bool RunGlideLfbRegionProbe()
         external[6] == 0xEFU && external[7] == 0xBEU &&
         SurfaceTexel(adopted, 1U, 1U) == 0xBEEFU;
 
+    // Task 761. The RGBA8 mirror of the same write: an 8888 source keeps its
+    // channel bytes unquantized, a 16-bit source lands exactly on the 565
+    // decode of what the staging write stored, and the clip matches the 565
+    // writer's so both cover identical pixels.
+    GlideLfbSurface precise;
+    precise.Resize(4U, 4U);
+    std::memset(precise.pixels(), 0, precise.byte_count());
+    std::vector<std::uint8_t> shadow(4U * 4U * 4U, 0U);
+    // 0x40 truncates to the same 565 value as 0x42; only the shadow can tell
+    // them apart, which is the whole point of the path.
+    const std::vector<std::uint8_t> subtle =
+        Pixel32(0xFFU, 0x42U, 0x81U, 0x20U);
+    const std::vector<std::uint8_t> texel_source = Pixel16(0xF800U);
+    std::vector<std::uint8_t> decoded;
+    const bool high_precision_shadow =
+        repiu::hle::WriteGlideLfbRegion(
+            1U, 1U, 1U, 1U, repiu::hle::kGlideLfbSrcFmt8888, 0, subtle.data(),
+            subtle.size(), kArgb, kArgb, &precise) &&
+        repiu::hle::WriteGlideLfbRegionRgba8(
+            1U, 1U, 1U, 1U, repiu::hle::kGlideLfbSrcFmt8888, 0, subtle.data(),
+            subtle.size(), kArgb, kArgb, 4U, 4U, shadow.data(),
+            shadow.size()) &&
+        // Full precision: the exact source channels, opaque alpha.
+        shadow[(4U + 1U) * 4U + 0U] == 0x42U &&
+        shadow[(4U + 1U) * 4U + 1U] == 0x81U &&
+        shadow[(4U + 1U) * 4U + 2U] == 0x20U &&
+        shadow[(4U + 1U) * 4U + 3U] == 0xFFU &&
+        // Untouched pixels stay untouched.
+        shadow[0] == 0x00U && shadow[3] == 0x00U &&
+        // 16-bit parity: the shadow byte equals the display decode of the
+        // staging texel the 565 writer stored.
+        repiu::hle::WriteGlideLfbRegion(
+            2U, 2U, 1U, 1U, repiu::hle::kGlideLfbSrcFmt565, 0,
+            texel_source.data(), texel_source.size(), kArgb, kArgb,
+            &precise) &&
+        repiu::hle::WriteGlideLfbRegionRgba8(
+            2U, 2U, 1U, 1U, repiu::hle::kGlideLfbSrcFmt565, 0,
+            texel_source.data(), texel_source.size(), kArgb, kArgb, 4U, 4U,
+            shadow.data(), shadow.size()) &&
+        repiu::hle::DecodeGlideLfb565ToRgba8(
+            precise.pixels(), precise.byte_count(), 4U, 4U, kArgb, &decoded) &&
+        shadow[(2U * 4U + 2U) * 4U + 0U] == decoded[(2U * 4U + 2U) * 4U + 0U] &&
+        shadow[(2U * 4U + 2U) * 4U + 1U] == decoded[(2U * 4U + 2U) * 4U + 1U] &&
+        shadow[(2U * 4U + 2U) * 4U + 2U] == decoded[(2U * 4U + 2U) * 4U + 2U] &&
+        // The clip matches the 565 writer: fully outside is refused, and a
+        // short shadow buffer is refused rather than written past.
+        !repiu::hle::WriteGlideLfbRegionRgba8(
+            4U, 0U, 1U, 1U, repiu::hle::kGlideLfbSrcFmt8888, 0, subtle.data(),
+            subtle.size(), kArgb, kArgb, 4U, 4U, shadow.data(),
+            shadow.size()) &&
+        !repiu::hle::WriteGlideLfbRegionRgba8(
+            0U, 0U, 1U, 1U, repiu::hle::kGlideLfbSrcFmt8888, 0, subtle.data(),
+            subtle.size(), kArgb, kArgb, 4U, 4U, shadow.data(), 15U);
+
     const bool all = format_table && stride_rule && conversion &&
         color_order && clipping && round_trip && row_mapping &&
-        external_writes;
+        external_writes && high_precision_shadow;
 
     std::cout << "glide_lfb_region_format_table="
               << (format_table ? "true" : "false")
@@ -319,6 +373,8 @@ bool RunGlideLfbRegionProbe()
               << (row_mapping ? "true" : "false")
               << "\nglide_lfb_region_external_storage="
               << (external_writes ? "true" : "false")
+              << "\nglide_lfb_region_high_precision_shadow="
+              << (high_precision_shadow ? "true" : "false")
               << "\nglide_lfb_region_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

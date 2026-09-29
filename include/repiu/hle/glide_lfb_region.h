@@ -75,6 +75,30 @@ bool WriteGlideLfbRegion(std::uint32_t dst_x,
                          std::uint32_t surface_color_format,
                          GlideLfbSurface* surface);
 
+// Task 761. Converts the same rectangle into an RGBA8 shadow that mirrors the
+// staging surface pixel for pixel, so presentation can keep the precision the
+// 565 texels cannot hold. 888/8888 sources copy their channels unquantized;
+// 16-bit sources write exactly what the 565 pack -> decode round trip yields,
+// so a toggle between the two presentation paths cannot change their result.
+// Alpha is opaque, as the 565 decode's is. `rgba8_shadow` spans the whole
+// surface top-down at four bytes per pixel; clipping and the stride rule match
+// WriteGlideLfbRegion, and the two are meant to be called with the same
+// arguments back to back.
+bool WriteGlideLfbRegionRgba8(std::uint32_t dst_x,
+                              std::uint32_t dst_y,
+                              std::uint32_t src_width,
+                              std::uint32_t src_height,
+                              std::uint32_t src_format,
+                              std::int32_t src_stride_bytes,
+                              const std::uint8_t* src_data,
+                              std::size_t src_data_byte_count,
+                              std::uint32_t src_color_format,
+                              std::uint32_t surface_color_format,
+                              std::uint32_t surface_width,
+                              std::uint32_t surface_height,
+                              std::uint8_t* rgba8_shadow,
+                              std::size_t rgba8_shadow_byte_count);
+
 // Copies a rectangle of the surface out in the frame buffer's native 565 form,
 // which is what grLfbReadRegion is defined to return. `dst_stride_bytes`
 // follows the same zero rule as the write path. `copied_width` and

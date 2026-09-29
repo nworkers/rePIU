@@ -393,6 +393,7 @@ target_sources(repiu_exe
         src/engine/out_of_arena_step_census.cpp
         src/engine/glide_opengl_backend.cpp
         src/engine/glide_opengl_shader.cpp
+        src/engine/glide_osd.cpp
         src/engine/runtime_memory_policy.cpp
 )
 endif()
@@ -668,6 +669,12 @@ target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static)
 # binding headers, so SDL3's include directories are part of this library's
 # interface and every consumer needs them.
 target_link_libraries(repiu_exe PUBLIC SDL3::SDL3-static)
+
+# Task 761: the in-game OSD draws with Dear ImGui inside the Glide backend's
+# window. The engine, and with it the OSD, is not built for the web.
+if(NOT EMSCRIPTEN)
+    target_link_libraries(repiu_exe PRIVATE repiu_imgui)
+endif()
 
 # Task 739. The Glide backend inside this static library calls OpenGL directly,
 # so on Linux every consumer has to link GL -- and a static library's

@@ -924,6 +924,15 @@ struct ThreadContext
     std::uint32_t glide_lfb_region_shadow_buffer = 0;
     std::uint32_t glide_lfb_region_seed_count = 0;
     std::uint32_t glide_lfb_region_flush_count = 0;
+    // Task 761: the RGBA8 mirror of the staging surface, kept only while the
+    // high-precision presentation toggle is on. The 565 staging stays the
+    // guest-visible truth; this shadow only feeds PresentLfbSurface, so
+    // >=24-bit region sources keep their precision to the screen. `valid`
+    // clears whenever the toggle is off at a flush, so re-enabling starts from
+    // a 565 decode rather than stale pixels.
+    std::vector<std::uint8_t> glide_lfb_region_rgba8_shadow;
+    bool glide_lfb_region_rgba8_valid = false;
+    std::uint32_t glide_lfb_region_rgba8_present_count = 0;
     // Task 728: the second shadow of the same staging surface, this one for the
     // lock/unlock path. It survives the state setters between two locks, so a
     // write lock whose pixels the host still holds can skip its readback.

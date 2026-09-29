@@ -1,6 +1,8 @@
 #include "repiu/engine/glide_opengl_backend.h"
 #include "repiu/engine/active_jamma_bindings.h"
+#include "repiu/engine/glide_osd.h"
 #include "repiu/hle/glide_lfb.h"
+#include "repiu/runtime/env_toggle.h"
 #include "repiu/hle/glide_texture_decode.h"
 #include "repiu/input/jamma_input_bindings.h"
 #include "repiu/engine/execution_time_profile.h"
@@ -1074,6 +1076,20 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
   }
 
   window_ = window;
+  // Task 761: the presentation toggle's initial value, then the OSD that can
+  // flip it. On by default: unset and empty mean on, and only an explicit
+  // `0`, `off` or `false` keeps the 565 decode path.
+  lfb_high_precision_.store(repiu::runtime::ResolvePromotedToggle(
+                                std::getenv("REPIU_GLIDE_LFB_HIGH_PRECISION")),
+                            std::memory_order_relaxed);
+  osd_ = std::make_unique<GlideOsd>();
+  {
+    std::string osd_message;
+    if (!osd_->Initialize(window, render_context, &osd_message)) {
+      fprintf(stderr, "[repiu-osd] disabled: %s\n", osd_message.c_str());
+      osd_.reset();
+    }
+  }
   // Task 748: a scripted keyboard, if one was asked for.
   input_script_ = std::make_unique<SdlInputScriptPlayerHandle>();
   if (!input_script_->player.StartFromEnvironment(SDL_GetWindowID(window))) {
@@ -1237,6 +1253,23 @@ void GlideOpenGlBackend::PumpEvents() {
   }
   SDL_Event event{};
   while (SDL_PollEvent(&event)) {
+    // Task 761: Tab belongs to the OSD alone; it never reaches game input.
+    // (It was F1 first, which is TEST's default key and kept TEST from the
+    // game.)
+    // Everything else is forwarded to ImGui while the overlay is open so its
+    // checkbox can be clicked, and still flows to the game below, because the
+    // cabinet's controls must never go dead behind an overlay.
+    if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
+        event.key.key == SDLK_TAB) {
+      if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+          osd_ != nullptr) {
+        osd_->ToggleVisible();
+      }
+      continue;
+    }
+    if (osd_ != nullptr && osd_->visible()) {
+      osd_->ProcessEvent(&event);
+    }
     if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
       HandleSdlBiosKeyboardEvent(event.key, bios_keyboard_);
     }
@@ -1580,6 +1613,12 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
             static_cast<unsigned long long>(sum_r / denom),
             static_cast<unsigned long long>(sum_g / denom),
             static_cast<unsigned long long>(sum_b / denom));
+  }
+  // Task 761: the OSD overlays the finished frame; ImGui's GL3 renderer saves
+  // and restores the GL state it touches, so the game's pipeline state
+  // survives.
+  if (osd_ != nullptr) {
+    osd_->Render(&lfb_high_precision_);
   }
   const std::uint64_t present_start_cycles =
       swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;
@@ -2877,6 +2916,12 @@ void GlideOpenGlBackend::Close() {
     SDL_Window *window = static_cast<SDL_Window *>(window_);
     if (render_context != nullptr) {
       SDL_GL_MakeCurrent(window, render_context);
+      // Task 761: the OSD's GL objects belong to this context, so it goes
+      // first, while the context is still current.
+      if (osd_ != nullptr) {
+        osd_->Shutdown();
+        osd_.reset();
+      }
       for (auto &entry : textures_) {
         if (entry.second.gl_name != 0U) {
           GLuint name = entry.second.gl_name;

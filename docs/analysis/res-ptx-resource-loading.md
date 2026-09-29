@@ -132,6 +132,9 @@ err=2**로 실패한다(`white.spr`, `logo_a.tga`, `clearbk.spr`, `st_*.spr` 등
 이 필드는 고정이므로 **해상도 필드가 아니다.** 데이터부의 `8A 28 A2` 반복 패턴으로
 보아 압축 또는 팔레트 기반일 가능성이 있다.
 
+> **정정 (2026-09-29, 아래 전수 조사 절 참조).** "필드가 고정"이라는 위 서술은 표본
+> 오류였다. 465개 전수 조사에서 헤더 u16 필드 f1·f2는 파일마다 다르다.
+
 **관련 미해결.** 실행 중 Glide로 올라오는 텍스처는 256×256 두세 개뿐인데 PTX는
 465개다. PTX 디코드→텍스처 업로드 경로가 어디서 멈추는지가 배경 미표시
 (`docs/analysis/glide2x-ovl-and-opengl-hle.md` Task 259)의 다음 관문이다.
@@ -154,3 +157,92 @@ before the archive, and most short reads are ordinary EOF from a 4096-byte loop.
 The restored 32-bit read ABI still holds — `PIU.DAT` is read to its last byte with
 zero errors. Open: the `.PTX` pixel format, whose post-magic fields are nearly
 constant across files of very different sizes and therefore are not dimensions.
+(Corrected on 2026-09-29: the fields do vary per file; see the census section below.)
+
+## PTX 헤더 전수 조사와 버전별 자산 세대 (2026-09-29)
+
+**확인됨 (헤더 필드는 파일마다 다르다).** `MASTER/PIU_1ST/datas/PIU.DAT`의 465개
+엔트리를 전수 조사했다. 전부 `PTX\0` 매직이며, 매직 뒤 u16 6개 `(f0..f5)`의 분포는
+다음과 같다.
+
+| tuple `(f0,f1,f2,f3,f4,f5)` | 건수 |
+|---|---:|
+| `(256, 32, 32, 129, 300, 0)` | 279 |
+| `(256, 32, 32, 130, 300, 0)` | 150 |
+| `(256, 16, 16, 130, 300, 0)` | 7 |
+| `(256, 8, 32, …)`, `(256, 32, 8, …)` 등 | 각 1~4 |
+
+`f0=256(0x0100)`은 loader가 검사하는 version word, `f4=300`·`f5=0`은 전 파일 공통,
+**`f1`·`f2`는 파일마다 다르고 `f3`은 129 또는 130 두 값뿐이다.** Task 260의 "필드
+고정" 서술은 표본 오류로 정정한다.
+
+**추정 (필드 의미).** `f1`·`f2`는 8픽셀 단위 치수로 읽으면 관측과 정합한다:
+`(32,32)`→256×256(texture census의 최빈 크기), `DIGIT.PTX`의 `(32,2)`→256×16(숫자
+스트립), `(16,16)`→128×128. `f3=129/130`은 실행 중 Glide로 내려오는 texel 포맷이
+`RGB_565`와 `ARGB_4444` 둘뿐인 것과 평행하므로 픽셀 포맷 플래그로 추정한다. 그렇다면
+**PTX 페이로드는 이미 16-bit texel의 압축본**이며 24/32-bit 원본은 이 세대 자산에
+존재하지 않는다. 페이로드는 첫 바이트부터 고엔트로피이고 상수색 구간이 3바이트(12비트)
+주기 반복(`8A 28 A2 …`)으로 나타나므로 bit-packed 압축이다. 압축 방식은 미확정.
+
+**확인됨 (버전별 자산 세대).** 로컬 `roms/` 실측:
+
+| 세대 | 버전 (실측) | 컨테이너 | 픽셀 원본 |
+|---|---|---|---|
+| 1 | pumpit1 (`MASTER/PIU_1ST`) | `RES\0` v1 평문 | `.PTX` (16-bit texel 추정, 압축) |
+| 2 | pumpito, pumpitea | `RES\0` v2 (payload 난독화) + TITLE `.PNZ` | PNG·PTX 겸용 (아래 pumpitea 절) |
+| 3 | pumpitp2, pumpit8, pumpipx3 | `RES\0` v3 (payload 난독화) + TITLE `.PNZ` | PNG (pumpit8 BGA에서 RGBA8 color type 6 **확인됨**, `docs/analysis/pumpit8-bga-iccp-crash.md`) |
+
+`.PNZ`는 디스크에서 PNG 시그니처가 보이지 않는 난독화 상태이며, PNG는 런타임 복호
+후에만 존재한다(pumpit8 관측과 동일 패턴).
+
+**확인됨 (pumpitea는 2세대이고 엔진은 PNG·PTX 겸용).** `roms/pumpitea/010209_1821.BIN`
+(MODE2/2352, 2세션)의 마지막 세션 ISO9660(파일 frame 114520의 PVD, extent bias `-2`)을
+직접 열람했다. `PIU/BGA`는 `RES\0` **v2** `.DAT` 92개, `PIU/TITLE`은 `.PNZ` 80개로
+pumpito와 같은 2세대 구성이며, `TITLE/C1.PNZ`(234,708 B)는 pumpito와 이름·크기가
+일치한다. 이미지에서 추출한 `PIU.EXE`(1,795,551 B, pumpite 마운트 분석과 동일 크기)의
+문자열은 **libpng `1.0.6` + zlib `1.1.3`(`inflate/deflate 1.1.3`) PNG 경로**
+(`sgl_Load_PNG`, PNG chunk 이름 테이블에 `iCCP` 포함)와 **PTX 경로**(`Not PTX file`,
+`PNG`·`PTX`가 나란한 포맷 이름 테이블, `TILE`/`ANI`/`PATTERN` SPR 키워드)를 모두
+담는다. 참조 포맷 문자열은 `bga\00.dat`, `t%02d.pnz`, `font.tga`, `event.tga` 등이다.
+즉 2세대부터 이미 PNG 파이프라인이 실행 파일에 존재하며, v2 payload 난독화 해제 전이므로
+개별 자산이 PNG인지 PTX인지의 비율은 미확정이다.
+
+## PTX Header Census and Per-Version Asset Generations (2026-09-29)
+
+**Confirmed (header fields vary per file).** A census of all 465 entries in
+`MASTER/PIU_1ST/datas/PIU.DAT` shows every entry carries the `PTX\0` magic, and the
+six post-magic u16 fields distribute as `(256,32,32,129,300,0)` ×279,
+`(256,32,32,130,300,0)` ×150, with the remainder varying only in `f1`/`f2`
+(1..32) and `f3` (129 or 130). `f0=256` is the version word the loader checks and
+`f4=300`/`f5=0` are constant. Task 260's "fields are constant" statement was a
+sampling error and is corrected.
+
+**Inferred (field meaning).** Reading `f1`/`f2` as dimensions in 8-pixel units
+matches observation (`(32,32)`→256×256, `DIGIT.PTX` `(32,2)`→256×16 digit strip),
+and `f3=129/130` parallels the only two texel formats ever seen at the Glide
+boundary (`RGB_565`, `ARGB_4444`), so it is inferred to be a pixel-format flag. If
+so, **PTX payloads are compressed 16-bit texels and no 24/32-bit original exists in
+this asset generation.** The payload is high-entropy bit-packed data (constant-color
+runs repeat with a 12-bit period); the codec is unresolved.
+
+**Confirmed (asset generations).** Local `roms/` measurements: generation 1
+(pumpit1) uses plaintext `RES\0` v1 with `.PTX`; generation 2 (pumpito, pumpitea)
+uses `RES\0` v2 with obfuscated payloads plus `.PNZ` titles; generation 3
+(pumpitp2, pumpit8, pumpipx3) uses `RES\0` v3 plus `.PNZ`, whose pixel source is
+PNG — confirmed RGBA8 color type 6 at runtime for pumpit8 BGA
+(`docs/analysis/pumpit8-bga-iccp-crash.md`). `.PNZ` files show no PNG signature on
+disk; the PNG exists only after runtime deobfuscation.
+
+**Confirmed (pumpitea is generation 2 with a dual PNG/PTX engine).** Reading the
+last-session ISO9660 of `roms/pumpitea/010209_1821.BIN` directly (MODE2/2352, PVD
+at file frame 114520, extent bias `-2`): `PIU/BGA` holds 92 `RES\0` **v2** `.DAT`
+archives and `PIU/TITLE` holds 80 `.PNZ` files — the same generation-2 layout as
+pumpito, with `TITLE/C1.PNZ` (234,708 B) matching pumpito by name and size. The
+extracted `PIU.EXE` (1,795,551 B, the size the pumpite mount analysis recorded)
+carries **both** the libpng `1.0.6` + zlib `1.1.3` PNG path (`sgl_Load_PNG`, a PNG
+chunk-name table including `iCCP`) and the PTX path (`Not PTX file`, a format-name
+table listing `PNG` beside `PTX`, and the `TILE`/`ANI`/`PATTERN` SPR keywords),
+with format strings such as `bga\00.dat`, `t%02d.pnz`, `font.tga`, and
+`event.tga`. The PNG pipeline therefore already exists in generation 2; the
+per-asset PNG-versus-PTX ratio stays unresolved until the v2 payload obfuscation
+is broken.

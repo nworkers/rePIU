@@ -222,6 +222,20 @@ public:
 
     bool is_open() const { return window_ != nullptr || dummy_mode_; }
     bool is_dummy() const { return dummy_mode_; }
+
+    // Task 761: the LFB high-precision presentation toggle. Default on; the
+    // initial value comes from REPIU_GLIDE_LFB_HIGH_PRECISION when the window
+    // opens (unset and empty are on, `0|off|false` is off, anything else is
+    // off), and the in-game OSD flips it afterwards. Read relaxed from the
+    // guest thread on every region flush; written on the host thread.
+    bool LfbHighPrecisionEnabled() const
+    {
+        return lfb_high_precision_.load(std::memory_order_relaxed);
+    }
+    void SetLfbHighPrecision(bool enabled)
+    {
+        lfb_high_precision_.store(enabled, std::memory_order_relaxed);
+    }
     bool exit_requested() const { return exit_requested_; }
     bool is_texture_combine_enabled() const { return texture_combine_enabled_; }
 
@@ -543,6 +557,11 @@ private:
     // the window opens and stopped when it closes. Owned through a pointer
     // to keep SDL's event types out of this header's users.
     std::unique_ptr<class SdlInputScriptPlayerHandle> input_script_;
+    // Task 761: the in-game OSD, created with the window and destroyed with
+    // it. Null in dummy mode. Host thread only.
+    std::unique_ptr<class GlideOsd> osd_;
+    // Task 761: see LfbHighPrecisionEnabled above.
+    std::atomic<bool> lfb_high_precision_{true};
     // Task 745: the engine's own swap pacing when the driver refused the
     // requested interval. Host thread only, like the swap itself.
     bool swap_pacing_enabled_ = false;

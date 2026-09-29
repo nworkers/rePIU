@@ -244,6 +244,103 @@ bool WriteGlideLfbRegion(std::uint32_t dst_x,
     return true;
 }
 
+bool WriteGlideLfbRegionRgba8(std::uint32_t dst_x,
+                              std::uint32_t dst_y,
+                              std::uint32_t src_width,
+                              std::uint32_t src_height,
+                              std::uint32_t src_format,
+                              std::int32_t src_stride_bytes,
+                              const std::uint8_t* src_data,
+                              std::size_t src_data_byte_count,
+                              std::uint32_t src_color_format,
+                              std::uint32_t surface_color_format,
+                              std::uint32_t surface_width,
+                              std::uint32_t surface_height,
+                              std::uint8_t* rgba8_shadow,
+                              std::size_t rgba8_shadow_byte_count)
+{
+    constexpr std::size_t kRgba8BytesPerPixel = 4U;
+    if (src_data == nullptr || rgba8_shadow == nullptr ||
+        !GlideLfbSrcFormatSupported(src_format) || surface_width == 0U ||
+        surface_height == 0U ||
+        rgba8_shadow_byte_count < static_cast<std::size_t>(surface_width) *
+            surface_height * kRgba8BytesPerPixel)
+    {
+        return false;
+    }
+    const std::uint32_t bytes_per_pixel =
+        GlideLfbSrcFormatBytesPerPixel(src_format);
+    // The same clip and stride decisions the 565 writer makes, computed against
+    // the same surface geometry, so the two writes cover identical pixels.
+    if (src_stride_bytes < 0 || dst_x >= surface_width ||
+        dst_y >= surface_height || src_width == 0U || src_height == 0U)
+    {
+        return false;
+    }
+    const std::uint32_t clipped_width = (dst_x + src_width > surface_width)
+        ? (surface_width - dst_x)
+        : src_width;
+    const std::uint32_t clipped_height = (dst_y + src_height > surface_height)
+        ? (surface_height - dst_y)
+        : src_height;
+    const std::size_t external_row_pitch = static_cast<std::size_t>(
+        ResolveGlideLfbRegionStride(src_width, bytes_per_pixel,
+                                    src_stride_bytes));
+    if (external_row_pitch == 0U)
+    {
+        return false;
+    }
+    const std::size_t required =
+        (static_cast<std::size_t>(clipped_height) - 1U) * external_row_pitch +
+        static_cast<std::size_t>(clipped_width) * bytes_per_pixel;
+    if (src_data_byte_count < required)
+    {
+        return false;
+    }
+    const bool full_precision = src_format == kGlideLfbSrcFmt888 ||
+        src_format == kGlideLfbSrcFmt8888;
+    const ChannelOffsets offsets = ResolveChannelOffsets(src_color_format);
+    const bool surface_bgr =
+        GlideColorFormatUsesBgrOrder(surface_color_format);
+    const std::size_t shadow_row_pitch =
+        static_cast<std::size_t>(surface_width) * kRgba8BytesPerPixel;
+    for (std::uint32_t row = 0; row < clipped_height; ++row)
+    {
+        const std::uint8_t* source =
+            src_data + static_cast<std::size_t>(row) * external_row_pitch;
+        std::uint8_t* target = rgba8_shadow +
+            static_cast<std::size_t>(dst_y + row) * shadow_row_pitch +
+            static_cast<std::size_t>(dst_x) * kRgba8BytesPerPixel;
+        for (std::uint32_t column = 0; column < clipped_width; ++column)
+        {
+            const std::uint8_t* pixel =
+                source + static_cast<std::size_t>(column) * bytes_per_pixel;
+            std::uint8_t* out = target + column * kRgba8BytesPerPixel;
+            if (full_precision)
+            {
+                out[0] = pixel[offsets.red];
+                out[1] = pixel[offsets.green];
+                out[2] = pixel[offsets.blue];
+            }
+            else
+            {
+                // Parity with the display path: what the 565 texel would decode
+                // to, not a direct source expansion, so toggling the
+                // presentation path cannot change a 16-bit source's pixels.
+                const std::uint16_t texel = ConvertSourcePixelTo565(
+                    pixel, src_format, src_color_format, surface_color_format);
+                const std::uint8_t high = ExpandGlideChannel5(texel >> 11U);
+                const std::uint8_t low = ExpandGlideChannel5(texel);
+                out[0] = surface_bgr ? low : high;
+                out[1] = ExpandGlideChannel6(texel >> 5U);
+                out[2] = surface_bgr ? high : low;
+            }
+            out[3] = 255U;
+        }
+    }
+    return true;
+}
+
 bool ReadGlideLfbRegion(std::uint32_t src_x,
                         std::uint32_t src_y,
                         std::uint32_t src_width,

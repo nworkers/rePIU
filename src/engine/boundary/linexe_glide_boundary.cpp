@@ -551,6 +551,18 @@ bool EnsureGlideLfbRegionShadow(ThreadContext* context, std::uint32_t buffer)
         context->glide_backend_message = context->glide_backend.message();
         return false;
     }
+    // Task 761: the readback is the pre-quantization image, so when the
+    // high-precision path is on it seeds the RGBA8 shadow for free.
+    if (context->glide_backend.LfbHighPrecisionEnabled() &&
+        rgba8.size() == static_cast<std::size_t>(width) * height * 4U)
+    {
+        context->glide_lfb_region_rgba8_shadow = std::move(rgba8);
+        context->glide_lfb_region_rgba8_valid = true;
+    }
+    else
+    {
+        context->glide_lfb_region_rgba8_valid = false;
+    }
     context->glide_lfb_region_shadow_valid = true;
     ++context->glide_lfb_region_seed_count;
     return true;
@@ -563,12 +575,28 @@ bool FlushGlideLfbRegionShadow(ThreadContext* context)
         return true;
     }
     context->glide_lfb_region_shadow_dirty = false;
+    const std::uint32_t width = context->glide_lfb_surface.width();
+    const std::uint32_t height = context->glide_lfb_surface.height();
+    // Task 761: when the high-precision shadow mirrors the staging surface it
+    // is presented as-is, keeping the precision the 565 texels dropped. The
+    // toggle is re-read here so the OSD takes effect at the next flush, and
+    // turning it off invalidates the shadow so a later enable starts from a
+    // fresh 565 decode instead of stale pixels.
+    const bool high_precision =
+        context->glide_backend.LfbHighPrecisionEnabled();
+    if (!high_precision)
+    {
+        context->glide_lfb_region_rgba8_valid = false;
+    }
+    const bool present_high_precision = high_precision &&
+        context->glide_lfb_region_rgba8_valid &&
+        context->glide_lfb_region_rgba8_shadow.size() ==
+            static_cast<std::size_t>(width) * height * 4U;
     std::vector<std::uint8_t> rgba8;
-    if (!repiu::hle::DecodeGlideLfb565ToRgba8(
+    if (!present_high_precision &&
+        !repiu::hle::DecodeGlideLfb565ToRgba8(
             context->glide_lfb_surface.pixels(),
-            context->glide_lfb_surface.byte_count(),
-            context->glide_lfb_surface.width(),
-            context->glide_lfb_surface.height(),
+            context->glide_lfb_surface.byte_count(), width, height,
             context->glide_state.color_format, &rgba8))
     {
         return false;
@@ -581,11 +609,17 @@ bool FlushGlideLfbRegionShadow(ThreadContext* context)
     const bool present_to_front = context->glide_lfb_region_shadow_buffer ==
         repiu::hle::kGlideBufferFrontBuffer;
     if (!context->glide_backend.PresentLfbSurface(
-            rgba8.data(), context->glide_lfb_surface.width(),
-            context->glide_lfb_surface.height(), false, present_to_front))
+            present_high_precision
+                ? context->glide_lfb_region_rgba8_shadow.data()
+                : rgba8.data(),
+            width, height, false, present_to_front))
     {
         context->glide_backend_message = context->glide_backend.message();
         return false;
+    }
+    if (present_high_precision)
+    {
+        ++context->glide_lfb_region_rgba8_present_count;
     }
     ++context->glide_lfb_region_flush_count;
     ++context->glide_lfb_present_count;
@@ -4389,6 +4423,46 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 }
                 else
                 {
+                    // Task 761: mirror the write into the RGBA8 shadow while
+                    // the high-precision path is on. A shadow that is not
+                    // valid yet -- the toggle was flipped mid-run -- starts
+                    // from a decode of the current staging, which is exactly
+                    // what the off path would present, and gains precision
+                    // from this write on.
+                    if (context->glide_backend.LfbHighPrecisionEnabled())
+                    {
+                        const std::uint32_t surface_width =
+                            context->glide_lfb_surface.width();
+                        const std::uint32_t surface_height =
+                            context->glide_lfb_surface.height();
+                        if (!context->glide_lfb_region_rgba8_valid)
+                        {
+                            context->glide_lfb_region_rgba8_valid =
+                                repiu::hle::DecodeGlideLfb565ToRgba8(
+                                    context->glide_lfb_surface.pixels(),
+                                    context->glide_lfb_surface.byte_count(),
+                                    surface_width, surface_height,
+                                    context->glide_state.color_format,
+                                    &context->glide_lfb_region_rgba8_shadow);
+                        }
+                        if (context->glide_lfb_region_rgba8_valid &&
+                            !repiu::hle::WriteGlideLfbRegionRgba8(
+                                dst_x, dst_y, src_width, src_height,
+                                src_format, src_stride, host_src.data(),
+                                host_src.size(),
+                                context->glide_state.lfb_write_color_format,
+                                context->glide_state.color_format,
+                                surface_width, surface_height,
+                                context->glide_lfb_region_rgba8_shadow.data(),
+                                context->glide_lfb_region_rgba8_shadow.size()))
+                        {
+                            context->glide_lfb_region_rgba8_valid = false;
+                        }
+                    }
+                    else
+                    {
+                        context->glide_lfb_region_rgba8_valid = false;
+                    }
                     context->glide_lfb_region_shadow_dirty = true;
                     ++context->glide_lfb_region_write_count;
                 }
