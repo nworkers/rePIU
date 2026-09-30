@@ -4220,6 +4220,97 @@ bool CanEnterTimerInterruptHandler(ThreadContext* const context)
         CanResumeLinuxX64LegacyTarget(context, shadow.offset);
 }
 
+namespace
+{
+
+// Task 762. The return pad: one reserved page that is never committed, so
+// executing its first byte faults with EIP naming it. No bytes are placed
+// there, which is why the two hosts' different EIP after an `int3` does not
+// come into it. Reserved at first use, one per process, never released.
+// Zero when the host refused or the address does not fit a guest register.
+std::uint32_t TimerReturnPadAddress()
+{
+    static const std::uint32_t address = [] {
+        const repiu::platform::MemoryReservation reservation =
+            repiu::platform::ReserveMemory(
+                nullptr, repiu::platform::SystemPageSize(), false,
+                repiu::platform::MemoryProtection::kNoAccess);
+        if (!reservation.valid || reservation.base == nullptr)
+        {
+            return std::uint32_t{0U};
+        }
+        const std::uintptr_t base =
+            reinterpret_cast<std::uintptr_t>(reservation.base);
+        return base <= std::numeric_limits<std::uint32_t>::max()
+            ? static_cast<std::uint32_t>(base)
+            : std::uint32_t{0U};
+    }();
+    return address;
+}
+
+// Task 762. A timer handler has returned: its `iret` went to the return pad
+// and faulted there. Puts the interrupted code back where it was, records the
+// return as the cache model's `iret` HLE does, and leaves code that runs in
+// place under the trace, so that the next tick has somewhere to go in.
+bool HandleTimerReturnPad(repiu::platform::GuestCpuContext* const win32_context,
+                          ThreadContext* const context)
+{
+    if (context->timer_return_pad.pushed_total == 0U ||
+        static_cast<std::uint32_t>(win32_context->Eip) !=
+            TimerReturnPadAddress())
+    {
+        return false;
+    }
+    TimerReturnRecord record;
+    if (!PopTimerReturn(&context->timer_return_pad,
+                        static_cast<std::uint32_t>(win32_context->Esp),
+                        &record))
+    {
+        return false;
+    }
+    win32_context->Eip = record.return_eip;
+    context->enable_single_step_trace = record.single_step_trace;
+    context->aot_legacy_fallback = record.legacy_fallback;
+    context->aot_reentry_pending = record.reentry_pending;
+    NoteGuestIret(&context->pic_timer_in_service, record.frame_esp,
+                  GuestCliHoldClockNanoseconds());
+    if (JammaReplayFrameEndEnabled())
+    {
+        context->jamma_input_timeline.EndTimerInterrupt(record.frame_esp);
+    }
+    const bool in_place =
+        IsGuestInstructionPointer(context, record.return_eip) &&
+        !IsAotCacheAddress(context, record.return_eip);
+    if (in_place && context->aot_placement != nullptr)
+    {
+        // In place there is no safe point, so the code goes back to where
+        // there are some: the next step asks for its cache entry, and only
+        // what has none goes on under the trace.
+        context->aot_reentry_pending = true;
+        context->aot_legacy_fallback = false;
+        context->enable_single_step_trace = true;
+        win32_context->EFlags |= 0x00000100U;
+        ++context->timer_return_pad.supervised_total;
+    }
+    else if (in_place && context->enable_single_step_trace)
+    {
+        // No cache on this backend: the trace the code was under goes on.
+        win32_context->EFlags |= 0x00000100U;
+        ++context->timer_return_pad.supervised_total;
+    }
+    else
+    {
+        win32_context->EFlags &= ~0x00000100U;
+    }
+    // The next owed tick may go in, as after an `iret` the engine emulated
+    // (Tasks 747 and 751); the chain is bounded there.
+    InjectPendingInterrupts(win32_context, context,
+                            TimerInjectionSite::kAfterHandlerReturn);
+    return true;
+}
+
+}  // namespace
+
 std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_context,
                                       ThreadContext* context,
                                       const TimerInjectionSite site)
@@ -4382,6 +4473,26 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
     const bool keep_armed = RecordTimerTickInjected(
         &context->timer_tick_delivery, TimerTickBacklogEnabled());
     const std::uint32_t interrupt_frame_esp = win32_context->Esp - 12U;
+    // Task 762. On the direct model the frame returns to the return pad, and
+    // the handler runs without the interrupted code's trace state.
+    std::uint32_t frame_eip = eip;
+    if (runtime::execution_model::RunsGuestBytesDirectly() &&
+        TimerReturnPadEnabled())
+    {
+        const std::uint32_t pad = TimerReturnPadAddress();
+        const TimerReturnRecord record{
+            eip, interrupt_frame_esp, context->enable_single_step_trace,
+            context->aot_legacy_fallback, context->aot_reentry_pending};
+        if (pad != 0U &&
+            PushTimerReturn(&context->timer_return_pad, record,
+                            static_cast<std::uint32_t>(win32_context->Esp)))
+        {
+            frame_eip = pad;
+            context->enable_single_step_trace = false;
+            context->aot_legacy_fallback = false;
+            context->aot_reentry_pending = false;
+        }
+    }
     NotePicTimerInjected(&context->pic_timer_in_service, interrupt_frame_esp,
                          at_sti);
     NoteTimerInjectionTime(&context->pic_timer_in_service,
@@ -4409,7 +4520,7 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
     esp -= 4;
     WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(esp)), &segcs, 4);
     esp -= 4;
-    WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(esp)), &eip, 4);
+    WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(esp)), &frame_eip, 4);
 
     win32_context->Esp = esp;
     win32_context->SegCs = shadow.selector;
@@ -4996,6 +5107,15 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     {
         breakpoint_evidence =
             CaptureBreakpointEvidence(fault, context);
+    }
+
+    // Task 762. Before anything else reads the address: the return pad is
+    // neither guest code nor the cache, and every handler below would decline
+    // it.
+    if (HandleTimerReturnPad(win32_context, context))
+    {
+        NoteVehExitSite(context, VehExitSite::kTimerReturnPad);
+        return repiu::platform::FaultDisposition::kResume;
     }
 
     if (win32_context->Eip == 0U)

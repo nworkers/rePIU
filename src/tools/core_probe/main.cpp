@@ -36,6 +36,7 @@
 #include "final_execution_report_probe.h"
 #include "shutdown_recovery_policy_probe.h"
 #include "pic_timer_in_service_probe.h"
+#include "timer_return_pad_probe.h"
 #include "build_identity_probe.h"
 #include "flat_stack_segment_fold_probe.h"
 #include "execution_backend_probe.h"
@@ -180,6 +181,7 @@ constexpr CoreProbe kCoreProbes[] = {
      &repiu::tools::RunShutdownRecoveryPolicyProbe},
     // Task 735. Pure policy, so every host runs it.
     {"pic_timer_in_service", &repiu::tools::RunPicTimerInServiceProbe},
+    {"timer_return_pad", &repiu::tools::RunTimerReturnPadProbe},
     // Task 738. The window-title label, checked against this compiler.
     {"build_identity", &repiu::tools::RunBuildIdentityProbe},
 };

@@ -376,6 +376,7 @@ target_sources(repiu_exe
         src/engine/io/port_io_emulator.cpp
         src/engine/io/jamma_input_timeline.cpp
         src/engine/io/pic_timer_in_service.cpp
+        src/engine/io/timer_return_pad.cpp
         src/engine/io/piu10_mp3_frame_batch.cpp
         src/engine/io/port_io_delay_loop.cpp
         src/engine/io/eeprom_93c46.cpp
@@ -745,6 +746,7 @@ add_executable(repiu_core_probe
     src/tools/core_probe/main.cpp
     src/tools/aot_probe/shutdown_recovery_policy_probe.cpp
     src/tools/aot_probe/pic_timer_in_service_probe.cpp
+    src/tools/aot_probe/timer_return_pad_probe.cpp
     src/tools/aot_probe/build_identity_probe.cpp
     src/tools/aot_probe/code_cache_placement_probe.cpp
     src/tools/aot_probe/dos_console_device_probe.cpp
@@ -971,6 +973,7 @@ if(WIN32)
         src/tools/aot_probe/glide_lfb_lock_interval_probe.cpp
         src/tools/aot_probe/shutdown_recovery_policy_probe.cpp
         src/tools/aot_probe/pic_timer_in_service_probe.cpp
+        src/tools/aot_probe/timer_return_pad_probe.cpp
         src/tools/aot_probe/build_identity_probe.cpp
         src/tools/aot_probe/glide_setter_state_census_probe.cpp
         src/tools/aot_probe/glide_async_present_probe.cpp

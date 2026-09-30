@@ -1422,6 +1422,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         SnapshotTimerTickDelivery(context.timer_tick_delivery);
     attempt->piu10_mp3_stats = context.piu10_mp3_audio.stats();
     attempt->pic_timer_in_service = context.pic_timer_in_service;
+    attempt->timer_return_pad = context.timer_return_pad;
     attempt->native_fast_path_entry_count =
         context.native_fast_path.entry_count.load(std::memory_order_relaxed);
     attempt->native_fast_path_return_count =

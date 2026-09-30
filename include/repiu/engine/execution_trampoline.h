@@ -30,6 +30,7 @@
 #include "repiu/engine/glide_draw_batch.h"
 #include "repiu/engine/glide_setter_state_cache.h"
 #include "repiu/engine/pic_timer_in_service.h"
+#include "repiu/engine/timer_return_pad.h"
 #include "repiu/engine/timer_tick_delivery.h"
 #include "repiu/engine/piu10_mp3_audio_out.h"
 #include "repiu/engine/aot_boundary_opcode_census.h"
@@ -781,6 +782,8 @@ struct MinimalExecutionAttempt
     Piu10Mp3AudioStats piu10_mp3_stats;
     // Task 735. Read after the guest thread stops, so a plain copy.
     PicTimerInService pic_timer_in_service;
+    // Task 762. Likewise.
+    TimerReturnPad timer_return_pad;
     std::uint32_t native_fast_path_entry_count = 0;
     std::uint32_t native_fast_path_return_count = 0;
     std::uint32_t native_fast_path_cancel_count = 0;

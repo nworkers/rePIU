@@ -3408,6 +3408,15 @@ void PrintExecutionAttempt(
             in_service.blocked_by_turn_total,
             in_service.last_handler_ns / 1000U,
             in_service.handler_max_ns / 1000U);
+        // Task 762. The handler returns the direct model saw.
+        const auto& return_pad = attempt.timer_return_pad;
+        logger.info(
+            "timer return pad pushed/returned/supervised/overflow/unmatched/"
+            "abandoned/depth-max/depth-at-end: {}/{}/{}/{}/{}/{}/{}/{}",
+            return_pad.pushed_total, return_pad.returned_total,
+            return_pad.supervised_total, return_pad.overflow_total,
+            return_pad.unmatched_total, return_pad.abandoned_total,
+            return_pad.depth_max, return_pad.depth);
     }
     logger.info("INT 8 chain HLE count/source/pointer/target: {}/{}/{}/{}:{}",
                 attempt.timer_interrupt_chain_hle_count,

@@ -85,10 +85,12 @@ enum class VehExitSite : std::uint8_t
     // on a host that *can* unwind and therefore resumes; this one declines and
     // lets the platform report an unhandled fault.
     kNoHostFrameToUnwind,
+    // Task 762: a timer handler's return, taken at the return pad.
+    kTimerReturnPad,
 };
 
 inline constexpr std::uint32_t kVehExitSiteCount =
-    static_cast<std::uint32_t>(VehExitSite::kNoHostFrameToUnwind) + 1U;
+    static_cast<std::uint32_t>(VehExitSite::kTimerReturnPad) + 1U;
 
 // Short, stable names for the host report. Kept adjacent to the enumeration so
 // a new value without a name is a compile-time-visible omission rather than a
@@ -141,6 +143,7 @@ inline const char* VehExitSiteName(std::uint32_t site)
         case VehExitSite::kForeignThread: return "foreign-thread";
         case VehExitSite::kGuestStackNotEntered: return "guest-stack-not-entered";
         case VehExitSite::kNoHostFrameToUnwind: return "no-host-frame-to-unwind";
+        case VehExitSite::kTimerReturnPad: return "timer-return-pad";
     }
     return "invalid";
 }

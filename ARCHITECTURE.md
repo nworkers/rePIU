@@ -4528,13 +4528,26 @@ toggles and the decode gate are driven by it.
 중첩을 한 단계로 제한하고, 핸들러가 돌아오기 전의 `sti` 연쇄를 막습니다. (4) 반환 직후의 연쇄와 차례
 (`PostReturnChainBlocksInjection`): 연쇄는 3개·주기 1 ms 이상, 인터럽트된 코드는 직전 핸들러가 쓴 시간만큼
 차례를 받습니다. 주입한 뒤 핸들러로 들어갈 수 있는지는 `CanEnterTimerInterruptHandler`가 확인하고 Linux
-x64는 cache로 재개합니다. Win32는 게스트의 `iret`이 네이티브로 실행돼 반환을 볼 수 없으므로 (3)의 중첩
-제한과 (4)가 꺼져 있습니다. 상태는 `PicTimerInService`(`pic_timer_in_service.h`)에 있습니다.
+x64는 cache로 재개합니다. direct 모델(Win32, Linux i386)은 게스트의 `iret`이 네이티브로 실행되므로 반환을
+return pad로 봅니다(Task 762, 아래). 그 스위치를 끄면 반환이 보이지 않아 (3)의 중첩 제한과 (4)가 꺼집니다.
+상태는 `PicTimerInService`(`pic_timer_in_service.h`)에 있습니다.
+
+**타이머 핸들러의 복귀와 return pad (Task 762).** direct 모델에서 주입 frame의 복귀 EIP는 실제 주소가 아니라
+return pad입니다: 커밋하지 않은 예약 페이지 한 장의 주소로, 거기로 `iret`하면 실행 폴트가 `EIP == pad`로
+`DispatchGuestFault`의 맨 앞에 옵니다. 실제 복귀 주소와 그 frame의 ESP, 중단된 코드의 실행 상태
+(`enable_single_step_trace`, `aot_legacy_fallback`, `aot_reentry_pending`)는 `TimerReturnPad`
+(`timer_return_pad.h`)의 record에 있고, 핸들러는 그 상태 없이 돕니다. `HandleTimerReturnPad`가 record를
+꺼내 EIP와 상태를 되돌리고, cache 모델의 `iret` HLE가 하는 기록(`NoteGuestIret`, `EndTimerInterrupt`)을 한 뒤
+`kAfterHandlerReturn`으로 주입을 시도합니다. 복귀 주소가 제자리 게스트 코드면 `aot_reentry_pending`과 TF를
+세워 다음 step에서 코드 캐시로 들여보냅니다. 제자리에는 safe point가 없어, 그대로 두면 트랩 없는 루프가
+tick을 받지 못하기 때문입니다. **direct 모델에서 게스트를 제자리 주소로 재개하는 새 경로를 만들 때는 그 코드가
+다음 tick을 받을 길이 있는지 확인하십시오.** `REPIU_TIMER_RETURN_PAD=0`이면 frame에 실제 주소를 넣는 이전
+동작입니다. 자세한 것은 [Task 762 설계](docs/design/20260930-762-timer-handler-return-pad.md)에 있습니다.
 
 입력 타임라인(`JammaInputTimeline`)은 tick이 주입될 때 그 tick의 예정 시각을 replay 프레임으로
 쌓고(`BeginTimerInterrupt`), 입력 포트 읽기(`ReadJammaPort8`)에 그 시각의 키 상태를 돌려줍니다. 프레임은 세
-가지로 회수됩니다: 읽기나 다음 주입의 ESP가 프레임보다 높을 때(스택 비교), 핸들러의 `iret`이 그 ESP의
-프레임을 꺼낼 때(`EndTimerInterrupt`, `HandleIretdInstruction`에서 호출), 이후 주입이
+가지로 회수됩니다: 읽기나 다음 주입의 ESP가 프레임보다 높을 때(스택 비교), 핸들러의 복귀가 그 ESP의
+프레임을 꺼낼 때(`EndTimerInterrupt`, `HandleIretdInstruction`과 `HandleTimerReturnPad`에서 호출), 이후 주입이
 `kReplayFrameStaleBegins`(64)를 넘었을 때(나이). 프레임이 없으면 읽기는 SDL의 키보드 상태로 가고, 입력
 스크립트가 돌 때만 타임라인의 최신 상태로 갑니다(`ServeLiveReadsFromLatestState`; 밀어 넣은 이벤트는 SDL의
 키보드 상태를 바꾸지 않음).
@@ -4562,14 +4575,31 @@ and a chain at `sti` before the handler has returned is refused. (4) The chain a
 turn (`PostReturnChainBlocksInjection`): a chain is at most 3 and at periods of 1 ms or more, and the
 interrupted code gets a turn as long as the last handler took. Whether the handler can be entered after
 an injection is checked by `CanEnterTimerInterruptHandler`, and Linux x64 resumes through the cache.
-Win32 runs the guest's `iret` natively and cannot see the return, so the nesting bound of (3) and all of
-(4) are off there. The state lives in `PicTimerInService` (`pic_timer_in_service.h`).
+The direct model (Win32, Linux i386) runs the guest's `iret` natively and sees the return through the
+return pad (Task 762, below); with that switch off the return is not seen, and the nesting bound of (3)
+and all of (4) are off. The state lives in `PicTimerInService` (`pic_timer_in_service.h`).
+
+**A timer handler's return and the return pad (Task 762).** On the direct model the return EIP of an
+injected frame is not the real address but the return pad: the address of one reserved, uncommitted
+page, so that an `iret` to it raises an execute fault that reaches the very top of `DispatchGuestFault`
+with `EIP == pad`. The real return address, the frame's ESP and the interrupted code's execution state
+(`enable_single_step_trace`, `aot_legacy_fallback`, `aot_reentry_pending`) wait in a record of
+`TimerReturnPad` (`timer_return_pad.h`), and the handler runs without that state.
+`HandleTimerReturnPad` takes the record, restores EIP and the state, records what the cache model's
+`iret` HLE records (`NoteGuestIret`, `EndTimerInterrupt`) and attempts an injection as
+`kAfterHandlerReturn`. When the return address is guest code in place it sets `aot_reentry_pending`
+and TF, so that the next step enters the code cache: in place there is no safe point, and left there a
+loop without a trap receives no tick. **When adding a path that resumes the guest at an address in
+place on the direct model, check that the code has a way to receive the next tick.**
+`REPIU_TIMER_RETURN_PAD=0` writes the real address into the frame as before. See the
+[Task 762 design](docs/design/20260930-762-timer-handler-return-pad.md).
 
 The input timeline (`JammaInputTimeline`) pushes a replay frame with a tick's due time when the tick is
 injected (`BeginTimerInterrupt`) and answers input port reads (`ReadJammaPort8`) with the keys at that
 time. A frame is retired in three ways: by a read's or the next injection's ESP being above it (the stack
-test), by the handler's `iret` popping the frame at its ESP (`EndTimerInterrupt`, called from
-`HandleIretdInstruction`), and by more than `kReplayFrameStaleBegins` (64) later injections (age). With
+test), by the handler's return popping the frame at its ESP (`EndTimerInterrupt`, called from
+`HandleIretdInstruction` and `HandleTimerReturnPad`), and by more than `kReplayFrameStaleBegins` (64)
+later injections (age). With
 no frame a read goes to SDL's keyboard state, and to the timeline's latest state only while an input
 script runs (`ServeLiveReadsFromLatestState`; pushed events do not change SDL's keyboard state).
 
