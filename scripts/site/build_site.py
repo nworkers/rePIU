@@ -28,7 +28,8 @@ from releases import load_releases
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SITE_DIR = REPO_ROOT / "docs" / "sites"
-PAGES = ("index", "wip", "download")
+PAGES = ("index", "wip", "download", "credits")
+CREDIT_GROUPS = ("runtime", "dev", "site")
 
 
 def parse_args() -> argparse.Namespace:
@@ -187,7 +188,8 @@ class Site:
                 root = context["root"]
                 releases = [self.release_view(release, lang, root) for release in self.releases]
                 titles = {"index": "rePIU", "wip": f"{t['wip']['title']} — rePIU",
-                          "download": f"{t['download']['title']} — rePIU"}
+                          "download": f"{t['download']['title']} — rePIU",
+                          "credits": f"{t['credits']['title']} — rePIU"}
                 context["page_title"] = titles[page]
                 if page == "index":
                     context["targets"] = self.targets
@@ -202,6 +204,13 @@ class Site:
                     context["latest"] = latest
                     context["older"] = [view for view in releases if view is not latest]
                     context["has_mermaid"] = bool(latest and latest["has_mermaid"])
+                elif page == "credits":
+                    entries = self.config.get("credits", [])
+                    context["credit_groups"] = [
+                        {"key": key, "items": items}
+                        for key in CREDIT_GROUPS
+                        if (items := [entry for entry in entries if entry["group"] == key])
+                    ]
                 self.write(path, f"{page}.html", context)
 
             views = [self.post_view(post, lang) for post in self.posts]

@@ -46,7 +46,8 @@
           <li><a href="{{ home }}index.html"{% if page == "index" %} aria-current="page"{% endif %}><kbd>F1</kbd>{{ t.nav.about }}</a></li>
           <li><a href="{{ home }}wip.html"{% if page in ("wip", "post") %} aria-current="page"{% endif %}><kbd>F2</kbd>{{ t.nav.wip }}</a></li>
           <li><a href="{{ home }}download.html"{% if page == "download" %} aria-current="page"{% endif %}><kbd>F3</kbd>{{ t.nav.download }}</a></li>
-          <li><a href="{{ repo_url }}"><kbd>F4</kbd>{{ t.nav.github }}</a></li>
+          <li><a href="{{ home }}credits.html"{% if page == "credits" %} aria-current="page"{% endif %}><kbd>F4</kbd>{{ t.nav.credits }}</a></li>
+          <li><a href="{{ repo_url }}"><kbd>F5</kbd>{{ t.nav.github }}</a></li>
         </ul>
       </nav>
       <p class="lang" aria-label="{{ t.nav.lang_label }}">

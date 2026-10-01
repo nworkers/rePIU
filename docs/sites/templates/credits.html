@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block main %}
+<div class="wrap">
+  <header class="post-header">
+    <p class="prompt" aria-hidden="true"><span class="path">C:\REPIU&gt;</span> type CREDITS.TXT<span class="cursor"></span></p>
+    <h1>{{ t.credits.title }}</h1>
+    <p class="lead">{{ t.credits.lead }}</p>
+  </header>
+
+  <section class="box" aria-labelledby="original-title">
+    <h2 id="original-title">{{ t.credits.original_title }}</h2>
+    <p>{{ t.credits.original_body }}</p>
+  </section>
+
+  {% for group in credit_groups %}
+  <section class="box" aria-labelledby="credits-{{ group.key }}-title">
+    <h2 id="credits-{{ group.key }}-title">{{ t.credits["group_" ~ group.key] }}</h2>
+    <ul class="plain-list credits">
+      {% for item in group["items"] %}
+      <li>
+        <span class="badge">{{ item.license }}</span>
+        <span><a href="{{ item.url }}"><strong>{{ item.name }}</strong></a>{% if item.version %} <span class="meta">{{ item.version }}</span>{% endif %} — {{ t.credits["items"][item.key] }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% if group.key == "runtime" %}
+    <p>{{ t.credits.mame_note | safe }}</p>
+    {% endif %}
+  </section>
+  {% endfor %}
+
+  <section class="box box--plain" aria-labelledby="full-title">
+    <h2 id="full-title">{{ t.credits.full_title }}</h2>
+    <p>{{ t.credits.full_lead }}</p>
+    <ul>
+      <li><a href="{{ repo_url }}/blob/{{ branch }}/LICENSE">{{ t.credits.full_license }}</a></li>
+      <li><a href="{{ repo_url }}/blob/{{ branch }}/THIRD_PARTY_NOTICES.md">{{ t.credits.full_notices }}</a></li>
+      <li><a href="{{ repo_url }}/blob/{{ branch }}/CREDITS.md">{{ t.credits.full_credits }}</a></li>
+    </ul>
+  </section>
+</div>
+{% endblock %}

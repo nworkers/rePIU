@@ -20,6 +20,104 @@ target_catalog = "src/target/target_profile.cpp"
 # Loaded from jsDelivr only on pages that contain a diagram (MIT).
 url = "https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.esm.min.mjs"
 
+# Credits page entries (Task 765). Language-neutral facts only; group titles and
+# per-item descriptions come from i18n [credits]. group: runtime | dev | site
+[[credits]]
+key = "sdl3"
+group = "runtime"
+name = "SDL"
+version = "v3.4.10"
+license = "zlib"
+url = "https://github.com/libsdl-org/SDL"
+
+[[credits]]
+key = "zydis"
+group = "runtime"
+name = "Zydis / Zycore"
+version = "v4.1.1"
+license = "MIT"
+url = "https://github.com/zyantific/zydis"
+
+[[credits]]
+key = "imgui"
+group = "runtime"
+name = "Dear ImGui"
+version = "v1.92.1"
+license = "MIT"
+url = "https://github.com/ocornut/imgui"
+
+[[credits]]
+key = "libchdr"
+group = "runtime"
+name = "libchdr"
+version = "v0.3.0"
+license = "BSD 3-Clause"
+url = "https://github.com/rtissera/libchdr"
+
+[[credits]]
+key = "minimp3"
+group = "runtime"
+name = "minimp3"
+version = "ea99364"
+license = "CC0 1.0"
+url = "https://github.com/lieff/minimp3"
+
+[[credits]]
+key = "spdlog"
+group = "runtime"
+name = "spdlog"
+version = "v1.14.1"
+license = "MIT"
+url = "https://github.com/gabime/spdlog"
+
+[[credits]]
+key = "mame"
+group = "runtime"
+name = "MAME (PIU10 · CAT702)"
+version = ""
+license = "BSD 3-Clause"
+url = "https://github.com/mamedev/mame"
+
+[[credits]]
+key = "googletest"
+group = "dev"
+name = "GoogleTest"
+version = "v1.14.1"
+license = "BSD 3-Clause"
+url = "https://github.com/google/googletest"
+
+[[credits]]
+key = "galmuri"
+group = "site"
+name = "Galmuri"
+version = "v2.40.3"
+license = "SIL OFL 1.1"
+url = "https://galmuri.quiple.dev/"
+
+[[credits]]
+key = "jinja"
+group = "site"
+name = "Jinja"
+version = "v3.1.6"
+license = "BSD 3-Clause"
+url = "https://github.com/pallets/jinja"
+
+[[credits]]
+key = "markdownit"
+group = "site"
+name = "markdown-it-py"
+version = "v4.2.0"
+license = "MIT"
+url = "https://github.com/executablebooks/markdown-it-py"
+
+[[credits]]
+key = "mermaid"
+group = "site"
+name = "Mermaid"
+version = "v11.17.2"
+license = "MIT"
+url = "https://github.com/mermaid-js/mermaid"
+
 # Platform status shown on the introduction page. Labels come from i18n [platforms.<key>].
 # state: release | wip | hold
 [[platforms]]

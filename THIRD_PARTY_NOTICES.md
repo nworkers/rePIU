@@ -96,6 +96,56 @@ rePIU pins upstream `minimp3` commit
 PIU10 MAS3507D MP3 stream. `minimp3` is offered under CC0 1.0 Universal. rePIU does not
 incorporate MAME's MAS3507D or MP3 wrapper code.
 
+## SDL 3.4.10
+
+### 한국어
+
+rePIU는 창, 입력, 오디오, OpenGL context를 위해 SDL tag `release-3.4.10`을 FetchContent로
+받아 정적으로 링크합니다. SDL은 zlib License로 제공됩니다. 소스는 수정하지 않습니다.
+
+- Project: https://github.com/libsdl-org/SDL
+- License: https://github.com/libsdl-org/SDL/blob/release-3.4.10/LICENSE.txt (zlib)
+
+### English
+
+rePIU fetches SDL tag `release-3.4.10` through FetchContent and links it statically for
+windowing, input, audio and the OpenGL context. SDL is offered under the zlib License. The
+sources are unmodified.
+
+## spdlog v1.14.1
+
+### 한국어
+
+rePIU의 Windows·Linux loader 진단 로그는 spdlog tag `v1.14.1`을 FetchContent로 받아
+header-only로 사용합니다(내장 fmt 포함). spdlog는 MIT License로 제공됩니다. Emscripten
+빌드는 spdlog를 받지 않습니다.
+
+- Project: https://github.com/gabime/spdlog
+- License: https://github.com/gabime/spdlog/blob/v1.14.1/LICENSE (MIT)
+
+### English
+
+The Windows and Linux loader diagnostics use spdlog tag `v1.14.1`, fetched through
+FetchContent and consumed header-only (with its bundled fmt). spdlog is offered under the
+MIT License. The Emscripten build does not fetch it.
+
+## GoogleTest v1.14.1
+
+### 한국어
+
+테스트 빌드는 GoogleTest tag `v1.14.1`을 FetchContent로 받습니다. GoogleTest는 BSD
+3-Clause License로 제공됩니다. 테스트 실행 파일에만 링크되며 배포 패키지에는 포함되지
+않습니다.
+
+- Project: https://github.com/google/googletest
+- License: https://github.com/google/googletest/blob/v1.14.1/LICENSE (BSD 3-Clause)
+
+### English
+
+The test build fetches GoogleTest tag `v1.14.1` through FetchContent. GoogleTest is
+offered under the BSD 3-Clause License. It links into the test executables only and is not
+part of the release packages.
+
 ## Galmuri 2.40.3 (project site font)
 
 ### 한국어

@@ -21,7 +21,7 @@ flowchart LR
 |---|---|
 | `site.toml` | 저장소, 기본 URL, 언어 목록, 콘텐츠 경로, Mermaid 주소, 플랫폼 상태 |
 | `i18n/ko.toml`, `i18n/en.toml` | 페이지 문구. 두 파일의 키 구조는 같아야 합니다 |
-| `templates/` | Jinja2 템플릿 (`base`, `index`, `wip`, `download`, `post`, `404`) |
+| `templates/` | Jinja2 템플릿 (`base`, `index`, `wip`, `download`, `credits`, `post`, `404`) |
 | `static/` | CSS, JS, favicon, Galmuri 폰트와 라이선스 |
 
 산출물은 한국어가 `/`, 영어가 `/en/` 아래에 같은 파일 이름으로 생깁니다.
@@ -73,7 +73,7 @@ writes `build/site/`.
 |---|---|
 | `site.toml` | Repository, default URL, languages, content paths, Mermaid URL, platform status |
 | `i18n/ko.toml`, `i18n/en.toml` | Page copy. Both files must have the same key structure |
-| `templates/` | Jinja2 templates (`base`, `index`, `wip`, `download`, `post`, `404`) |
+| `templates/` | Jinja2 templates (`base`, `index`, `wip`, `download`, `credits`, `post`, `404`) |
 | `static/` | CSS, JS, favicon, the Galmuri fonts and their licence |
 
 The output has Korean at `/` and English under `/en/` with the same file names.

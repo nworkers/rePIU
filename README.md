@@ -462,8 +462,6 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 
 ## 라이선스 / License
 
-프로젝트 정책은 BSD 3-Clause를 기본 라이선스 기준으로 정하고 있지만, 현재 저장소 루트에는 정식 `LICENSE` 파일이 없습니다. 파일이 추가되기 전에는 재배포 조건을 추정하지 말고 maintainers에게 확인하십시오. 원본 PIU 실행 파일과 자산은 rePIU에 포함되지 않으며 각 권리자의 조건을 따릅니다.
+rePIU는 [BSD 3-Clause License](LICENSE)로 배포합니다. 서드파티 구성 요소의 출처와 라이선스는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에, 프로젝트가 기대어 선 게임·프로젝트·사람들에 대한 감사는 [CREDITS.md](CREDITS.md)에 있습니다. 원본 PIU 실행 파일과 자산은 rePIU에 포함되지 않으며 각 권리자의 조건을 따릅니다.
 
-Vendored dependencies and their license locations are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-*The project policy names BSD 3-Clause as its license baseline, but the repository currently has no formal `LICENSE` file. Do not assume redistribution terms until one is added; confirm with the maintainers. Original PIU binaries and assets are not part of rePIU and remain subject to their owners' terms.*
+*rePIU is distributed under the [BSD 3-Clause License](LICENSE). Third-party component origins and licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and acknowledgements in [CREDITS.md](CREDITS.md). Original PIU binaries and assets are not part of rePIU and remain subject to their owners' terms.*

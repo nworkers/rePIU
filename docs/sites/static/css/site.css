@@ -721,6 +721,23 @@ main {
   display: block;
 }
 
+.credits li {
+  display: grid;
+  grid-template-columns: 13ch 1fr;
+  gap: 0 12px;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--rule);
+}
+
+.credits li:last-child {
+  border-bottom: 0;
+}
+
+.credits .badge {
+  justify-self: start;
+  align-self: start;
+}
+
 .diagram {
   font-size: 24px;
   line-height: 28px;
@@ -1009,7 +1026,8 @@ pre.mermaid[data-processed="true"] {
     display: none;
   }
 
-  .platforms li {
+  .platforms li,
+  .credits li {
     grid-template-columns: 1fr;
     gap: 4px;
   }
