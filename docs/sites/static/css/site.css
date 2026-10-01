@@ -1,6 +1,8 @@
 /*
- * rePIU project site (Task 756).
- * Black screen, VGA 16-colour palette, Galmuri pixel fonts.
+ * rePIU project site (Task 756; Exceed arcade layer, Task 764).
+ * Black screen, VGA 16-colour palette, Galmuri pixel fonts, with a
+ * Pump It Up Exceed-era neon layer on top: surface colours stay within
+ * VGA 16, and the arcade glow lives only in alpha shadows and gradients.
  * Pixel fonts are only crisp at whole multiples of their design size:
  * Galmuri14 at 15px, Galmuri11 / GalmuriMono11 at multiples of 12px.
  */
@@ -35,6 +37,7 @@
   --green: #00aa00;
   --cyan: #00aaaa;
   --red: #aa0000;
+  --magenta: #aa00aa;
   --brown: #aa5500;
   --gray: #aaaaaa;
   --dark-gray: #555555;
@@ -42,8 +45,18 @@
   --light-green: #55ff55;
   --light-cyan: #55ffff;
   --light-red: #ff5555;
+  --light-magenta: #ff55ff;
   --yellow: #ffff55;
   --white: #ffffff;
+
+  /* Exceed neon accents: VGA surfaces, alpha-only glow. */
+  --neon-pink: var(--light-magenta);
+  --neon-cyan: var(--light-cyan);
+  --neon-yellow: var(--yellow);
+  --glow-pink: rgba(255, 85, 255, 0.45);
+  --glow-cyan: rgba(85, 255, 255, 0.35);
+  --glow-yellow: rgba(255, 255, 85, 0.4);
+  --glow-blue: rgba(85, 85, 255, 0.45);
 
   --text: var(--gray);
   --strong: var(--white);
@@ -88,9 +101,25 @@ body {
   overflow-wrap: break-word;
 }
 
+/* Arcade CRT scanlines: static, faint, and non-interactive. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.12) 0,
+    rgba(0, 0, 0, 0.12) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
 ::selection {
-  background: var(--cyan);
-  color: var(--black);
+  background: var(--magenta);
+  color: var(--white);
 }
 
 a {
@@ -152,7 +181,7 @@ h3 {
 
 h3::before {
   content: "\25A0  ";
-  color: var(--dark-gray);
+  color: var(--magenta);
 }
 
 h4,
@@ -320,6 +349,18 @@ main {
   color: var(--gray);
 }
 
+/* Beat bar: the groove-meter strip under the menu bar. */
+.beatbar {
+  height: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--neon-pink),
+    var(--neon-yellow) 50%,
+    var(--neon-cyan)
+  );
+  box-shadow: 0 0 8px var(--glow-pink), 0 2px 10px var(--glow-cyan);
+}
+
 .brand {
   font-family: var(--font-head);
   font-weight: 700;
@@ -412,6 +453,7 @@ main {
   border: 4px double var(--light-cyan);
   padding: 24px 20px 8px;
   margin: 48px 0 0;
+  box-shadow: 0 0 10px rgba(85, 255, 255, 0.18);
 }
 
 .box > h2:first-child {
@@ -427,6 +469,7 @@ main {
 
 .box--plain {
   border-color: var(--dark-gray);
+  box-shadow: none;
 }
 
 .box--plain > h2:first-child {
@@ -435,6 +478,7 @@ main {
 
 .box--warn {
   border-color: var(--yellow);
+  box-shadow: 0 0 10px rgba(255, 255, 85, 0.18);
 }
 
 .box--warn > h2:first-child {
@@ -485,7 +529,69 @@ main {
   line-height: 48px;
   margin: 0 0 16px;
   color: var(--white);
-  text-shadow: 4px 4px 0 var(--blue);
+  text-shadow: 4px 4px 0 var(--blue), 0 0 24px var(--glow-pink);
+}
+
+/* Exceed logo treatment: gradient glyphs; the hard shadow moves to a
+ * drop-shadow filter because text-shadow cannot follow clipped text. */
+@supports (-webkit-background-clip: text) or (background-clip: text) {
+  .hero-title {
+    background: linear-gradient(
+      180deg,
+      var(--white) 0%,
+      var(--light-cyan) 40%,
+      var(--light-blue) 62%,
+      var(--light-magenta) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    text-shadow: none;
+    filter: drop-shadow(4px 4px 0 var(--blue)) drop-shadow(0 0 12px var(--glow-pink));
+  }
+}
+
+/* --- Pad arrows (the five Pump It Up panels) ----------------------------- */
+
+.padline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.padline svg {
+  width: 24px;
+  height: 24px;
+}
+
+.pad--up {
+  fill: var(--neon-pink);
+  filter: drop-shadow(0 0 6px var(--glow-pink));
+}
+
+.pad--down {
+  fill: var(--neon-cyan);
+  filter: drop-shadow(0 0 6px var(--glow-cyan));
+}
+
+.pad--center {
+  fill: var(--neon-yellow);
+  filter: drop-shadow(0 0 6px var(--glow-yellow));
+  animation: pad-pulse 2s ease-in-out infinite;
+}
+
+@keyframes pad-pulse {
+  50% {
+    filter: drop-shadow(0 0 2px var(--glow-yellow));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pad--center {
+    animation: none;
+  }
 }
 
 .tagline {
@@ -508,23 +614,25 @@ main {
 .btn {
   display: inline-block;
   padding: 4px 16px;
-  background: var(--cyan);
+  background: linear-gradient(180deg, var(--light-cyan), var(--cyan));
   color: var(--black);
-  box-shadow: 6px 6px 0 var(--dark-gray);
+  box-shadow: 6px 6px 0 var(--dark-gray), 0 0 12px var(--glow-cyan);
 }
 
 .btn:hover {
   background: var(--light-cyan);
   text-decoration: none;
+  box-shadow: 6px 6px 0 var(--dark-gray), 0 0 16px var(--glow-pink);
 }
 
 .btn:active {
   transform: translate(6px, 6px);
-  box-shadow: none;
+  box-shadow: 0 0 12px var(--glow-cyan);
 }
 
 .btn--secondary {
-  background: var(--gray);
+  background: linear-gradient(180deg, var(--white), var(--gray));
+  box-shadow: 6px 6px 0 var(--dark-gray);
 }
 
 .btn--secondary:hover {
@@ -577,7 +685,8 @@ main {
 }
 
 .badge--latest {
-  background: var(--light-cyan);
+  background: var(--light-magenta);
+  box-shadow: 0 0 8px var(--glow-pink);
 }
 
 /* --- Lists and cards ----------------------------------------------------- */
@@ -698,7 +807,8 @@ main {
 }
 
 .timeline > li.is-latest::before {
-  background: var(--light-cyan);
+  background: var(--light-magenta);
+  box-shadow: 0 0 8px var(--glow-pink);
 }
 
 .timeline h3 {
@@ -868,7 +978,14 @@ pre.mermaid[data-processed="true"] {
   .hero-title {
     font-size: 36px;
     line-height: 36px;
-    text-shadow: 3px 3px 0 var(--blue);
+    text-shadow: 3px 3px 0 var(--blue), 0 0 18px var(--glow-pink);
+  }
+
+  @supports (-webkit-background-clip: text) or (background-clip: text) {
+    .hero-title {
+      text-shadow: none;
+      filter: drop-shadow(3px 3px 0 var(--blue)) drop-shadow(0 0 10px var(--glow-pink));
+    }
   }
 
   .box {

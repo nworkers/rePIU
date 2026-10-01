@@ -7,5 +7,5 @@
   <rect x="4" y="10" width="2" height="2" fill="#55ffff"/>
   <rect x="2" y="12" width="2" height="2" fill="#55ffff"/>
   <!-- cursor -->
-  <rect x="9" y="12" width="5" height="2" fill="#aaaaaa"/>
+  <rect x="9" y="12" width="5" height="2" fill="#ff55ff"/>
 </svg>
