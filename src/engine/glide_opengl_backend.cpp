@@ -1113,56 +1113,56 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
           "requested-bits/granted-bits: %u/%u/%d/%d\n",
           color_buffer_count, auxiliary_buffer_count,
           auxiliary_buffer_count != 0U ? 24 : 0, granted_depth_bits);
-  // Task 371: measurement-only override. With the variable unset no SDL call is
-  // made at all, so the default path keeps whatever SDL or the driver chose --
-  // which is what every capture so far has actually been running under, since
-  // the guest's own `grBufferSwap` interval has never been applied.
+  // Task 371 made the interval a measurement-only override. Task 766: the
+  // interval is now always requested -- the variable when it is set, vsync on
+  // otherwise -- because the default left to SDL or the driver differs by
+  // host (SDL's Wayland backend runs uncapped unless asked).
   std::int32_t requested_interval = 0;
-  if (TryReadGlideSwapIntervalOverride(&requested_interval)) {
-    glide_swap_interval_policy_.override_requested = true;
-    glide_swap_interval_policy_.requested_interval = requested_interval;
-    glide_swap_interval_policy_.applied =
-        SDL_GL_SetSwapInterval(static_cast<int>(requested_interval));
-    int effective = 0;
-    glide_swap_interval_policy_.effective_valid =
-        SDL_GL_GetSwapInterval(&effective);
-    glide_swap_interval_policy_.effective_interval =
-        static_cast<std::int32_t>(effective);
-    // Task 745. A refused interval used to leave the game unthrottled with
-    // only a line in the final report to say so: WSLg's llvmpipe GL
-    // advertises GLX_EXT_swap_control and then refuses the call. The engine
-    // then paces the swaps itself at the display's refresh rate.
-    if (!glide_swap_interval_policy_.applied) {
-      const char *const error = SDL_GetError();
-      std::strncpy(glide_swap_interval_policy_.failure,
-                   error != nullptr ? error : "",
-                   sizeof(glide_swap_interval_policy_.failure) - 1U);
-    }
-    const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
-    const SDL_DisplayMode *const mode =
-        display != 0U ? SDL_GetCurrentDisplayMode(display) : nullptr;
-    glide_swap_interval_policy_.refresh_rate_hz =
-        mode != nullptr ? static_cast<double>(mode->refresh_rate) : 0.0;
-    const bool honoured = glide_swap_interval_policy_.applied &&
-        (!glide_swap_interval_policy_.effective_valid ||
-         glide_swap_interval_policy_.effective_interval == requested_interval);
-    const std::uint32_t pacing_period_us =
-        ResolveGlideSwapPacingPeriodMicroseconds(
-            requested_interval, glide_swap_interval_policy_.refresh_rate_hz);
-    if (!honoured && pacing_period_us != 0U) {
-      glide_swap_interval_policy_.pacing_active = true;
-      glide_swap_interval_policy_.pacing_period_us = pacing_period_us;
-      swap_pacing_enabled_ = true;
-      swap_pacing_period_ = std::chrono::microseconds(pacing_period_us);
-      swap_pacing_deadline_valid_ = false;
-      fprintf(stderr,
-              "[repiu-glide-swap] driver refused swap interval %d (%s); "
-              "pacing swaps every %u us (display %.2f Hz)\n",
-              static_cast<int>(requested_interval),
-              glide_swap_interval_policy_.failure,
-              static_cast<unsigned>(pacing_period_us),
-              glide_swap_interval_policy_.refresh_rate_hz);
-    }
+  glide_swap_interval_policy_.interval_requested = true;
+  glide_swap_interval_policy_.override_requested =
+      ReadGlideSwapInterval(&requested_interval);
+  glide_swap_interval_policy_.requested_interval = requested_interval;
+  glide_swap_interval_policy_.applied =
+      SDL_GL_SetSwapInterval(static_cast<int>(requested_interval));
+  int effective = 0;
+  glide_swap_interval_policy_.effective_valid =
+      SDL_GL_GetSwapInterval(&effective);
+  glide_swap_interval_policy_.effective_interval =
+      static_cast<std::int32_t>(effective);
+  // Task 745. A refused interval used to leave the game unthrottled with
+  // only a line in the final report to say so: WSLg's llvmpipe GL
+  // advertises GLX_EXT_swap_control and then refuses the call. The engine
+  // then paces the swaps itself at the display's refresh rate.
+  if (!glide_swap_interval_policy_.applied) {
+    const char *const error = SDL_GetError();
+    std::strncpy(glide_swap_interval_policy_.failure,
+                 error != nullptr ? error : "",
+                 sizeof(glide_swap_interval_policy_.failure) - 1U);
+  }
+  const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+  const SDL_DisplayMode *const mode =
+      display != 0U ? SDL_GetCurrentDisplayMode(display) : nullptr;
+  glide_swap_interval_policy_.refresh_rate_hz =
+      mode != nullptr ? static_cast<double>(mode->refresh_rate) : 0.0;
+  const bool honoured = glide_swap_interval_policy_.applied &&
+      (!glide_swap_interval_policy_.effective_valid ||
+       glide_swap_interval_policy_.effective_interval == requested_interval);
+  const std::uint32_t pacing_period_us =
+      ResolveGlideSwapPacingPeriodMicroseconds(
+          requested_interval, glide_swap_interval_policy_.refresh_rate_hz);
+  if (!honoured && pacing_period_us != 0U) {
+    glide_swap_interval_policy_.pacing_active = true;
+    glide_swap_interval_policy_.pacing_period_us = pacing_period_us;
+    swap_pacing_enabled_ = true;
+    swap_pacing_period_ = std::chrono::microseconds(pacing_period_us);
+    swap_pacing_deadline_valid_ = false;
+    fprintf(stderr,
+            "[repiu-glide-swap] driver refused swap interval %d (%s); "
+            "pacing swaps every %u us (display %.2f Hz)\n",
+            static_cast<int>(requested_interval),
+            glide_swap_interval_policy_.failure,
+            static_cast<unsigned>(pacing_period_us),
+            glide_swap_interval_policy_.refresh_rate_hz);
   }
   // Task 370: prefer asynchronous reporting. When the driver provides it the
   // frame check is removed entirely; otherwise it falls back to sampling. An

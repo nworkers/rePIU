@@ -15,8 +15,14 @@ namespace repiu::engine
 //
 // Applying the guest's request automatically is deliberately not done here. That
 // is a behaviour change, and it waits on what the measurement says.
+//
+// Task 766: an unset variable no longer leaves the driver's default in place.
+// That default differs by host -- SDL's Wayland backend keeps the interval at 0
+// unless asked -- so a run requests kDefaultGlideSwapInterval everywhere, and
+// the variable (or the launcher setting published into it) turns vsync off.
 constexpr std::int32_t kMinGlideSwapInterval = -1;   // adaptive vsync
 constexpr std::int32_t kMaxGlideSwapInterval = 4;
+constexpr std::int32_t kDefaultGlideSwapInterval = 1;
 
 // Accepts -1 through 4 exactly. Trailing spaces and non-numeric text are rejected
 // rather than coerced, so a mistyped variable fails visibly instead of silently
@@ -24,7 +30,13 @@ constexpr std::int32_t kMaxGlideSwapInterval = 4;
 bool ResolveGlideSwapIntervalOverride(std::string_view setting,
                                       std::int32_t* interval);
 
-bool TryReadGlideSwapIntervalOverride(std::int32_t* interval);
+// Task 766. Always fills `interval`: the variable's value when it is a valid
+// override, kDefaultGlideSwapInterval when it is absent (`value` null) or
+// malformed. Returns whether the value was an override.
+bool ResolveGlideSwapInterval(const char* value, std::int32_t* interval);
+
+// ResolveGlideSwapInterval applied to REPIU_GLIDE_SWAP_INTERVAL.
+bool ReadGlideSwapInterval(std::int32_t* interval);
 
 // Task 745. The period, in microseconds, at which the backend paces its swaps
 // when the driver refuses the requested interval: `interval` frames of the
@@ -35,6 +47,9 @@ std::uint32_t ResolveGlideSwapPacingPeriodMicroseconds(
 
 struct GlideSwapIntervalPolicySnapshot
 {
+    // Task 766: an interval is requested whenever a GL window exists; false
+    // only when the backend never created one (dummy mode).
+    bool interval_requested = false;
     bool override_requested = false;
     std::int32_t requested_interval = 0;
     bool applied = false;

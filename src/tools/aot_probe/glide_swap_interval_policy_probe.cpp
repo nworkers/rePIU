@@ -33,10 +33,30 @@ bool RunGlideSwapIntervalPolicyProbe()
         !ResolveGlideSwapIntervalOverride("1", nullptr) &&
         untouched == 7;
 
+    // Task 766. The interval actually requested: a valid variable is an
+    // override, while an absent or malformed one falls back to vsync on
+    // without counting as an override.
+    using engine::ResolveGlideSwapInterval;
+    using engine::kDefaultGlideSwapInterval;
+    std::int32_t resolved = 99;
+    bool defaulted = kDefaultGlideSwapInterval == 1 &&
+        !ResolveGlideSwapInterval(nullptr, &resolved) && resolved == 1;
+    resolved = 99;
+    defaulted = defaulted &&
+        !ResolveGlideSwapInterval("x", &resolved) && resolved == 1;
+    resolved = 99;
+    defaulted = defaulted &&
+        !ResolveGlideSwapInterval("", &resolved) && resolved == 1;
+    resolved = 99;
+    defaulted = defaulted &&
+        ResolveGlideSwapInterval("0", &resolved) && resolved == 0;
+    defaulted = defaulted && !ResolveGlideSwapInterval("0", nullptr);
+
     // A default-constructed snapshot must read as "no override requested" so an
     // unset run is distinguishable from one that requested interval zero.
     const GlideSwapIntervalPolicySnapshot inert_snapshot;
     const bool inert =
+        !inert_snapshot.interval_requested &&
         !inert_snapshot.override_requested && !inert_snapshot.applied &&
         !inert_snapshot.effective_valid &&
         inert_snapshot.requested_interval == 0 &&
@@ -65,12 +85,14 @@ bool RunGlideSwapIntervalPolicyProbe()
         ResolveGlideSwapPacingPeriodMicroseconds(0, 60.0) == 0U &&
         ResolveGlideSwapPacingPeriodMicroseconds(1, 59.94) == 16683U;
 
-    const bool all = accepted && rejected && inert && refusal_visible &&
-        pacing_period;
+    const bool all = accepted && rejected && defaulted && inert &&
+        refusal_visible && pacing_period;
     std::cout << "glide_swap_interval_accepted="
               << (accepted ? "true" : "false")
               << "\nglide_swap_interval_rejected="
               << (rejected ? "true" : "false")
+              << "\nglide_swap_interval_default="
+              << (defaulted ? "true" : "false")
               << "\nglide_swap_interval_inert=" << (inert ? "true" : "false")
               << "\nglide_swap_interval_refusal_visible="
               << (refusal_visible ? "true" : "false")

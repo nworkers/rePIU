@@ -4468,6 +4468,26 @@ report carries the last VEH exit site (`last_exit_site=`) that `NoteVehExitSite`
 platform global. `REPIU_AOT_DYNAMIC_REJECT=<guest address>|read` makes the worker reject those dynamic
 images to reproduce the path.
 
+# swap interval 기본값 (Task 766)
+
+GL 창이 만들어지면 엔진은 항상 `SDL_GL_SetSwapInterval`을 한 번 부릅니다. 값은
+`ReadGlideSwapInterval`(`glide_swap_interval_policy`)이 정합니다. `REPIU_GLIDE_SWAP_INTERVAL`이
+유효하면(`-1`~`4`) 그 값이고, 없거나 형식이 틀리면 `kDefaultGlideSwapInterval`(1, vsync 켜짐)입니다.
+런처의 `[Video] swap_interval`은 같은 환경 변수로 게시됩니다. 드라이버나 SDL에 기본값을 맡기지 않는 이유는
+그 기본값이 호스트마다 달라서입니다. SDL의 Wayland backend는 요청이 없으면 상한 없이 그립니다. 드라이버가
+요청을 거부하면 아래 절의 페이싱이 대신합니다. 최종 보고의 `override requested/value/applied/effective`가
+값의 출처와 결과를 보여 줍니다.
+
+# The swap interval default (Task 766)
+
+Once a GL window exists the engine always calls `SDL_GL_SetSwapInterval` once, with the value
+`ReadGlideSwapInterval` (`glide_swap_interval_policy`) resolves: a valid `REPIU_GLIDE_SWAP_INTERVAL`
+(`-1` to `4`), or `kDefaultGlideSwapInterval` (1, vsync on) when it is absent or malformed. The
+launcher's `[Video] swap_interval` is published into the same variable. The default is not left to
+the driver or SDL because it differs by host: SDL's Wayland backend draws uncapped unless asked. A
+refused request falls to the pacing described in the next section, and the final report's
+`override requested/value/applied/effective` line shows where the value came from and what took.
+
 # swap 대기와 타이머 tick, MP3 재생 시계 (Tasks 745–750)
 
 `grBufferSwap` 게이트는 Linux x64에서 present를 호스트 스레드에 게시하고(`PostBufferSwap`) 게스트 스레드가

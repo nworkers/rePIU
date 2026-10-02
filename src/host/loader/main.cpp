@@ -3579,7 +3579,9 @@ void PrintExecutionAttempt(
                         ? swap_policy.gl_renderer : "none",
                     swap_policy.wsl_d3d12_selected ? "true" : "false");
         // Task 745: the refusal's reason and the pacing that stood in for it.
-        if (swap_policy.override_requested)
+        // Task 766: printed whenever an interval was requested, which is now
+        // every windowed run rather than only an override.
+        if (swap_policy.interval_requested)
         {
             logger.info(
                 "Glide swap pacing active/refresh-hz/period-us/paced-swaps/"

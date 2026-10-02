@@ -43,11 +43,24 @@ std::uint32_t ResolveGlideSwapPacingPeriodMicroseconds(
     return static_cast<std::uint32_t>(period + 0.5);
 }
 
-bool TryReadGlideSwapIntervalOverride(std::int32_t* interval)
+bool ResolveGlideSwapInterval(const char* value, std::int32_t* interval)
 {
-    const char* value = std::getenv("REPIU_GLIDE_SWAP_INTERVAL");
-    return value != nullptr &&
-        ResolveGlideSwapIntervalOverride(value, interval);
+    if (interval == nullptr)
+    {
+        return false;
+    }
+    if (value != nullptr && ResolveGlideSwapIntervalOverride(value, interval))
+    {
+        return true;
+    }
+    *interval = kDefaultGlideSwapInterval;
+    return false;
+}
+
+bool ReadGlideSwapInterval(std::int32_t* interval)
+{
+    return ResolveGlideSwapInterval(
+        std::getenv("REPIU_GLIDE_SWAP_INTERVAL"), interval);
 }
 
 }  // namespace repiu::engine

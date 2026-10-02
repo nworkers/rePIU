@@ -222,7 +222,9 @@ void DrawRomSetTable(const std::vector<RomSetEntry>& catalog,
 void DrawOptions(LauncherSettings* settings)
 {
     ImGui::SeparatorText("Options");
-    bool vsync = settings->has_swap_interval && settings->swap_interval != 0;
+    // Task 766: with nothing stored the engine runs with vsync on.
+    bool vsync =
+        !settings->has_swap_interval || settings->swap_interval != 0;
     if (ImGui::Checkbox("Wait for vertical sync", &vsync))
     {
         settings->has_swap_interval = true;

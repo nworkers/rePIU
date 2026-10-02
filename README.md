@@ -250,7 +250,8 @@ build\win32_x86_debug\Debug\repiu.exe
 표시됩니다(`roms\<id>.zip` 없음, 필수 PIU10 엔트리 없음, `roms\<id>\` 없음, CHD 없음,
 CHD가 둘 이상). 어떤 디스크가 왜 안 되는지 목록에서 바로 확인할 수 있습니다.
 
-vsync와 사운드 게인은 런처에서 바꿔 `cfg\repiu.ini`에 저장합니다. **같은 의미의 환경
+vsync와 사운드 게인은 런처에서 바꿔 `cfg\repiu.ini`에 저장합니다. vsync는 기본으로 켜져 있고,
+런처에서 끄거나 `REPIU_GLIDE_SWAP_INTERVAL=0`을 주면 꺼집니다(Task 766). **같은 의미의 환경
 변수가 설정돼 있으면 환경 변수가 이깁니다** — 측정 스크립트와 진단 절차가 계속 우선권을
 갖습니다. 인자를 주고 실행할 때도(`repiu pumpitea`) 같은 `cfg\repiu.ini`를 먼저 읽어
 적용하며, 로그의 `Launcher settings read from …` 줄이 어느 값이 파일에서 왔고 어느 값이 환경
@@ -271,7 +272,8 @@ Quit입니다.
 one in the same process. Every catalog entry is listed, and the ones that cannot run are dimmed
 with the reason — missing `roms\<id>.zip`, missing PIU10 entries, missing `roms\<id>\`, no CHD,
 or more than one CHD — so it is clear why a disc is unavailable. Vertical sync and sound gain are
-edited there and stored in `cfg\repiu.ini`; an environment variable of the same meaning always
+edited there and stored in `cfg\repiu.ini`. Vertical sync is on by default and is turned off in the
+launcher or with `REPIU_GLIDE_SWAP_INTERVAL=0` (Task 766); an environment variable of the same meaning always
 wins, so measurement scripts keep control. A run started with arguments (`repiu pumpitea`) reads
 and applies the same `cfg\repiu.ini` first, and the log's `Launcher settings read from …` line says
 which value came from the file and which from the environment. When the driver refuses the swap
