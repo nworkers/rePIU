@@ -49,6 +49,15 @@ else()
     set(REPIU_EXECUTION_MODEL none)
 endif()
 
+# Task 767: release builds link the C++ runtime statically so the Linux
+# archives run on distributions whose libstdc++ is older than the build host's.
+# Off by default: local builds keep the system runtime.
+option(REPIU_STATIC_RUNTIME
+    "Link libstdc++ and libgcc statically (Linux release archives)" OFF)
+if(REPIU_STATIC_RUNTIME AND UNIX AND NOT EMSCRIPTEN)
+    add_link_options(-static-libstdc++ -static-libgcc)
+endif()
+
 # Task 503d: the AOT/DBT dispatch thunks are hand-written assembly on Linux,
 # because GCC has no __declspec(naked) on x86.
 #

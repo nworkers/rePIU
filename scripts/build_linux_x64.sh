@@ -17,6 +17,7 @@ set -euo pipefail
 configuration="Debug"
 targets=()
 headless=0
+static_runtime=0
 build_directory=""
 
 usage()
@@ -24,6 +25,7 @@ usage()
     cat <<'USAGE'
 usage: build_linux_x64.sh [--config Debug|Release|RelWithDebInfo|MinSizeRel]
                           [--build-dir PATH] [--target NAME]... [--headless]
+                          [--static-runtime]
 Builds into build/linux_x64 unless --build-dir names another directory. With no
 --target, every default target is built. --headless lets SDL configure on a host
 without X11/Wayland development packages; it suits the core and its probes but
@@ -39,6 +41,10 @@ build/linux_x64_release next to build/linux_x64, say -- when you want both.
 Keeping both is worth the disk. Task 549 found a fault handler that worked at
 -O0 and was optimised away at -O2, and it was only visible because a Debug tree
 and a Release tree existed at the same time to compare.
+
+--static-runtime links libstdc++ and libgcc statically (REPIU_STATIC_RUNTIME),
+as the release archives are built (Task 767). It is passed both ways, so a tree
+does not keep the answer of an earlier run.
 USAGE
 }
 
@@ -58,6 +64,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --headless)
             headless=1
+            shift
+            ;;
+        --static-runtime)
+            static_runtime=1
             shift
             ;;
         -h|--help)
@@ -125,10 +135,16 @@ if [[ $headless -ne 0 ]]; then
 else
     sdl_options+=(-DSDL_UNIX_CONSOLE_BUILD=OFF)
 fi
+# Task 767. Passed both ways for the same reason as the console switch.
+runtime_options=(-DREPIU_STATIC_RUNTIME=OFF)
+if [[ $static_runtime -ne 0 ]]; then
+    runtime_options=(-DREPIU_STATIC_RUNTIME=ON)
+fi
 
 cmake -S "$root" -B "$build_dir" \
     -DCMAKE_BUILD_TYPE="$configuration" \
-    "${sdl_options[@]}"
+    "${sdl_options[@]}" \
+    "${runtime_options[@]}"
 
 # The job count is named rather than left to `--parallel` alone, for the reason
 # the i386 script records at length: a bare `--parallel` passes `-j` with no

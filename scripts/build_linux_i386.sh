@@ -16,6 +16,7 @@ set -euo pipefail
 configuration="Debug"
 targets=()
 headless=0
+static_runtime=0
 build_directory=""
 
 usage()
@@ -23,6 +24,7 @@ usage()
     cat <<'USAGE'
 usage: build_linux_i386.sh [--config Debug|Release|RelWithDebInfo|MinSizeRel]
                            [--build-dir PATH] [--target NAME]... [--headless]
+                           [--static-runtime]
 Builds into build/linux_i386 unless --build-dir names another directory. With no
 --target, every default target is built. --headless lets SDL configure on a host
 without X11/Wayland development packages; it suits the core and its probes but
@@ -34,6 +36,10 @@ generator, so a tree holds exactly one CMAKE_BUILD_TYPE: pointing --config at a
 directory configured the other way reconfigures it in place and discards the
 build that was there. Give the second configuration its own directory --
 build/linux_i386_release next to build/linux_i386, say -- when you want both.
+
+--static-runtime links libstdc++ and libgcc statically (REPIU_STATIC_RUNTIME),
+as the release archives are built (Task 767). It is passed both ways, so a tree
+does not keep the answer of an earlier run.
 USAGE
 }
 
@@ -53,6 +59,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --headless)
             headless=1
+            shift
+            ;;
+        --static-runtime)
+            static_runtime=1
             shift
             ;;
         -h|--help)
@@ -182,6 +192,11 @@ if [[ $headless -ne 0 ]]; then
 else
     sdl_options+=(-DSDL_UNIX_CONSOLE_BUILD=OFF)
 fi
+# Task 767. Passed both ways for the same reason as the console switch.
+runtime_options=(-DREPIU_STATIC_RUNTIME=OFF)
+if [[ $static_runtime -ne 0 ]]; then
+    runtime_options=(-DREPIU_STATIC_RUNTIME=ON)
+fi
 
 # SDL finds its optional dependencies with pkg-config, and pkg-config's default
 # search path on an amd64 host names only the 64-bit directory. The 32-bit
@@ -199,6 +214,7 @@ export PKG_CONFIG_PATH="/usr/lib/i386-linux-gnu/pkgconfig${PKG_CONFIG_PATH:+:$PK
 cmake -S "$root" -B "$build_dir" \
     -DCMAKE_BUILD_TYPE="$configuration" \
     "${sdl_options[@]}" \
+    "${runtime_options[@]}" \
     -DCMAKE_C_FLAGS=-m32 \
     -DCMAKE_CXX_FLAGS=-m32 \
     -DCMAKE_ASM_FLAGS=-m32 \

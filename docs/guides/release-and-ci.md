@@ -1,6 +1,7 @@
 # 릴리스 절차와 CI / Release procedure and CI
 
-설계: [20260806-434](../design/20260806-434-github-actions-release-ci.md) ·
+설계: [20260806-434](../design/20260806-434-github-actions-release-ci.md),
+[20261003-767](../design/20261003-767-linux-release-artifacts.md) ·
 구조 요약: [ARCHITECTURE.md](../../ARCHITECTURE.md)
 
 이 문서는 **반복 수행하는 절차**만 담습니다. 특정 실행의 증거는 작업 로그에 있습니다.
@@ -18,29 +19,55 @@ git push origin main
 git push origin v0.0.136
 ```
 
-워크플로가 하는 일은 순서대로 다음과 같습니다.
+워크플로가 하는 일은 다음과 같습니다. Task 767부터 Win32와 Linux(i386, x64)가 나란히 빌드되고,
+모두 성공한 태그 실행에서만 `publish` job이 Release를 만듭니다.
 
 ```mermaid
 flowchart TD
     A["태그 push"] --> B{"VERSION == 태그?"}
     B -->|불일치| X["실패 — 빌드 전에 멈춤"]
     B -->|일치| C["Win32 Release 빌드"]
+    B -->|일치| L["Linux i386 · x64 Release 빌드<br/>(ubuntu-22.04, C++ 런타임 정적 링크)"]
     C --> D["probe 2종"]
     D --> E["OpenWatcom 설치 · 819샘플 빌드"]
     E --> F{"baseline 비교"}
     F -->|회귀 있음| G["job 실패<br/>리포트는 업로드됨"]
-    F -->|회귀 없음| H["아티팩트 2종 → Release 첨부"]
+    F -->|회귀 없음| W["win32 zip · 샘플 리포트"]
+    L --> M{"SDL 드라이버 · glibc 2.35 · probe 2종"}
+    M -->|실패| G2["job 실패"]
+    M -->|통과| T["linux tar.gz 2종"]
+    W --> H["publish: 아티팩트 4종 → Release 첨부"]
+    T --> H
     style X fill:#c0392b,color:#fff
     style G fill:#c0392b,color:#fff
+    style G2 fill:#c0392b,color:#fff
     style H fill:#1e8449,color:#fff
 ```
 
-**아티팩트 두 개**가 Release에 붙습니다.
+**아티팩트 네 개**가 Release에 붙습니다.
 
 | 파일 | 내용 |
 |---|---|
 | `rePIU-v<version>-win32.zip` | 실행 파일 6종(SDL3 정적 링크, DLL 불필요), `VERSION`, `README.md`, `THIRD_PARTY_NOTICES.md` |
+| `rePIU-v<version>-linux-i386.tar.gz` | `repiu`, `repiu_launcher`, probe 3종, `VERSION`, `README.md`, `THIRD_PARTY_NOTICES.md`, `LICENSE`, `CREDITS.md` |
+| `rePIU-v<version>-linux-x64.tar.gz` | 위와 같은 구성의 x86-64 빌드 |
 | `openwatcom-samples-v<version>.zip` | `index.html`, `summary.json`, `regressions.json` |
+
+### 1.1 Linux 아카이브 실행 조건
+
+* glibc 2.35(Ubuntu 22.04) 이상. `libstdc++`는 정적 링크라 필요 없습니다.
+* 실행 시 필요한 라이브러리: `libGL`, 그리고 SDL이 실행 중에 여는 X11 또는 Wayland, 사운드(PulseAudio/PipeWire 또는 ALSA)
+  라이브러리. 데스크톱 배포판에는 보통 이미 있습니다.
+* Wayland(GNOME)에서 제목 표시줄을 그리려면 libdecor 플러그인이 필요합니다(`libdecor-0-plugin-1-gtk` 또는 `-cairo`).
+* **i386 아카이브는 위 라이브러리의 32비트판이 필요합니다.** Ubuntu/Debian 예:
+
+```bash
+sudo dpkg --add-architecture i386 && sudo apt update
+sudo apt install -y libc6:i386 libgl1:i386 libx11-6:i386 libxext6:i386 libxcursor1:i386 \
+    libxrandr2:i386 libxi6:i386 libxfixes3:i386 libxkbcommon0:i386 libwayland-client0:i386 \
+    libwayland-cursor0:i386 libwayland-egl1:i386 libegl1:i386 libdecor-0-0:i386 \
+    libdecor-0-plugin-1-cairo:i386 libpulse0:i386 libasound2:i386
+```
 
 ## 2. 로컬에서 같은 패키지 만들기
 
@@ -55,6 +82,14 @@ scripts\package_release.ps1 -Configuration Release
 
 샘플 스위트를 돌리지 않고 바이너리만 묶으려면 `-AllowMissingSampleReport`를 주십시오.
 그 경우 리포트 zip은 만들어지지 않습니다.
+
+Linux 아카이브는 아래처럼 만듭니다. 로컬 배포판의 glibc가 새로우면 그 버전을 요구하는
+바이너리가 나오므로, 배포용은 CI 산출물을 쓰십시오.
+
+```bash
+scripts/build_linux_x64.sh --config Release --static-runtime --build-dir build/linux_x64_release
+scripts/package_release_linux.sh x64      # build/package/rePIU-v<version>-linux-x64.tar.gz
+```
 
 ## 3. CI가 검증하지 **않는** 것
 
@@ -136,11 +171,15 @@ scripts\test_openwatcom_samples.ps1 -Configuration Release -UpdateBaseline
 이미지를 올릴 때는 **의도적으로** 두 워크플로를 함께 고치고, 그 실행의 시간과 결과를
 작업 로그에 남기십시오.
 
+Linux job은 `ubuntu-22.04`로 고정돼 있습니다. 러너의 glibc가 Linux 아카이브가 요구하는 최저 버전을 정하므로,
+이미지를 올리면 실행 가능한 배포판의 하한도 함께 올라갑니다(Task 767).
+
 ---
 
 # Release procedure and CI
 
-Design: [20260806-434](../design/20260806-434-github-actions-release-ci.md) ·
+Design: [20260806-434](../design/20260806-434-github-actions-release-ci.md),
+[20261003-767](../design/20261003-767-linux-release-artifacts.md) ·
 Structure: [ARCHITECTURE.md](../../ARCHITECTURE.md)
 
 This guide holds **repeatable procedure only**; evidence from any particular run lives in the
@@ -149,10 +188,21 @@ work logs.
 ## 1. Releasing
 
 Follow AGENTS.md's merge and tag rules, then push the tag; `release.yml` does the rest. It
-gates the tag against `VERSION`, builds Win32 Release, runs the two probes, installs OpenWatcom
-and builds the 819 samples, compares against the baseline, and attaches two archives:
-`rePIU-v<version>-win32.zip` with six statically linked executables and the notices, and
-`openwatcom-samples-v<version>.zip` with the report.
+gates the tag against `VERSION`, then builds in parallel. The Win32 job builds Release, runs the
+two probes, installs OpenWatcom and builds the 819 samples, and compares against the baseline.
+Since Task 767 the Linux jobs build i386 and x64 Release on `ubuntu-22.04` with the C++ runtime
+linked statically, fail if SDL was configured without X11, Wayland, libdecor, PulseAudio or ALSA
+or if a binary needs a glibc newer than 2.35, and run two probes. Only a tag run where every job
+is green reaches the `publish` job, which attaches four archives: `rePIU-v<version>-win32.zip`
+with six statically linked executables and the notices, `rePIU-v<version>-linux-i386.tar.gz` and
+`rePIU-v<version>-linux-x64.tar.gz` with `repiu`, `repiu_launcher`, three probes and the notices,
+and `openwatcom-samples-v<version>.zip` with the report.
+
+A Linux archive needs glibc 2.35 (Ubuntu 22.04) or newer, `libGL`, and the X11 or Wayland and
+sound libraries SDL opens at run time, which a desktop distribution normally has; a title bar
+under Wayland (GNOME) needs a libdecor plugin (`libdecor-0-plugin-1-gtk` or `-cairo`). **The i386
+archive needs the 32-bit versions of those libraries**; the Korean section lists the Ubuntu/Debian
+packages.
 
 ```powershell
 git tag -a v0.0.136 -m "..."
@@ -173,6 +223,14 @@ scripts\package_release.ps1 -Configuration Release
 
 Pass `-AllowMissingSampleReport` to package binaries without having run the suite; the report
 archive is then not produced.
+
+A Linux archive is built as below. A distribution with a newer glibc produces binaries that need
+that version, so distribute the CI output instead.
+
+```bash
+scripts/build_linux_x64.sh --config Release --static-runtime --build-dir build/linux_x64_release
+scripts/package_release_linux.sh x64      # build/package/rePIU-v<version>-linux-x64.tar.gz
+```
 
 ## 3. What CI does **not** verify
 
@@ -242,3 +300,6 @@ Pinned to `windows-2022`, because `build_win32_x86.ps1` chooses its generator fr
 installed Visual Studio major version and a floating image would silently change the toolchain
 behind a release artifact. Move it **deliberately**, in both workflows at once, and record that
 run's timing and outcome in a work log.
+
+The Linux jobs are pinned to `ubuntu-22.04`: the runner's glibc sets the lowest version the Linux
+archives need, so moving the image raises the oldest distribution they run on (Task 767).

@@ -3500,7 +3500,7 @@ CI는 GitHub Actions 호스티드 러너에서만 돌고, 워크플로는 둘입
 | 워크플로 | 트리거 | 하는 일 |
 |---|---|---|
 | `.github/workflows/ci.yml` | `main` push, pull request | Win32 **Debug** 빌드 + probe 2종 |
-| `.github/workflows/release.yml` | `v*` 태그, 수동 실행 | 버전 게이트 → Win32 **Release** 빌드 → probe 2종 → OpenWatcom 819샘플 → 아티팩트 2종 → Release 첨부 |
+| `.github/workflows/release.yml` | `v*` 태그, 수동 실행 | 버전 게이트 → Win32 **Release** 빌드 → probe 2종 → OpenWatcom 819샘플 → zip·리포트, 나란히 Linux i386·x64 **Release** 빌드 → SDL 드라이버·glibc 확인 → probe 2종 → tar.gz (Task 767) → 모두 성공하면 `publish` job이 아티팩트 4종을 Release에 첨부 |
 
 **검증 범위의 경계가 이 설계의 핵심입니다.** `roms/`와 `MASTER/`는 저작물이라 CI에
 없으므로 **pumpit1·pumpit3 실행 검증과 모든 성능 수치는 로컬 전용**입니다. CI가 볼 수
@@ -3527,6 +3527,13 @@ CI는 GitHub Actions 호스티드 러너에서만 돌고, 워크플로는 둘입
 `rePIU-v<version>-win32.zip`(정적 링크된 실행 파일과 고지 문서)과
 `openwatcom-samples-v<version>.zip`(샘플 리포트). **회귀로 job이 실패해도 리포트는
 업로드**하며, 반대로 **리포트 없이는 릴리스를 발행하지 않습니다.**
+
+Linux 아카이브 두 개(`rePIU-v<version>-linux-i386.tar.gz`, `…-linux-x64.tar.gz`)는
+`scripts/package_release_linux.sh`가 만듭니다. `ubuntu-22.04`에서 `REPIU_STATIC_RUNTIME`
+(`-static-libstdc++ -static-libgcc`)으로 빌드하므로, 동적 의존성은 `libGL`과 glibc 2.35 이상뿐입니다.
+SDL은 X11, Wayland, libdecor, 사운드 라이브러리를 실행 중에 엽니다. 이 드라이버들이 빠진 채 configure되면
+job이 실패합니다. 게시는 `publish` job 한 곳에서만 하며, 플랫폼 하나라도 실패하면 Release를 만들지 않습니다
+([Task 767](docs/design/20261003-767-linux-release-artifacts.md)).
 
 CI runs only on GitHub-hosted runners, through two workflows
 ([Task 434](docs/design/20260806-434-github-actions-release-ci.md)): `ci.yml` builds Win32
@@ -3555,6 +3562,14 @@ on either mismatch. The runner image is **pinned** to `windows-2022`, since
 statically linked executables and the notices, and `openwatcom-samples-v<version>.zip` with the
 sample report. **The report uploads even when regressions fail the job**, and conversely **no
 release is published without it.**
+
+The two Linux archives (`rePIU-v<version>-linux-i386.tar.gz`, `…-linux-x64.tar.gz`) come from
+`scripts/package_release_linux.sh`. They are built on `ubuntu-22.04` with `REPIU_STATIC_RUNTIME`
+(`-static-libstdc++ -static-libgcc`), so their only dynamic dependencies are `libGL` and glibc
+2.35 or newer; SDL opens X11, Wayland, libdecor and the sound libraries at run time, and the job
+fails if it was configured without those drivers. Publishing happens once, in the `publish` job,
+and no release is created unless every platform succeeded
+([Task 767](docs/design/20261003-767-linux-release-artifacts.md)).
 ## Dynamic DOS 서비스 전달 / Dynamic DOS service routing
 
 Win32 `dynamic` backend는 `enable_dos_hle=false`, `enable_traced_dos_hle=true`로 실행되므로
