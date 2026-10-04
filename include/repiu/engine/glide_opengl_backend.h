@@ -8,6 +8,7 @@
 #include "repiu/engine/glide_draw_batch.h"
 #include "repiu/engine/glide_gate_timing.h"
 #include "repiu/engine/glide_gl_error_policy.h"
+#include "repiu/engine/glide_letterbox.h"
 #include "repiu/engine/glide_ordinal_timing.h"
 #include "repiu/engine/glide_opengl_shader.h"
 #include "repiu/engine/glide_setter_phase_timing.h"
@@ -408,6 +409,11 @@ private:
                         float inverse_height);
     bool ApplyWindowScale(std::uint32_t scale);
     void ApplyDrawableViewport();
+    // Task 769: borderless fullscreen at the desktop resolution, toggled by
+    // Alt+Enter or a double click; and the black bars around the
+    // aspect-preserving content rect, cleared before every present.
+    void ToggleFullscreen();
+    void ClearLetterboxBars();
     std::string BuildWindowTitle(double frames_per_second) const;
     void ResetFrameRateMeasurement();
     void RecordPresentedFrame();
@@ -502,6 +508,11 @@ private:
     std::uint32_t logical_height_ = 0;
     std::uint32_t window_scale_ = 2U;
     float point_size_ = 1.0F;
+    // Task 769: where the picture sits in the drawable, recomputed by
+    // ApplyDrawableViewport. Host thread only.
+    GlideLetterboxRect content_rect_{};
+    std::uint32_t drawable_width_ = 0U;
+    std::uint32_t drawable_height_ = 0U;
     runtime::ExecutionBackend execution_backend_ =
         runtime::ExecutionBackend::kLegacy;
     std::chrono::steady_clock::time_point frame_rate_period_start_;
@@ -560,6 +571,9 @@ private:
     // Task 761: the in-game OSD, created with the window and destroyed with
     // it. Null in dummy mode. Host thread only.
     std::unique_ptr<class GlideOsd> osd_;
+    // Task 768: the presentation-only post-processing pass, created with the
+    // window and destroyed with it. Null in dummy mode. Host thread only.
+    std::unique_ptr<class GlidePostProcess> post_process_;
     // Task 761: see LfbHighPrecisionEnabled above.
     std::atomic<bool> lfb_high_precision_{true};
     // Task 745: the engine's own swap pacing when the driver refused the

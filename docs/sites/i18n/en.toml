@@ -43,6 +43,29 @@ body = [
   "Only when that code reaches a DOS or DPMI call, a privileged instruction or a hardware port does the HLE layer step in, answering from a virtual DOS file system, a memory arena with selectors, and interrupt and port I/O services, then hand control back to the original code.",
 ]
 
+[screenshots]
+title = "Screenshots"
+lead = "Screens drawn by the original executables under rePIU's Win32 x86 Release build (640x480). Select an image to see it full size."
+
+[screenshots.captions]
+pumpit1 = "The 1st Dance Floor — title"
+pumpit2a = "The 2nd Dance Floor — title"
+pumpit3a = "The O.B.G: The 3rd Dance Floor — title"
+pumpito = "The O.B.G: The Season Evolution — title"
+pumpitc = "The Collection — title"
+pumpitpc = "The Perfect Collection — title"
+pumpitpr = "The Premiere — title"
+pumpitpru = "The Premiere (USA) — demo play"
+pumpitea = "Extra — title"
+pumpitpx = "The PREX — title"
+pumpit8 = "The Rebirth: The 8th Dance Floor — title"
+pumpitp2 = "The Premiere 2 — title"
+pumpipx2 = "The PREX 2 — title"
+pumpipx2p = "EXTRA + Plus — title"
+pumpitp3 = "The Premiere 3 — title"
+pumpitp3_demo = "The Premiere 3 — demo play"
+pumpipx3 = "The PREX 3 — title"
+
 [targets]
 title = "Supported ROM sets"
 lead = "The MAME-format PIU profiles in the current built-in catalog. Each needs its matching ROM ZIP and CHD, legally owned by the user. Per-title compatibility is still under development."

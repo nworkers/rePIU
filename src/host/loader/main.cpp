@@ -5023,9 +5023,11 @@ void PublishLauncherSettings(
         [](const char* name, const std::string& value) {
             repiu::platform::PublishEnvironmentSetting(name, value.c_str());
         });
-    logger->info("Launcher settings published swap-interval/volume: {}/{}",
+    logger->info("Launcher settings published swap-interval/volume/post-shader: "
+                 "{}/{}/{}",
                  applied.swap_interval_published,
-                 applied.ymz_volume_published);
+                 applied.ymz_volume_published,
+                 applied.post_shader_published);
 }
 
 // Task 500 revision. The launcher has to load a GPU driver to draw anything,
@@ -5127,7 +5129,8 @@ int main(int argc, char** argv)
         const repiu::launcher::LauncherEnvironmentOverrides caller_overrides =
             repiu::launcher::ResolveLauncherEnvironmentOverrides(
                 std::getenv(repiu::launcher::kLauncherSwapIntervalVariable),
-                std::getenv(repiu::launcher::kLauncherYmzVolumeVariable));
+                std::getenv(repiu::launcher::kLauncherYmzVolumeVariable),
+                std::getenv(repiu::launcher::kLauncherPostShaderVariable));
         const char* const executable_path =
             argc >= 1 && argv[0] != nullptr ? argv[0] : "repiu.exe";
         bool launcher_available = true;
@@ -5201,7 +5204,8 @@ int main(int argc, char** argv)
             const repiu::launcher::LauncherEnvironmentOverrides caller_overrides =
                 repiu::launcher::ResolveLauncherEnvironmentOverrides(
                     std::getenv(repiu::launcher::kLauncherSwapIntervalVariable),
-                    std::getenv(repiu::launcher::kLauncherYmzVolumeVariable));
+                    std::getenv(repiu::launcher::kLauncherYmzVolumeVariable),
+                    std::getenv(repiu::launcher::kLauncherPostShaderVariable));
             logger->info(
                 "Launcher settings read from {} for an argument run "
                 "(environment wins: swap-interval/volume {}/{})",

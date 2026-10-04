@@ -18,6 +18,7 @@ constexpr const char* kAudioSection = "Audio";
 constexpr const char* kLauncherSection = "Launcher";
 constexpr const char* kSwapIntervalKey = "swap_interval";
 constexpr const char* kYmzVolumeKey = "ymz_volume";
+constexpr const char* kPostShaderKey = "post_shader";
 constexpr const char* kLastRomSetKey = "last_rom_set";
 
 bool ParseInt32(const std::string& text, std::int32_t* value)
@@ -95,6 +96,16 @@ LauncherSettingsLoad LoadLauncherSettings(
         }
     }
     if (const std::string* value =
+            document.FindLast(kVideoSection, kPostShaderKey))
+    {
+        // An empty value is the same as an absent key: nothing to publish.
+        if (!value->empty())
+        {
+            load.settings.has_post_shader = true;
+            load.settings.post_shader = *value;
+        }
+    }
+    if (const std::string* value =
             document.FindLast(kAudioSection, kYmzVolumeKey))
     {
         float parsed = 0.0F;
@@ -136,6 +147,10 @@ bool SaveLauncherSettings(const std::filesystem::path& config_directory,
     {
         stream << kSwapIntervalKey << " = " << settings.swap_interval << "\n";
     }
+    if (settings.has_post_shader && !settings.post_shader.empty())
+    {
+        stream << kPostShaderKey << " = " << settings.post_shader << "\n";
+    }
     stream << "\n[" << kAudioSection << "]\n";
     if (settings.has_ymz_volume)
     {
@@ -168,13 +183,15 @@ std::string BuildLauncherChildCommandLine(const std::string& executable_path,
 }
 
 LauncherEnvironmentOverrides ResolveLauncherEnvironmentOverrides(
-    const char* swap_interval_value, const char* ymz_volume_value)
+    const char* swap_interval_value, const char* ymz_volume_value,
+    const char* post_shader_value)
 {
     LauncherEnvironmentOverrides overrides;
     // An empty value still counts as set: the caller chose to define it, and
     // the consumers decide what an empty value means.
     overrides.swap_interval = swap_interval_value != nullptr;
     overrides.ymz_volume = ymz_volume_value != nullptr;
+    overrides.post_shader = post_shader_value != nullptr;
     return overrides;
 }
 
@@ -201,6 +218,12 @@ LauncherSettingsApplication ApplyLauncherSettings(
         volume << settings.ymz_volume;
         publish(kLauncherYmzVolumeVariable, volume.str());
         application.ymz_volume_published = true;
+    }
+    if (settings.has_post_shader && !settings.post_shader.empty() &&
+        !overrides.post_shader)
+    {
+        publish(kLauncherPostShaderVariable, settings.post_shader);
+        application.post_shader_published = true;
     }
     return application;
 }

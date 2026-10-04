@@ -1,5 +1,7 @@
 #include "repiu/launcher/launcher_ui.h"
 
+#include "repiu/engine/post_shader_catalog.h"
+
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdl3.h"
@@ -10,7 +12,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 namespace repiu::launcher
 {
@@ -109,6 +113,8 @@ bool SettingsDiffer(const LauncherSettings& left, const LauncherSettings& right)
 {
     if (left.has_swap_interval != right.has_swap_interval ||
         left.has_ymz_volume != right.has_ymz_volume ||
+        left.has_post_shader != right.has_post_shader ||
+        left.post_shader != right.post_shader ||
         left.last_rom_set != right.last_rom_set)
     {
         return true;
@@ -219,7 +225,8 @@ void DrawRomSetTable(const std::vector<RomSetEntry>& catalog,
     ImGui::EndTable();
 }
 
-void DrawOptions(LauncherSettings* settings)
+void DrawOptions(LauncherSettings* settings,
+                 const std::vector<engine::PostShaderEntry>& shaders)
 {
     ImGui::SeparatorText("Options");
     // Task 766: with nothing stored the engine runs with vsync on.
@@ -237,6 +244,45 @@ void DrawOptions(LauncherSettings* settings)
         ImGui::TextUnformatted(
             "Off uncaps the frame rate. Performance measurements are taken "
             "with it off.");
+        ImGui::EndTooltip();
+    }
+
+    // Task 768: the screen shader the game window starts with. A stored id the
+    // list no longer has stays shown as it is; the engine runs it as `none`.
+    const std::string current = settings->has_post_shader
+        ? settings->post_shader
+        : std::string(engine::kPostShaderNoneId);
+    if (ImGui::BeginCombo("Screen shader", current.c_str()))
+    {
+        std::string chosen;
+        if (ImGui::Selectable(engine::kPostShaderNoneId,
+                              current == engine::kPostShaderNoneId))
+        {
+            chosen = engine::kPostShaderNoneId;
+        }
+        for (const engine::PostShaderEntry& entry : shaders)
+        {
+            const std::string label =
+                entry.builtin ? entry.id + "  (built-in)" : entry.id;
+            if (ImGui::Selectable(label.c_str(), current == entry.id))
+            {
+                chosen = entry.id;
+            }
+        }
+        ImGui::EndCombo();
+        if (!chosen.empty())
+        {
+            settings->has_post_shader = true;
+            settings->post_shader = chosen;
+        }
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::TextUnformatted(
+            "Applied to the finished frame only. Add your own .glsl files to "
+            "the shaders folder; Tab in game switches and tunes them.");
         ImGui::EndTooltip();
     }
 
@@ -267,6 +313,14 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
         result.message = message;
         return result;
     }
+
+    // Task 768: listed once per launcher visit, the way the game window lists
+    // them when it opens.
+    const char* const base_path = SDL_GetBasePath();
+    const std::vector<engine::PostShaderEntry> shaders =
+        engine::ListPostShaders(engine::ResolvePostShaderDirectory(
+            base_path != nullptr ? std::filesystem::path(base_path)
+                                 : std::filesystem::path()));
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -326,7 +380,7 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
             DrawRomSetTable(catalog, &selection, &start_requested,
                             &focus_pending);
             focus_pending = false;
-            DrawOptions(&result.settings);
+            DrawOptions(&result.settings, shaders);
             ImGui::Separator();
 
             const bool has_selection = selection < catalog.size() &&

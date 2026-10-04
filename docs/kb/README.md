@@ -46,6 +46,7 @@ flowchart TD
 * [Glide primitive와 면 culling](glide-primitives-and-culling.md)
 * [YMZ280B PCM/ADPCM 디코더](ymz280b-pcm-adpcm-decoder.md)
 * [CAT702 PIU 직렬 보안 장치](cat702-piu-security-device.md)
+* [libretro GLSL 후처리 shader 형식](libretro-glsl-post-shaders.md)
 
 # rePIU Technical Knowledge Base Index
 
@@ -73,3 +74,4 @@ include source links.
 * [Glide primitives and face culling](glide-primitives-and-culling.md)
 * [YMZ280B PCM/ADPCM decoder](ymz280b-pcm-adpcm-decoder.md)
 * [CAT702 PIU serial security device](cat702-piu-security-device.md)
+* [The libretro GLSL post-processing shader format](libretro-glsl-post-shaders.md)

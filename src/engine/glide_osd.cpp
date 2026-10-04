@@ -1,10 +1,14 @@
 #include "repiu/engine/glide_osd.h"
 
+#include "repiu/engine/glide_post_process.h"
+
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdl3.h"
 
 #include <SDL3/SDL.h>
+
+#include <string>
 
 namespace repiu::engine
 {
@@ -82,6 +86,11 @@ void GlideOsd::Shutdown()
     visible_ = false;
 }
 
+bool GlideOsd::WantsMouse() const
+{
+    return initialized_ && visible_ && ImGui::GetIO().WantCaptureMouse;
+}
+
 void GlideOsd::ProcessEvent(const void* sdl_event)
 {
     if (!initialized_ || sdl_event == nullptr)
@@ -91,7 +100,68 @@ void GlideOsd::ProcessEvent(const void* sdl_event)
     ImGui_ImplSDL3_ProcessEvent(static_cast<const SDL_Event*>(sdl_event));
 }
 
-void GlideOsd::Render(std::atomic<bool>* lfb_high_precision)
+namespace
+{
+
+// Task 768: the shader list, Reload, and the active shader's parameters.
+void DrawPostProcessMenu(GlidePostProcess* post_process)
+{
+    ImGui::SeparatorText("Screen shader");
+    const std::string current = post_process->active_id();
+    std::string chosen;
+    if (ImGui::BeginCombo("Shader", current.c_str()))
+    {
+        if (ImGui::Selectable(kPostShaderNoneId, current == kPostShaderNoneId))
+        {
+            chosen = kPostShaderNoneId;
+        }
+        for (const PostShaderEntry& entry : post_process->catalog())
+        {
+            const std::string label =
+                entry.builtin ? entry.id + "  (built-in)" : entry.id;
+            if (ImGui::Selectable(label.c_str(), current == entry.id))
+            {
+                chosen = entry.id;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    // Compiled after the combo closes so the menu never draws half a switch.
+    if (!chosen.empty() && chosen != current)
+    {
+        post_process->Select(chosen);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload"))
+    {
+        post_process->Reload();
+    }
+    if (!post_process->last_error().empty())
+    {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0F);
+        ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.35F, 1.0F), "%s",
+                           post_process->last_error().c_str());
+        ImGui::PopTextWrapPos();
+    }
+    for (PostShaderParameter& parameter : post_process->parameters())
+    {
+        const std::string& label = parameter.description.empty()
+            ? parameter.name
+            : parameter.description;
+        ImGui::PushID(parameter.name.c_str());
+        ImGui::SliderFloat(label.c_str(), &parameter.value, parameter.minimum,
+                           parameter.maximum, "%.2f");
+        ImGui::PopID();
+    }
+    ImGui::TextDisabled("Files: %s/*.glsl. Changes last for this run;",
+                        post_process->shader_directory().c_str());
+    ImGui::TextDisabled("the launcher stores the default.");
+}
+
+}  // namespace
+
+void GlideOsd::Render(std::atomic<bool>* lfb_high_precision,
+                      GlidePostProcess* post_process)
 {
     if (!initialized_ || !visible_)
     {
@@ -115,6 +185,11 @@ void GlideOsd::Render(std::atomic<bool>* lfb_high_precision)
                                           std::memory_order_relaxed);
             }
         }
+        if (post_process != nullptr)
+        {
+            DrawPostProcessMenu(post_process);
+        }
+        ImGui::Separator();
         ImGui::TextDisabled("Tab closes this overlay");
     }
     ImGui::End();

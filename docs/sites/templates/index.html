@@ -14,6 +14,21 @@
     <p class="notice">{{ t.hero.warning }}</p>
   </section>
 
+  {% if screenshots %}
+  <section class="box" aria-labelledby="shots-title">
+    <h2 id="shots-title">{{ t.screenshots.title }}</h2>
+    <p>{{ t.screenshots.lead }}</p>
+    <div class="shots">
+      {% for shot in screenshots %}
+      <figure class="shot">
+        <a href="{{ root }}screenshots/{{ shot.file }}"><img src="{{ root }}screenshots/{{ shot.file }}" alt="{{ t.screenshots.captions[shot.key] }}" width="640" height="480" loading="lazy"></a>
+        <figcaption>{{ t.screenshots.captions[shot.key] }}</figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
   <section class="box" aria-labelledby="about-title">
     <h2 id="about-title">{{ t.about.title }}</h2>
     <ul>

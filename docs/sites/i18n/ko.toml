@@ -43,6 +43,29 @@ body = [
   "코드가 DOS·DPMI 호출이나 특권 명령, 하드웨어 port에 닿는 순간에만 HLE 계층이 가로채 가상 DOS 파일 시스템, 메모리 arena와 selector, interrupt·port I/O 서비스로 응답한 뒤 원본 코드로 돌려보냅니다.",
 ]
 
+[screenshots]
+title = "스크린샷"
+lead = "rePIU의 Win32 x86 Release 빌드에서 원본 실행 파일이 그린 화면입니다(640x480). 이미지를 누르면 원본 크기로 봅니다."
+
+[screenshots.captions]
+pumpit1 = "The 1st Dance Floor — 타이틀"
+pumpit2a = "The 2nd Dance Floor — 타이틀"
+pumpit3a = "The O.B.G: The 3rd Dance Floor — 타이틀"
+pumpito = "The O.B.G: The Season Evolution — 타이틀"
+pumpitc = "The Collection — 타이틀"
+pumpitpc = "The Perfect Collection — 타이틀"
+pumpitpr = "The Premiere — 타이틀"
+pumpitpru = "The Premiere (USA) — 데모 플레이"
+pumpitea = "Extra — 타이틀"
+pumpitpx = "The PREX — 타이틀"
+pumpit8 = "The Rebirth: The 8th Dance Floor — 타이틀"
+pumpitp2 = "The Premiere 2 — 타이틀"
+pumpipx2 = "The PREX 2 — 타이틀"
+pumpipx2p = "EXTRA + Plus — 타이틀"
+pumpitp3 = "The Premiere 3 — 타이틀"
+pumpitp3_demo = "The Premiere 3 — 데모 플레이"
+pumpipx3 = "The PREX 3 — 타이틀"
+
 [targets]
 title = "지원 ROM 세트"
 lead = "현재 내장 카탈로그의 MAME 형식 PIU profile입니다. 각 profile은 사용자가 합법적으로 보유한 해당 ROM ZIP과 CHD가 있어야 실행됩니다. 타이틀별 호환성은 계속 개발 중입니다."

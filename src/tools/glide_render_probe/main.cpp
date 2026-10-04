@@ -2,14 +2,21 @@
 #include "repiu/hle/glide_lfb.h"
 #include "repiu/hle/glide_vertex.h"
 #if defined(_WIN32)
+#include "repiu/engine/glide_letterbox.h"
 #include "repiu/engine/glide_opengl_backend.h"
+#include "repiu/engine/glide_post_process.h"
+
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include <vector>
 
 namespace
@@ -30,6 +37,251 @@ float TableWorldDistance(std::uint32_t index)
     return std::ldexp(1.0F, 3 + static_cast<int>(index >> 2U)) /
         static_cast<float>(8U - (index & 3U));
 }
+
+#if defined(_WIN32)
+// Task 768: the post-processing pass in a real context. A white frame goes
+// through the scanline shader at full strength and must come back with dark
+// and bright rows; the crt shader must draw and leave the curved-off corner
+// black; a missing shader must leave no pass; and the Glide state the pass
+// touches must be restored.
+bool RunOpenGlPostShaderProbe()
+{
+    constexpr std::uint32_t kWidth = 64U;
+    constexpr std::uint32_t kHeight = 48U;
+    std::vector<std::uint8_t> white(kWidth * kHeight * 4U, 255U);
+    repiu::engine::GlideOpenGlBackend backend;
+    backend.BindHostThread();
+    if (!Check(backend.OpenWindowed(kWidth, kHeight, 2U, 1U, 1U),
+               "OpenGL backend did not open"))
+    {
+        return false;
+    }
+    int drawable_width = 0;
+    int drawable_height = 0;
+    SDL_Window* const window = SDL_GL_GetCurrentWindow();
+    if (!Check(window != nullptr &&
+                   SDL_GetWindowSizeInPixels(window, &drawable_width,
+                                             &drawable_height) &&
+                   drawable_width > 0 && drawable_height > 0,
+               "drawable size unavailable"))
+    {
+        return false;
+    }
+    const auto width = static_cast<std::uint32_t>(drawable_width);
+    const auto height = static_cast<std::uint32_t>(drawable_height);
+    const auto read_red = [width, height]() {
+        std::vector<std::uint8_t> pixels(width * height * 4U);
+        glReadBuffer(GL_BACK);
+        glReadPixels(0, 0, static_cast<GLsizei>(width),
+                     static_cast<GLsizei>(height), GL_RGBA, GL_UNSIGNED_BYTE,
+                     pixels.data());
+        std::vector<std::uint8_t> red(width * height);
+        for (std::size_t index = 0; index < red.size(); ++index)
+        {
+            red[index] = pixels[index * 4U];
+        }
+        return red;
+    };
+
+    repiu::engine::GlidePostProcess post;
+    std::string message;
+    if (!Check(post.Initialize(&message), "post-process initialize failed") ||
+        !Check(!post.Select("no_such_shader.glsl") && !post.active() &&
+                   !post.last_error().empty() &&
+                   post.active_id() == "none",
+               "a missing shader was not refused") ||
+        !Check(post.Select("scanline") && post.active() &&
+                   post.parameters().size() == 2U,
+               "scanline shader did not compile"))
+    {
+        if (!post.last_error().empty())
+        {
+            std::cerr << post.last_error() << '\n';
+        }
+        return false;
+    }
+    for (repiu::engine::PostShaderParameter& parameter : post.parameters())
+    {
+        // Full-strength gaps and no brightness boost: gap rows go black.
+        parameter.value = 1.0F;
+    }
+
+    if (!Check(backend.PresentLfbSurface(white.data(), kWidth, kHeight, false,
+                                         false),
+               "white surface presentation failed"))
+    {
+        return false;
+    }
+    glEnable(GL_BLEND);
+    GLint viewport_before[4]{};
+    glGetIntegerv(GL_VIEWPORT, viewport_before);
+    GLint program_before = 0;
+    glGetIntegerv(0x8B8D, &program_before);
+    post.Apply(0U, 0U, width, height, kWidth, kHeight);
+    GLint viewport_after[4]{};
+    glGetIntegerv(GL_VIEWPORT, viewport_after);
+    GLint program_after = 0;
+    glGetIntegerv(0x8B8D, &program_after);
+    const bool state_restored = glIsEnabled(GL_BLEND) == GL_TRUE &&
+        std::memcmp(viewport_before, viewport_after,
+                    sizeof(viewport_before)) == 0 &&
+        program_before == program_after && glGetError() == GL_NO_ERROR;
+    glDisable(GL_BLEND);
+
+    const std::vector<std::uint8_t> scanline = read_red();
+    std::size_t bright_rows = 0;
+    std::size_t dark_rows = 0;
+    for (std::uint32_t y = 0; y < height; ++y)
+    {
+        const std::uint8_t value = scanline[y * width + width / 2U];
+        bright_rows += value > 200U ? 1U : 0U;
+        dark_rows += value < 60U ? 1U : 0U;
+    }
+    const bool scanlines_ok =
+        bright_rows >= height / 3U && dark_rows >= height / 3U;
+
+    bool crt_ok = post.Select("crt") && post.active() &&
+        post.parameters().size() == 6U &&
+        backend.PresentLfbSurface(white.data(), kWidth, kHeight, false,
+                                  false);
+    if (crt_ok)
+    {
+        post.Apply(0U, 0U, width, height, kWidth, kHeight);
+        const std::vector<std::uint8_t> crt = read_red();
+        std::uint32_t lit = 0;
+        for (std::uint32_t y = height / 4U; y < height * 3U / 4U; ++y)
+        {
+            lit = (std::max)(lit, static_cast<std::uint32_t>(
+                                      crt[y * width + width / 2U]));
+        }
+        crt_ok = crt[0] == 0U && lit > 128U;
+    }
+    const bool none_ok = post.Select("none") && !post.active();
+
+    // Task 769: a window twice as wide as the picture's ratio pillarboxes it.
+    // The viewport must be the centred content rect, and the readback the
+    // guest sees must cover the picture only: the whole drawable is cleared
+    // black first, so a readback that included the bars would not be white.
+    bool letterbox_ok = false;
+    SDL_SetWindowSize(window, static_cast<int>(kWidth * 4U),
+                      static_cast<int>(kHeight * 2U));
+    SDL_SyncWindow(window);
+    backend.PumpEvents();
+    int wide_width = 0;
+    int wide_height = 0;
+    if (SDL_GetWindowSizeInPixels(window, &wide_width, &wide_height) &&
+        wide_width > 0 && wide_height > 0)
+    {
+        const repiu::engine::GlideLetterboxRect expected =
+            repiu::engine::ComputeGlideLetterboxRect(
+                kWidth, kHeight, static_cast<std::uint32_t>(wide_width),
+                static_cast<std::uint32_t>(wide_height));
+        GLint viewport[4]{};
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        glDisable(GL_SCISSOR_TEST);
+        glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+        glClear(GL_COLOR_BUFFER_BIT);
+        std::vector<std::uint8_t> picture;
+        letterbox_ok = expected.x > 0U &&
+            viewport[0] == static_cast<GLint>(expected.x) &&
+            viewport[1] == static_cast<GLint>(expected.y) &&
+            viewport[2] == static_cast<GLint>(expected.width) &&
+            viewport[3] == static_cast<GLint>(expected.height) &&
+            backend.PresentLfbSurface(white.data(), kWidth, kHeight, false,
+                                      false) &&
+            backend.ReadbackFramebuffer(kWidth, kHeight, &picture);
+        for (std::size_t index = 0; letterbox_ok && index < picture.size();
+             index += 4U)
+        {
+            letterbox_ok = picture[index] == 255U;
+        }
+        std::cout << "post_shader_gl_letterbox_viewport=" << viewport[0] << ","
+                  << viewport[1] << "," << viewport[2] << "," << viewport[3]
+                  << " drawable=" << wide_width << "x" << wide_height << '\n';
+    }
+
+    // Task 769: Alt+Enter goes fullscreen and a double click comes back,
+    // through the backend's own event pump. The display mode must not change,
+    // and fullscreen must still letterbox the picture.
+    bool fullscreen_ok = false;
+    SDL_DisplayMode mode_before{};
+    const SDL_DisplayMode* const current_mode =
+        SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window));
+    if (current_mode != nullptr)
+    {
+        mode_before = *current_mode;
+        SDL_Event key{};
+        key.type = SDL_EVENT_KEY_DOWN;
+        key.key.windowID = SDL_GetWindowID(window);
+        key.key.key = SDLK_RETURN;
+        key.key.mod = SDL_KMOD_LALT;
+        key.key.down = true;
+        SDL_PushEvent(&key);
+        backend.PumpEvents();
+        SDL_SyncWindow(window);
+        backend.PumpEvents();
+        int full_width = 0;
+        int full_height = 0;
+        GLint viewport[4]{};
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        const bool entered =
+            (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0U &&
+            SDL_GetWindowSizeInPixels(window, &full_width, &full_height);
+        const repiu::engine::GlideLetterboxRect expected =
+            repiu::engine::ComputeGlideLetterboxRect(
+                kWidth, kHeight, static_cast<std::uint32_t>(full_width),
+                static_cast<std::uint32_t>(full_height));
+        const SDL_DisplayMode* const full_mode =
+            SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window));
+        const bool mode_kept = full_mode != nullptr &&
+            full_mode->w == mode_before.w && full_mode->h == mode_before.h;
+
+        SDL_Event click{};
+        click.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        click.button.windowID = SDL_GetWindowID(window);
+        click.button.button = SDL_BUTTON_LEFT;
+        click.button.clicks = 2;
+        click.button.down = true;
+        SDL_PushEvent(&click);
+        backend.PumpEvents();
+        SDL_SyncWindow(window);
+        backend.PumpEvents();
+        const bool left =
+            (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) == 0U;
+        fullscreen_ok = entered && mode_kept && left &&
+            viewport[0] == static_cast<GLint>(expected.x) &&
+            viewport[1] == static_cast<GLint>(expected.y) &&
+            viewport[2] == static_cast<GLint>(expected.width) &&
+            viewport[3] == static_cast<GLint>(expected.height);
+        std::cout << "glide_fullscreen_entered/mode-kept/left="
+                  << entered << "/" << mode_kept << "/" << left
+                  << " fullscreen=" << full_width << "x" << full_height
+                  << " viewport=" << viewport[0] << "," << viewport[1] << ","
+                  << viewport[2] << "," << viewport[3] << '\n';
+    }
+    std::cout << "glide_fullscreen_toggle=" << (fullscreen_ok ? "true" : "false")
+              << '\n';
+
+    post.Shutdown();
+    backend.Close();
+
+    std::cout << "post_shader_gl_state_restored="
+              << (state_restored ? "true" : "false")
+              << "\npost_shader_gl_scanline_rows=" << bright_rows << "/"
+              << dark_rows << "/" << height
+              << "\npost_shader_gl_scanline=" << (scanlines_ok ? "true" : "false")
+              << "\npost_shader_gl_crt=" << (crt_ok ? "true" : "false")
+              << "\npost_shader_gl_none=" << (none_ok ? "true" : "false")
+              << "\nglide_letterbox_gl=" << (letterbox_ok ? "true" : "false")
+              << '\n';
+    return Check(state_restored, "post-process left GL state changed") &&
+        Check(scanlines_ok, "scanline rows did not alternate") &&
+        Check(crt_ok, "crt shader did not draw as expected") &&
+        Check(none_ok, "none did not clear the pass") &&
+        Check(letterbox_ok, "letterbox viewport or readback was wrong") &&
+        Check(fullscreen_ok, "fullscreen toggle did not round-trip");
+}
+#endif
 
 }  // namespace
 
@@ -218,6 +470,13 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    if (argc == 2 && std::strcmp(argv[1], "--opengl-post-shader") == 0)
+    {
+        if (!RunOpenGlPostShaderProbe())
+        {
+            return 1;
+        }
+    }
     if (argc == 2 && std::strcmp(argv[1], "--opengl-lfb") == 0)
     {
         constexpr std::uint32_t kWidth = 64U;

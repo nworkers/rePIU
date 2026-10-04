@@ -1,6 +1,9 @@
 #include "repiu/engine/glide_opengl_backend.h"
 #include "repiu/engine/active_jamma_bindings.h"
+#include "repiu/engine/glide_letterbox.h"
 #include "repiu/engine/glide_osd.h"
+#include "repiu/engine/glide_post_process.h"
+#include "repiu/engine/post_shader_catalog.h"
 #include "repiu/hle/glide_lfb.h"
 #include "repiu/runtime/env_toggle.h"
 #include "repiu/hle/glide_texture_decode.h"
@@ -840,6 +843,10 @@ bool GlideOpenGlBackend::ApplyWindowScale(std::uint32_t scale) {
   }
 
   SDL_Window *window = static_cast<SDL_Window *>(window_);
+  // Task 769: a fullscreen window has no size of its own to scale.
+  if ((SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0U) {
+    return false;
+  }
   const int width = static_cast<int>(logical_width_ * scale);
   const int height = static_cast<int>(logical_height_ * scale);
   if (!SDL_SetWindowSize(window, width, height)) {
@@ -867,21 +874,79 @@ void GlideOpenGlBackend::ApplyDrawableViewport() {
       drawable_width <= 0 || drawable_height <= 0) {
     return;
   }
-  glViewport(0, 0, static_cast<GLsizei>(drawable_width),
-             static_cast<GLsizei>(drawable_height));
-  glScissor(0, 0, static_cast<GLsizei>(drawable_width),
-            static_cast<GLsizei>(drawable_height));
+  // Task 769: the picture keeps the guest's aspect ratio inside the
+  // drawable; the bars around it are cleared at every present.
+  drawable_width_ = static_cast<std::uint32_t>(drawable_width);
+  drawable_height_ = static_cast<std::uint32_t>(drawable_height);
+  content_rect_ = ComputeGlideLetterboxRect(logical_width_, logical_height_,
+                                            drawable_width_, drawable_height_);
+  glViewport(static_cast<GLint>(content_rect_.x),
+             static_cast<GLint>(content_rect_.y),
+             static_cast<GLsizei>(content_rect_.width),
+             static_cast<GLsizei>(content_rect_.height));
+  glScissor(static_cast<GLint>(content_rect_.x),
+            static_cast<GLint>(content_rect_.y),
+            static_cast<GLsizei>(content_rect_.width),
+            static_cast<GLsizei>(content_rect_.height));
   GLfloat point_size_range[2] = {1.0F, 1.0F};
   glGetFloatv(GL_ALIASED_POINT_SIZE_RANGE, point_size_range);
   const float supported_minimum = std::max(1.0F, point_size_range[0]);
   const float supported_maximum =
       std::max(supported_minimum, point_size_range[1]);
-  const float requested_size =
-      CalculateGlidePointSize(logical_width_, logical_height_,
-                              static_cast<std::uint32_t>(drawable_width),
-                              static_cast<std::uint32_t>(drawable_height));
+  const float requested_size = CalculateGlidePointSize(
+      logical_width_, logical_height_, content_rect_.width,
+      content_rect_.height);
   point_size_ =
       std::clamp(requested_size, supported_minimum, supported_maximum);
+}
+
+void GlideOpenGlBackend::ToggleFullscreen() {
+  if (window_ == nullptr || dummy_mode_) {
+    return;
+  }
+  SDL_Window *window = static_cast<SDL_Window *>(window_);
+  const bool fullscreen =
+      (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0U;
+  // No fullscreen mode is ever set on this window, so SDL3 makes this a
+  // borderless window at the desktop resolution: the display mode never
+  // changes. The resulting pixel-size event re-runs ApplyDrawableViewport.
+  if (!SDL_SetWindowFullscreen(window, !fullscreen)) {
+    fprintf(stderr, "[repiu-glide] fullscreen toggle failed: %s\n",
+            SDL_GetError());
+    return;
+  }
+  fprintf(stderr, "[repiu-glide] %s\n",
+          fullscreen ? "windowed mode" : "fullscreen (desktop resolution)");
+}
+
+void GlideOpenGlBackend::ClearLetterboxBars() {
+  const GlideLetterboxRect &rect = content_rect_;
+  if (rect.width == 0U || rect.height == 0U ||
+      (rect.width == drawable_width_ && rect.height == drawable_height_)) {
+    return;
+  }
+  // Up to four bars, as (x, y, width, height) in drawable pixels.
+  const std::uint32_t right = rect.x + rect.width;
+  const std::uint32_t top = rect.y + rect.height;
+  const std::uint32_t bars[4][4] = {
+      {0U, 0U, rect.x, drawable_height_},
+      {right, 0U, drawable_width_ - right, drawable_height_},
+      {rect.x, 0U, rect.width, rect.y},
+      {rect.x, top, rect.width, drawable_height_ - top},
+  };
+  glPushAttrib(GL_SCISSOR_BIT | GL_COLOR_BUFFER_BIT | GL_ENABLE_BIT);
+  glEnable(GL_SCISSOR_TEST);
+  glDrawBuffer(GL_BACK);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+  for (const auto &bar : bars) {
+    if (bar[2] != 0U && bar[3] != 0U) {
+      glScissor(static_cast<GLint>(bar[0]), static_cast<GLint>(bar[1]),
+                static_cast<GLsizei>(bar[2]), static_cast<GLsizei>(bar[3]));
+      glClear(GL_COLOR_BUFFER_BIT);
+    }
+  }
+  glPopAttrib();
 }
 
 std::string
@@ -1090,6 +1155,22 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
       osd_.reset();
     }
   }
+  // Task 768: the post-processing pass and its initial shader. `none` when
+  // the variable is unset; an unknown or broken shader also runs as `none`,
+  // with the reason logged and shown in the OSD.
+  post_process_ = std::make_unique<GlidePostProcess>();
+  {
+    std::string post_message;
+    if (post_process_->Initialize(&post_message)) {
+      const char *const requested = std::getenv(kPostShaderVariable);
+      if (requested != nullptr && requested[0] != '\0') {
+        post_process_->Select(requested);
+      }
+    } else {
+      fprintf(stderr, "[repiu-post] disabled: %s\n", post_message.c_str());
+      post_process_.reset();
+    }
+  }
   // Task 748: a scripted keyboard, if one was asked for.
   input_script_ = std::make_unique<SdlInputScriptPlayerHandle>();
   if (!input_script_->player.StartFromEnvironment(SDL_GetWindowID(window))) {
@@ -1266,6 +1347,22 @@ void GlideOpenGlBackend::PumpEvents() {
         osd_->ToggleVisible();
       }
       continue;
+    }
+    // Task 769: Alt+Enter toggles fullscreen and, like Tab, never reaches
+    // game input; plain Enter still does.
+    if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) &&
+        (event.key.key == SDLK_RETURN || event.key.key == SDLK_KP_ENTER) &&
+        (event.key.mod & SDL_KMOD_ALT) != 0) {
+      if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+        ToggleFullscreen();
+      }
+      continue;
+    }
+    // A left double click toggles too, unless it landed on the OSD.
+    if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+        event.button.button == SDL_BUTTON_LEFT && event.button.clicks == 2U &&
+        (osd_ == nullptr || !osd_->WantsMouse())) {
+      ToggleFullscreen();
     }
     if (osd_ != nullptr && osd_->visible()) {
       osd_->ProcessEvent(&event);
@@ -1546,8 +1643,10 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
       std::vector<unsigned char> pixels(static_cast<std::size_t>(width) *
                                         height * 3U);
       glReadBuffer(GL_BACK);
-      glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE,
-                   pixels.data());
+      // Task 769: from the picture's corner, not the letterbox bar's.
+      glReadPixels(static_cast<GLint>(content_rect_.x),
+                   static_cast<GLint>(content_rect_.y), width, height, GL_RGB,
+                   GL_UNSIGNED_BYTE, pixels.data());
       std::uint64_t cell_luma[16] = {};
       std::uint64_t cell_count[16] = {};
       std::size_t non_black = 0;
@@ -1592,7 +1691,9 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
     std::vector<unsigned char> pixels(static_cast<std::size_t>(width) * height *
                                       3U);
     glReadBuffer(GL_BACK);
-    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+    glReadPixels(static_cast<GLint>(content_rect_.x),
+                 static_cast<GLint>(content_rect_.y), width, height, GL_RGB,
+                 GL_UNSIGNED_BYTE, pixels.data());
     std::size_t non_black = 0;
     std::uint64_t sum_r = 0;
     std::uint64_t sum_g = 0;
@@ -1614,11 +1715,23 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
             static_cast<unsigned long long>(sum_g / denom),
             static_cast<unsigned long long>(sum_b / denom));
   }
+  // Task 769: the bars around the aspect-preserving picture are black every
+  // frame, whatever the game cleared to and whatever the swap left behind.
+  ClearLetterboxBars();
+  // Task 768: the post-processing pass runs on the finished frame, after the
+  // diagnostics above have sampled it unprocessed and before the OSD, which
+  // must stay legible. With no shader selected it returns before any GL call.
+  if (post_process_ != nullptr && post_process_->active() &&
+      content_rect_.width > 0U && content_rect_.height > 0U) {
+    post_process_->Apply(content_rect_.x, content_rect_.y,
+                         content_rect_.width, content_rect_.height,
+                         logical_width_, logical_height_);
+  }
   // Task 761: the OSD overlays the finished frame; ImGui's GL3 renderer saves
   // and restores the GL state it touches, so the game's pipeline state
   // survives.
   if (osd_ != nullptr) {
-    osd_->Render(&lfb_high_precision_);
+    osd_->Render(&lfb_high_precision_, post_process_.get());
   }
   const std::uint64_t present_start_cycles =
       swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;
@@ -2341,21 +2454,26 @@ bool GlideOpenGlBackend::ReadbackFramebuffer(std::uint32_t width,
     message_ = "Glide framebuffer read back (dummy)";
     return true;
   }
+  // Task 769: only the picture's rectangle, never the letterbox bars, so what
+  // the guest reads back does not depend on the window's shape. In a window
+  // of the guest's own ratio the rectangle is the whole drawable.
+  int origin_x = 0;
+  int origin_y = 0;
   int drawable_width = static_cast<int>(width);
   int drawable_height = static_cast<int>(height);
-  if (!SDL_GetWindowSizeInPixels(static_cast<SDL_Window *>(window_),
-                                 &drawable_width, &drawable_height) ||
-      drawable_width <= 0 || drawable_height <= 0) {
-    drawable_width = static_cast<int>(width);
-    drawable_height = static_cast<int>(height);
+  if (content_rect_.width > 0U && content_rect_.height > 0U) {
+    origin_x = static_cast<int>(content_rect_.x);
+    origin_y = static_cast<int>(content_rect_.y);
+    drawable_width = static_cast<int>(content_rect_.width);
+    drawable_height = static_cast<int>(content_rect_.height);
   }
   std::vector<std::uint8_t> drawable_rgba(
       static_cast<std::size_t>(drawable_width) * drawable_height * 4U);
   glReadBuffer(GL_BACK);
-  glReadPixels(0, 0, drawable_width, drawable_height, GL_RGBA, GL_UNSIGNED_BYTE,
-               drawable_rgba.data());
+  glReadPixels(origin_x, origin_y, drawable_width, drawable_height, GL_RGBA,
+               GL_UNSIGNED_BYTE, drawable_rgba.data());
   // glReadPixels returns row 0 as the bottom scanline, while every consumer
-  // here treats row 0 as the top. Sample the complete scaled drawable and
+  // here treats row 0 as the top. Sample the complete scaled picture and
   // return the logical Glide dimensions with nearest-neighbor filtering.
   rgba8->assign(static_cast<std::size_t>(width) * height * 4U, 0U);
   for (std::uint32_t y = 0; y < height; ++y) {
@@ -2922,6 +3040,10 @@ void GlideOpenGlBackend::Close() {
         osd_->Shutdown();
         osd_.reset();
       }
+      // Task 768: the same holds for the post-processing program and texture.
+      if (post_process_ != nullptr) {
+        post_process_->Shutdown();
+      }
       for (auto &entry : textures_) {
         if (entry.second.gl_name != 0U) {
           GLuint name = entry.second.gl_name;
@@ -2949,12 +3071,17 @@ void GlideOpenGlBackend::Close() {
     fprintf(stderr, "[repiu-live-debug] GlideOpenGlBackend::Close caught "
                     "unknown exception\n");
   }
+  // Its destructor touches no GL, so this is safe with the context gone.
+  post_process_.reset();
   render_context_ = nullptr;
   window_ = nullptr;
   logical_width_ = 0;
   logical_height_ = 0;
   window_scale_ = 2U;
   point_size_ = 1.0F;
+  content_rect_ = GlideLetterboxRect{};
+  drawable_width_ = 0U;
+  drawable_height_ = 0U;
   ResetFrameRateMeasurement();
   origin_lower_left_ = false;
   textures_.clear();

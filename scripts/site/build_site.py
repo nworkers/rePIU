@@ -179,6 +179,10 @@ class Site:
             shutil.rmtree(self.out)
         self.out.mkdir(parents=True)
         shutil.copytree(SITE_DIR / "static", self.out / "static")
+        # Task 770: the README's screenshots, shared rather than copied into static/.
+        screenshots = REPO_ROOT / "docs" / "screenshots"
+        if screenshots.is_dir():
+            shutil.copytree(screenshots, self.out / "screenshots")
 
         for lang in self.languages:
             t = self.strings[lang]
@@ -194,6 +198,7 @@ class Site:
                 if page == "index":
                     context["targets"] = self.targets
                     context["platforms"] = self.config["platforms"]
+                    context["screenshots"] = self.config.get("screenshots", [])
                 elif page == "wip":
                     context["posts"] = [self.post_view(post, lang) for post in self.posts]
                     context["releases"] = releases

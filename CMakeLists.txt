@@ -404,6 +404,10 @@ target_sources(repiu_exe
         src/engine/glide_opengl_backend.cpp
         src/engine/glide_opengl_shader.cpp
         src/engine/glide_osd.cpp
+        src/engine/glide_post_process.cpp
+        src/engine/glide_letterbox.cpp
+        src/engine/post_shader_source.cpp
+        src/engine/post_shader_catalog.cpp
         src/engine/runtime_memory_policy.cpp
 )
 endif()
@@ -679,6 +683,28 @@ target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static)
 # binding headers, so SDL3's include directories are part of this library's
 # interface and every consumer needs them.
 target_link_libraries(repiu_exe PUBLIC SDL3::SDL3-static)
+
+# Task 768: the built-in post-processing shaders are ordinary .glsl files in
+# the tree, embedded at configure time as raw string literals so a package
+# never has to ship them. Editing one re-runs the configure step.
+set(REPIU_POST_SHADER_SOURCE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/engine/post_shaders")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${REPIU_POST_SHADER_SOURCE_DIR}/crt.glsl"
+    "${REPIU_POST_SHADER_SOURCE_DIR}/scanline.glsl"
+    "${REPIU_POST_SHADER_SOURCE_DIR}/post_shader_builtins.inc.in"
+)
+file(READ "${REPIU_POST_SHADER_SOURCE_DIR}/crt.glsl" REPIU_POST_SHADER_CRT)
+file(READ "${REPIU_POST_SHADER_SOURCE_DIR}/scanline.glsl"
+     REPIU_POST_SHADER_SCANLINE)
+configure_file(
+    "${REPIU_POST_SHADER_SOURCE_DIR}/post_shader_builtins.inc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/repiu/engine/post_shader_builtins.inc"
+    @ONLY)
+target_include_directories(repiu_exe
+    PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
+)
 
 # Task 761: the in-game OSD draws with Dear ImGui inside the Glide backend's
 # window. The engine, and with it the OSD, is not built for the web.
@@ -995,6 +1021,8 @@ if(WIN32)
         src/tools/aot_probe/glide_setter_phase_timing_probe.cpp
         src/tools/aot_probe/glide_gl_error_policy_probe.cpp
         src/tools/aot_probe/glide_swap_interval_policy_probe.cpp
+        src/tools/aot_probe/post_shader_probe.cpp
+        src/tools/aot_probe/glide_letterbox_probe.cpp
         src/tools/aot_probe/veh_exception_gap_probe.cpp
         src/tools/aot_probe/dos_file_handle_cache_probe.cpp
         src/tools/aot_probe/glide_texture_census_probe.cpp

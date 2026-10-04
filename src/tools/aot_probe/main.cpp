@@ -49,6 +49,8 @@
 #include "glide_setter_state_cache_probe.h"
 #include "glide_gl_error_policy_probe.h"
 #include "glide_swap_interval_policy_probe.h"
+#include "post_shader_probe.h"
+#include "glide_letterbox_probe.h"
 #include "veh_exception_gap_probe.h"
 #include "dos_file_handle_cache_probe.h"
 #include "glide_texture_census_probe.h"
@@ -719,6 +721,14 @@ int main(int argc, char** argv)
     {
         return repiu::tools::RunLauncherProbe() ? 0 : 1;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--post-shader") == 0)
+    {
+        return repiu::tools::RunPostShaderProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--glide-letterbox") == 0)
+    {
+        return repiu::tools::RunGlideLetterboxProbe() ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--jump-table-guard") == 0)
     {
         return repiu::tools::RunJumpTableGuardProbe() ? 0 : 1;
@@ -1135,6 +1145,14 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunGlideSwapIntervalPolicyProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunPostShaderProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunGlideLetterboxProbe())
     {
         return 1;
     }

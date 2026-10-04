@@ -7,10 +7,12 @@
 namespace repiu::engine
 {
 
+class GlidePostProcess;
+
 // Task 761. The in-game on-screen display the launcher section of
 // ARCHITECTURE.md promised: the same Dear ImGui layer, drawn inside the Glide
-// backend's SDL window while the guest runs. It currently holds one control,
-// the LFB high-precision presentation toggle.
+// backend's SDL window while the guest runs. It holds the LFB high-precision
+// presentation toggle and, since Task 768, the screen shader menu.
 //
 // Threading: every method runs on the backend's host thread, the one that owns
 // the SDL window and the GL context. The toggle the checkbox flips is an
@@ -37,6 +39,10 @@ public:
     bool visible() const { return visible_; }
     void ToggleVisible() { visible_ = !visible_; }
 
+    // Task 769: true while the overlay is open and the pointer is over one of
+    // its widgets, so a double click there is not a fullscreen toggle.
+    bool WantsMouse() const;
+
     // Forwards one SDL_Event to ImGui. Called for every event while the OSD is
     // visible so the checkbox can be clicked; game input keeps flowing
     // regardless, because the cabinet's controls must never go dead.
@@ -44,8 +50,11 @@ public:
 
     // Draws the overlay when visible. Call on the host thread with the game's
     // GL context current, immediately before the buffer swap; the ImGui GL3
-    // backend saves and restores the GL state it touches.
-    void Render(std::atomic<bool>* lfb_high_precision);
+    // backend saves and restores the GL state it touches. `post_process` may
+    // be null, which hides the shader menu; choosing a shader there compiles
+    // it on the spot, which this thread and context allow.
+    void Render(std::atomic<bool>* lfb_high_precision,
+                GlidePostProcess* post_process);
 
 private:
     bool initialized_ = false;

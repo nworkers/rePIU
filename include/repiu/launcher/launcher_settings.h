@@ -26,6 +26,10 @@ struct LauncherSettings
     std::int32_t swap_interval = 0;
     bool has_ymz_volume = false;
     float ymz_volume = 1.0F;
+    // Task 768: the screen shader id (`none`, a built-in, or a file name in
+    // `shaders/`). Checked against the list by the engine, not here.
+    bool has_post_shader = false;
+    std::string post_shader;
     // Where the selection cursor starts next time. Not applied to the run.
     std::string last_rom_set;
 };
@@ -57,15 +61,18 @@ struct LauncherEnvironmentOverrides
 {
     bool swap_interval = false;
     bool ymz_volume = false;
+    bool post_shader = false;
 };
 
 [[nodiscard]] LauncherEnvironmentOverrides ResolveLauncherEnvironmentOverrides(
-    const char* swap_interval_value, const char* ymz_volume_value);
+    const char* swap_interval_value, const char* ymz_volume_value,
+    const char* post_shader_value);
 
 struct LauncherSettingsApplication
 {
     bool swap_interval_published = false;
     bool ymz_volume_published = false;
+    bool post_shader_published = false;
 };
 
 // Publishes the stored values the environment has not already claimed.
@@ -90,6 +97,7 @@ LauncherSettingsApplication ApplyLauncherSettings(
 inline constexpr const char* kLauncherSwapIntervalVariable =
     "REPIU_GLIDE_SWAP_INTERVAL";
 inline constexpr const char* kLauncherYmzVolumeVariable = "REPIU_YMZ_VOLUME";
+inline constexpr const char* kLauncherPostShaderVariable = "REPIU_POST_SHADER";
 
 }  // namespace repiu::launcher
 

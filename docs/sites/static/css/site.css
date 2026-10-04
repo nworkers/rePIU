@@ -985,6 +985,40 @@ pre.mermaid[data-processed="true"] {
   white-space: normal;
 }
 
+/* --- Screenshots (Task 770) ---------------------------------------------- */
+
+.shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+  margin: 0 0 8px;
+}
+
+.shot {
+  margin: 0;
+  min-width: 0;
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 2px solid var(--cyan);
+}
+
+.shot a:hover img,
+.shot a:focus-visible img {
+  border-color: var(--neon-yellow);
+  box-shadow: 0 0 8px var(--glow-yellow);
+}
+
+.shot figcaption {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text);
+}
+
 /* --- Small screens ------------------------------------------------------- */
 
 @media (max-width: 600px) {

@@ -15,6 +15,30 @@ rePIU는 DOSBox나 전체 PC 에뮬레이터를 포함하지 않고, 원본 DOS/
 >
 > *This is research-stage software, not a finished game launcher. The current execution host is 32-bit Windows, and per-title compatibility remains under development.*
 
+## 스크린샷 / Screenshots
+
+rePIU v0.0.200의 Win32 x86 Release 빌드에서 원본 실행 파일이 그린 화면입니다. 2배 창(1280x960)에서 캡처해 원래 해상도 640x480으로 줄였습니다. 목록과 캡처 방법은 [docs/screenshots](docs/screenshots/README.md)에 있습니다.
+
+*Screens drawn by the original executables under the Win32 x86 Release build of rePIU v0.0.200, captured from the 2x window (1280x960) and scaled back to the original 640x480. The list and how they were taken are in [docs/screenshots](docs/screenshots/README.md).*
+
+| The 1st Dance Floor (`pumpit1`) | The 2nd Dance Floor (`pumpit2a`) | The O.B.G: The 3rd Dance Floor (`pumpit3a`) |
+| :---: | :---: | :---: |
+| ![pumpit1 title](docs/screenshots/pumpit1-title.jpg) | ![pumpit2a title](docs/screenshots/pumpit2a-title.jpg) | ![pumpit3a title](docs/screenshots/pumpit3a-title.jpg) |
+| **The O.B.G: The Season Evolution (`pumpito`)** | **The Collection (`pumpitc`)** | **The Perfect Collection (`pumpitpc`)** |
+| ![pumpito title](docs/screenshots/pumpito-title.jpg) | ![pumpitc title](docs/screenshots/pumpitc-title.jpg) | ![pumpitpc title](docs/screenshots/pumpitpc-title.jpg) |
+| **The Premiere (`pumpitpr`)** | **The Premiere USA — demo play (`pumpitpru`)** | **Extra (`pumpitea`)** |
+| ![pumpitpr title](docs/screenshots/pumpitpr-title.jpg) | ![pumpitpru demo play](docs/screenshots/pumpitpru-demo-play.jpg) | ![pumpitea title](docs/screenshots/pumpitea-title.jpg) |
+| **The PREX (`pumpitpx`)** | **The Rebirth: The 8th Dance Floor (`pumpit8`)** | **The Premiere 2 (`pumpitp2`)** |
+| ![pumpitpx title](docs/screenshots/pumpitpx-title.jpg) | ![pumpit8 title](docs/screenshots/pumpit8-title.jpg) | ![pumpitp2 title](docs/screenshots/pumpitp2-title.jpg) |
+| **The PREX 2 (`pumpipx2`)** | **EXTRA + Plus (`pumpipx2p`)** | **The Premiere 3 (`pumpitp3`)** |
+| ![pumpipx2 title](docs/screenshots/pumpipx2-title.jpg) | ![pumpipx2p title](docs/screenshots/pumpipx2p-title.jpg) | ![pumpitp3 title](docs/screenshots/pumpitp3-title.jpg) |
+| **The Premiere 3 — demo play (`pumpitp3`)** | **The PREX 3 (`pumpipx3`)** | |
+| ![pumpitp3 demo play](docs/screenshots/pumpitp3-demo-play.jpg) | ![pumpipx3 title](docs/screenshots/pumpipx3-title.jpg) | |
+
+화면 후처리 shader(`crt`, `scanline`)를 적용한 화면은 [shader 개발 기록](docs/post/2026-10-05-020000-post-process-shaders-wip.md)에 있습니다.
+
+*Screens with the post-processing shaders (`crt`, `scanline`) are in the [shader dev log](docs/post/2026-10-05-020000-post-process-shaders-wip.md).*
+
 ## 주요 특징 / Why rePIU
 
 * **원본 로직 보존:** 게임플레이를 C++로 재작성하지 않고 원본 x86 코드를 주 실행 경로로 유지합니다.
@@ -260,6 +284,27 @@ vsync와 사운드 게인은 런처에서 바꿔 `cfg\repiu.ini`에 저장합니
 줄에 거부 사유와 함께 찍습니다. 진짜 vsync는 Wayland 컴포지터 아래 `SDL_VIDEO_DRIVER=wayland`가
 받습니다(WSLg는 소켓이 `/mnt/wslg/runtime-dir`에 있으므로 `XDG_RUNTIME_DIR`를 그리 줘야 창이 열립니다;
 로그의 `swap interval override … applied/effective: true/1/true/1`이 확인입니다).
+
+화면 shader도 런처의 "Screen shader"에서 고릅니다(Task 768). 기본은 `none`이고, `crt`와
+`scanline`이 내장돼 있으며, `shaders\` 폴더에 libretro 단일 pass 형식의 `.glsl` 파일을 넣으면
+목록에 함께 나옵니다. 게임 중에는 `Tab` OSD에서 바꾸고 매개변수를 조절할 수 있습니다(그 실행에만
+적용). 환경 변수는 `REPIU_POST_SHADER=crt`입니다. 형식과 확인 절차는
+[후처리 shader 가이드](docs/guides/post-process-shaders.md)에 있습니다.
+
+*The screen shader is chosen in the launcher's "Screen shader" as well (Task 768). The default is
+`none`; `crt` and `scanline` are built in, and `.glsl` files in the libretro single-pass layout
+dropped into the `shaders\` folder join the list. In game, the `Tab` OSD switches shaders and tunes
+their parameters for that run. The environment variable is `REPIU_POST_SHADER=crt`. The format and
+a check procedure are in the [post-processing shader guide](docs/guides/post-process-shaders.md).*
+
+게임 창은 더블클릭 또는 `Alt+Enter`로 전체화면과 창 모드를 오갑니다(Task 769). 전체화면은
+디스플레이 해상도를 바꾸지 않는 테두리 없는 창이고, 창 크기를 바꾸든 전체화면이든 원래 4:3 비율을
+유지하며 남는 부분은 검은 띠가 됩니다. `Alt+1`~`Alt+4`는 창 모드에서 1~4배 크기를 고릅니다.
+
+*Double-click the game window or press `Alt+Enter` to switch between fullscreen and windowed mode
+(Task 769). Fullscreen is a borderless window that leaves the display resolution alone, and both a
+resized window and fullscreen keep the original 4:3 ratio with black bars around it. `Alt+1` to
+`Alt+4` pick a 1x to 4x window in windowed mode.*
 
 게임을 끝내면 런처로 돌아오므로 다른 롬셋을 이어서 고를 수 있습니다. 종료는 런처의
 Quit입니다.

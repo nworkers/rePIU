@@ -32,6 +32,8 @@ flowchart LR
   한국어 전문 → `---` → 영어 전문 구조로 두 언어 페이지가 나뉩니다.
 * **릴리스 타임라인과 다운로드:** 태그를 push해 Release 워크플로가 성공하면 Pages 워크플로가 이어서 돌며
   새 릴리스를 반영합니다. 본문은 `docs/release-notes/<tag>.md`가 있으면 그 파일을 씁니다.
+* **스크린샷:** `docs/screenshots/`의 이미지를 산출물의 `screenshots/`로 복사합니다. 소개 페이지에 보일 목록과 순서는
+  `site.toml`의 `[[screenshots]]`, 설명은 `i18n/*.toml`의 `[screenshots.captions]`에 둡니다(Task 770).
 * **ROM 세트 목록:** `src/target/target_profile.cpp`의 내장 카탈로그에서 읽습니다.
 * **플랫폼 상태와 소개 문구:** `site.toml`의 `[[platforms]]`와 `i18n/*.toml`을 직접 고칩니다.
 
@@ -84,6 +86,9 @@ The output has Korean at `/` and English under `/en/` with the same file names.
   when it reaches main. Its full Korean → `---` → full English layout is split into the two languages.
 * **Release timeline and downloads:** when a pushed tag's Release workflow succeeds, the Pages workflow runs
   next and picks up the new release. The body is `docs/release-notes/<tag>.md` when it exists.
+* **Screenshots:** the images in `docs/screenshots/` are copied to `screenshots/` in the output; the list
+  and order on the introduction page are `[[screenshots]]` in `site.toml`, the captions
+  `[screenshots.captions]` in `i18n/*.toml` (Task 770).
 * **ROM set list:** read from the built-in catalog in `src/target/target_profile.cpp`.
 * **Platform status and introduction copy:** edit `[[platforms]]` in `site.toml` and `i18n/*.toml`.
 

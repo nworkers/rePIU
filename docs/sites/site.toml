@@ -131,3 +131,73 @@ state = "wip"
 [[platforms]]
 key = "web"
 state = "hold"
+
+# Screenshots on the introduction page (Task 770), files under docs/screenshots/.
+# Captions come from i18n [screenshots.captions].<key>.
+[[screenshots]]
+key = "pumpit1"
+file = "pumpit1-title.jpg"
+
+[[screenshots]]
+key = "pumpit2a"
+file = "pumpit2a-title.jpg"
+
+[[screenshots]]
+key = "pumpit3a"
+file = "pumpit3a-title.jpg"
+
+[[screenshots]]
+key = "pumpito"
+file = "pumpito-title.jpg"
+
+[[screenshots]]
+key = "pumpitc"
+file = "pumpitc-title.jpg"
+
+[[screenshots]]
+key = "pumpitpc"
+file = "pumpitpc-title.jpg"
+
+[[screenshots]]
+key = "pumpitpr"
+file = "pumpitpr-title.jpg"
+
+[[screenshots]]
+key = "pumpitpru"
+file = "pumpitpru-demo-play.jpg"
+
+[[screenshots]]
+key = "pumpitea"
+file = "pumpitea-title.jpg"
+
+[[screenshots]]
+key = "pumpitpx"
+file = "pumpitpx-title.jpg"
+
+[[screenshots]]
+key = "pumpit8"
+file = "pumpit8-title.jpg"
+
+[[screenshots]]
+key = "pumpitp2"
+file = "pumpitp2-title.jpg"
+
+[[screenshots]]
+key = "pumpipx2"
+file = "pumpipx2-title.jpg"
+
+[[screenshots]]
+key = "pumpipx2p"
+file = "pumpipx2p-title.jpg"
+
+[[screenshots]]
+key = "pumpitp3"
+file = "pumpitp3-title.jpg"
+
+[[screenshots]]
+key = "pumpitp3_demo"
+file = "pumpitp3-demo-play.jpg"
+
+[[screenshots]]
+key = "pumpipx3"
+file = "pumpipx3-title.jpg"
