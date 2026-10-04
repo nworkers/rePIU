@@ -34,11 +34,11 @@
 * 콘솔이 cp949이면 빌드 스크립트가 글 제목의 `—`를 출력하다 `UnicodeEncodeError`로 멈춥니다(기존 동작, 이번 변경과
   무관). `PYTHONIOENCODING=utf-8`로 돌렸습니다.
 
-## 발견한 것 (고치지 않음)
+## 결함이 아닌 것
 
-* `pumpit1`의 첫 BGA(검은 화면 뒤 사람 실루엣 영상)가 2배 창에서 격자 무늬로 보입니다. 논리 픽셀 2×2 블록 중 한
-  픽셀만 밝은 모양입니다. v0.0.197 릴리스 바이너리로 같은 조건에서 찍어도 같아서 Tasks 768·769에서 생긴 것은
-  아닙니다. 별도 조사 대상으로 남깁니다. 스크린샷에서는 이 장면을 고르지 않았습니다.
+* `pumpit1`의 첫 BGA(검은 화면 뒤 사람 실루엣 영상)는 2배 창에서 격자 무늬로 보입니다. 처음에는 결함으로 의심해
+  v0.0.197 릴리스 바이너리와 비교했고 같은 모양이었습니다. 이후 사용자가 **원본 게임에서도 그렇게 나오는 의도된
+  영상**이라고 확인했습니다(2026-10-05). 조사 대상이 아닙니다.
 
 ---
 
@@ -79,9 +79,8 @@ Work order: [20261005-770](../work-orders/20261005-770-release-screenshots-and-s
 * On a cp949 console the build script stops with `UnicodeEncodeError` printing a post title's `—` (existing
   behaviour, unrelated to this change); it was run with `PYTHONIOENCODING=utf-8`.
 
-## Found (not fixed)
+## Not a defect
 
-* `pumpit1`'s first BGA (a silhouette film after the black screen) shows a grid pattern in the 2x window, only one
-  pixel of each logical 2×2 block lit. The v0.0.197 release binary shows the same under the same conditions, so it
-  did not come from Tasks 768 or 769; it is left for a separate investigation, and that scene was not chosen for a
-  screenshot.
+* `pumpit1`'s first BGA (a silhouette film after the black screen) shows a grid pattern in the 2x window. It was
+  first suspected as a defect and compared with the v0.0.197 release binary, which looked the same; the user then
+  confirmed that **the original game shows it that way, by design** (2026-10-05). It is not to be investigated.
