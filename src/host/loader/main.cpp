@@ -35,6 +35,7 @@
 #include "repiu/runtime/runtime_memory.h"
 #include "repiu/runtime/runtime_memory_arena.h"
 #include "repiu/runtime/selector_table.h"
+#include "repiu/launcher/command_line_options.h"
 #include "repiu/launcher/launcher_settings.h"
 #include "repiu/launcher/launcher_ui.h"
 #include "repiu/launcher/rom_set_catalog.h"
@@ -5118,6 +5119,36 @@ int main(int argc, char** argv)
     // itself instead of vanishing into an exit code.
     repiu::platform::InstallHostCrashReporter();
     std::shared_ptr<spdlog::logger> logger = CreateLoaderLogger();
+
+    // Task 771. Options come off the command line before anything reads
+    // argv[1], and each is published as the variable its consumer already
+    // reads. The command line is the most direct instruction for this run, so
+    // it overwrites the caller's variable; published this early, it also wins
+    // over cfg/repiu.ini and is inherited by a launcher's child processes.
+    const repiu::launcher::CommandLineOptions command_line =
+        repiu::launcher::ParseCommandLineOptions(
+            std::vector<std::string>(argv + (argc > 0 ? 1 : 0), argv + argc));
+    if (!command_line.error.empty())
+    {
+        logger->error("Command line: {}", command_line.error);
+        return 1;
+    }
+    if (command_line.has_post_shader)
+    {
+        repiu::platform::PublishEnvironmentSetting(
+            repiu::launcher::kLauncherPostShaderVariable,
+            command_line.post_shader.c_str());
+        logger->info("Command line post shader: {}", command_line.post_shader);
+    }
+    std::vector<char*> remaining_argv;
+    remaining_argv.push_back(argc > 0 ? argv[0] : nullptr);
+    for (const std::string& argument : command_line.positional)
+    {
+        remaining_argv.push_back(const_cast<char*>(argument.c_str()));
+    }
+    remaining_argv.push_back(nullptr);
+    argc = static_cast<int>(remaining_argv.size() - 1U);
+    argv = remaining_argv.data();
 
     if (LauncherRequested(argc))
     {

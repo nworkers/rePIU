@@ -1,5 +1,6 @@
 #include "launcher_probe.h"
 
+#include "repiu/launcher/command_line_options.h"
 #include "repiu/launcher/launcher_settings.h"
 #include "repiu/launcher/rom_set_catalog.h"
 #include "repiu/target/target_profile.h"
@@ -294,6 +295,59 @@ bool ProbeChildCommandLine()
     return spaced && plain && empty_rom_set;
 }
 
+// Task 771. The ROM set must stay the first positional argument whichever side
+// of it the option sits on, and a malformed option must stop the run rather
+// than become a ROM set name.
+bool ProbeCommandLineOptions()
+{
+    using repiu::launcher::ParseCommandLineOptions;
+    using Arguments = std::vector<std::string>;
+
+    const auto after = ParseCommandLineOptions(
+        Arguments{"pumpit8", "--post-shader", "crt"});
+    const bool after_ok = after.error.empty() && after.has_post_shader &&
+        after.post_shader == "crt" &&
+        after.positional == Arguments{"pumpit8"};
+
+    const auto before = ParseCommandLineOptions(
+        Arguments{"--post-shader=scanline", "pumpitea"});
+    const bool before_ok = before.error.empty() && before.has_post_shader &&
+        before.post_shader == "scanline" &&
+        before.positional == Arguments{"pumpitea"};
+
+    const auto repeated = ParseCommandLineOptions(Arguments{
+        "--post-shader", "crt", "pumpit1", "--post-shader=my_crt.glsl"});
+    const bool repeated_ok = repeated.error.empty() &&
+        repeated.post_shader == "my_crt.glsl" &&
+        repeated.positional == Arguments{"pumpit1"};
+
+    const auto none = ParseCommandLineOptions(Arguments{"pumpit1"});
+    const bool none_ok = none.error.empty() && !none.has_post_shader &&
+        none.positional == Arguments{"pumpit1"};
+
+    const auto only_option =
+        ParseCommandLineOptions(Arguments{"--post-shader", "crt"});
+    const bool only_option_ok = only_option.error.empty() &&
+        only_option.has_post_shader && only_option.positional.empty();
+
+    const auto missing =
+        ParseCommandLineOptions(Arguments{"pumpit1", "--post-shader"});
+    const auto empty =
+        ParseCommandLineOptions(Arguments{"--post-shader=", "pumpit1"});
+    const bool errors_ok = !missing.error.empty() && !empty.error.empty();
+
+    // Unknown arguments keep their order, and `--` hands the rest over as is.
+    const auto passthrough = ParseCommandLineOptions(Arguments{
+        "C:\\games\\PIU.EXE", "--other", "--", "--post-shader", "crt"});
+    const bool passthrough_ok = passthrough.error.empty() &&
+        !passthrough.has_post_shader &&
+        passthrough.positional ==
+            Arguments{"C:\\games\\PIU.EXE", "--other", "--post-shader", "crt"};
+
+    return after_ok && before_ok && repeated_ok && none_ok &&
+        only_option_ok && errors_ok && passthrough_ok;
+}
+
 }  // namespace
 
 bool RunLauncherProbe()
@@ -303,8 +357,9 @@ bool RunLauncherProbe()
     const bool settings_ok = ProbeSettingsRoundTrip();
     const bool precedence_ok = ProbeEnvironmentPrecedence();
     const bool command_line_ok = ProbeChildCommandLine();
+    const bool options_ok = ProbeCommandLineOptions();
     const bool all = states_ok && coverage_ok && settings_ok &&
-        precedence_ok && command_line_ok;
+        precedence_ok && command_line_ok && options_ok;
     std::cout << "launcher_catalog_states=" << (states_ok ? "true" : "false")
               << "\nlauncher_catalog_coverage="
               << (coverage_ok ? "true" : "false")
@@ -314,6 +369,8 @@ bool RunLauncherProbe()
               << (precedence_ok ? "true" : "false")
               << "\nlauncher_child_command_line="
               << (command_line_ok ? "true" : "false")
+              << "\nlauncher_command_line_options="
+              << (options_ok ? "true" : "false")
               << "\nlauncher_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

@@ -10,6 +10,7 @@
 | 방법 | 지속 | 예 |
 |---|---|---|
 | 런처 Options의 "Screen shader" | `cfg/repiu.ini`의 `[Video] post_shader`에 저장 | `post_shader = crt` |
+| 실행 인자 (Task 771) | 그 실행 (환경 변수와 런처 값보다 우선; 롬셋 없이 주면 런처 세션 전체) | `repiu pumpit8 --post-shader crt`, `--post-shader=crt` |
 | 환경 변수 | 그 실행 (런처 값보다 우선) | `REPIU_POST_SHADER=scanline` |
 | 게임 중 `Tab` OSD | 그 실행만 | 콤보, Reload, 매개변수 슬라이더 |
 
@@ -77,6 +78,7 @@ void main()
 | Way | Lasts | Example |
 |---|---|---|
 | "Screen shader" under the launcher's Options | stored as `[Video] post_shader` in `cfg/repiu.ini` | `post_shader = crt` |
+| Command-line option (Task 771) | that run (wins over the environment variable and the launcher's value; with no ROM set, the whole launcher session) | `repiu pumpit8 --post-shader crt`, `--post-shader=crt` |
 | Environment variable | that run (wins over the launcher's value) | `REPIU_POST_SHADER=scanline` |
 | The in-game `Tab` OSD | that run only | combo, Reload, parameter sliders |
 

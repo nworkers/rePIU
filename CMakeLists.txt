@@ -254,6 +254,7 @@ add_library(repiu_exe
     src/runtime/aot_direct_return_table.cpp
     src/launcher/rom_set_catalog.cpp
     src/launcher/launcher_settings.cpp
+    src/launcher/command_line_options.cpp
     src/runtime/aot_translation_plan.cpp
     src/runtime/aot_code_cache_reservation.cpp
     src/runtime/low_address_reservation.cpp

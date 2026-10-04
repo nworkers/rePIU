@@ -288,13 +288,16 @@ vsync와 사운드 게인은 런처에서 바꿔 `cfg\repiu.ini`에 저장합니
 화면 shader도 런처의 "Screen shader"에서 고릅니다(Task 768). 기본은 `none`이고, `crt`와
 `scanline`이 내장돼 있으며, `shaders\` 폴더에 libretro 단일 pass 형식의 `.glsl` 파일을 넣으면
 목록에 함께 나옵니다. 게임 중에는 `Tab` OSD에서 바꾸고 매개변수를 조절할 수 있습니다(그 실행에만
-적용). 환경 변수는 `REPIU_POST_SHADER=crt`입니다. 형식과 확인 절차는
+적용). 실행 인자로는 `repiu pumpit8 --post-shader crt`(또는 `--post-shader=crt`, 롬셋 앞뒤 어디든)이고,
+환경 변수 `REPIU_POST_SHADER=crt`와 런처 설정보다 우선합니다(Task 771). 형식과 확인 절차는
 [후처리 shader 가이드](docs/guides/post-process-shaders.md)에 있습니다.
 
 *The screen shader is chosen in the launcher's "Screen shader" as well (Task 768). The default is
 `none`; `crt` and `scanline` are built in, and `.glsl` files in the libretro single-pass layout
 dropped into the `shaders\` folder join the list. In game, the `Tab` OSD switches shaders and tunes
-their parameters for that run. The environment variable is `REPIU_POST_SHADER=crt`. The format and
+their parameters for that run. On the command line it is `repiu pumpit8 --post-shader crt` (or
+`--post-shader=crt`, before or after the ROM set), which wins over the environment variable
+`REPIU_POST_SHADER=crt` and the launcher setting (Task 771). The format and
 a check procedure are in the [post-processing shader guide](docs/guides/post-process-shaders.md).*
 
 게임 창은 더블클릭 또는 `Alt+Enter`로 전체화면과 창 모드를 오갑니다(Task 769). 전체화면은
