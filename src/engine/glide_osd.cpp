@@ -100,8 +100,35 @@ void GlideOsd::ProcessEvent(const void* sdl_event)
     ImGui_ImplSDL3_ProcessEvent(static_cast<const SDL_Event*>(sdl_event));
 }
 
+void GlideOsd::SetRendererIdentity(const GlRendererIdentity& identity)
+{
+    renderer_identity_ = identity;
+    has_renderer_identity_ = true;
+}
+
 namespace
 {
+
+// #5: what draws the picture. A software rasterizer is the one case worth
+// shouting about: the game runs, only slowly, and nothing else says why.
+void DrawRendererSection(const GlRendererIdentity& identity)
+{
+    ImGui::SeparatorText("Renderer");
+    if (identity.software)
+    {
+        const ImVec4 warning(1.0F, 0.45F, 0.35F, 1.0F);
+        ImGui::TextColored(warning, "%s", identity.renderer.c_str());
+        ImGui::TextColored(warning, "Software rendering: no 3D acceleration");
+    }
+    else
+    {
+        ImGui::TextUnformatted(identity.renderer.c_str());
+    }
+    ImGui::TextDisabled("Vendor: %s", identity.vendor.c_str());
+    ImGui::TextDisabled("OpenGL: %s", identity.version.c_str());
+    ImGui::TextDisabled("Video driver: %s%s", identity.video_driver.c_str(),
+                        identity.wsl_d3d12 ? " (Mesa D3D12 for WSL)" : "");
+}
 
 // Task 768: the shader list, Reload, and the active shader's parameters.
 void DrawPostProcessMenu(GlidePostProcess* post_process)
@@ -175,6 +202,11 @@ void GlideOsd::Render(std::atomic<bool>* lfb_high_precision,
                      ImGuiWindowFlags_AlwaysAutoResize |
                          ImGuiWindowFlags_NoCollapse))
     {
+        if (has_renderer_identity_)
+        {
+            DrawRendererSection(renderer_identity_);
+            ImGui::Separator();
+        }
         if (lfb_high_precision != nullptr)
         {
             bool enabled =

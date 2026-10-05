@@ -38,6 +38,7 @@
 #include "pic_timer_in_service_probe.h"
 #include "glide_gate_fixup_index_probe.h"
 #include "glide_gate_interrupt_exit_probe.h"
+#include "gl_renderer_identity_probe.h"
 #include "timer_return_pad_probe.h"
 #include "build_identity_probe.h"
 #include "glide_lfb_staging_shadow_probe.h"
@@ -686,6 +687,10 @@ int main(int argc, char** argv)
         std::strcmp(argv[1], "--glide-gate-interrupt-exit") == 0)
     {
         return repiu::tools::RunGlideGateInterruptExitProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--gl-renderer-identity") == 0)
+    {
+        return repiu::tools::RunGlRendererIdentityProbe() ? 0 : 1;
     }
     if (argc == 2 && std::strcmp(argv[1], "--pic-timer-in-service") == 0)
     {
