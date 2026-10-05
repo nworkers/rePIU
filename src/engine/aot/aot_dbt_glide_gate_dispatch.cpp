@@ -4,6 +4,7 @@
 #include "aot_residency_sample.h"
 #include "repiu/engine/aot_code_cache.h"
 #include "repiu/engine/aot_glide_gate_fixup_index.h"
+#include "repiu/engine/glide_gate_interrupt_exit.h"
 #include "../boundary/linexe_glide_boundary.h"
 #include "../execution/execution_internal.h"
 #include "../execution/thread_context.h"
@@ -134,6 +135,31 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtGlideGateFrame(
     frame[5] = guest_context.Edx;
     frame[6] = guest_context.Ecx;
     frame[7] = guest_context.Eax;
+
+    if (context->glide_gate_interrupt_injected)
+    {
+        // #6. The swap gate injected a timer tick: the interrupt frame now
+        // lies over this frame's flags, continuation and return slots.
+        // Leave through the interrupt exit, which puts the frame back (with
+        // the real CS, which this path has no context to read) and jumps to
+        // the handler; it then runs in place, as it does after an injection
+        // on the fault path, and its `iret` comes back to the call.
+        const std::uint32_t exit_address = GlideGateInterruptExitAddress();
+        if (exit_address == 0U)
+        {
+            context->aot_terminal_failure.store(true,
+                                                std::memory_order_release);
+            g_terminal_failure_count.fetch_add(1U, std::memory_order_relaxed);
+            return;
+        }
+        ArrangeGlideGateInterruptExit(
+            &frame[kSavedEflagsIndex],
+            guest_context.EFlags & ~0x00000100U, exit_address,
+            static_cast<std::uint32_t>(guest_context.Eip),
+            GlideGateInterruptExitSlotStorage());
+        g_success_count.fetch_add(1U, std::memory_order_relaxed);
+        return;
+    }
 
     std::uint32_t cache_target = 0U;
     if (ResolveAotTransferTarget(

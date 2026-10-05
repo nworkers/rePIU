@@ -19307,7 +19307,11 @@ Work log: [755](../work-logs/20260928-755-wsl-audio-rate-and-clock-tug-of-war.md
   `SpinForRendezvousHint`, tick 대량 drop). **확인됨(#6):** 수정 탓이 아니다. 창이 숨겨지면 컴포지터가 vsync swap을 약 1 fps로
   늦추고, direct 모델은 swap을 기다리는 동안 tick을 받지 못해 버린다(최소화 12초에 4,200개 이상; v0.0.200과 직접 호출 끔도 같음).
   vsync를 끄면 생기지 않고, x64는 Task 750의 swap 대기 tick 주입 덕분에 tick을 버리지 않는다. Task 772가 본 느린 상태도 같은
-  현상이었을 가능성이 높다. vsync를 끄면 2,100 → 53,197프레임. pumpit8은 439 → 3,288프레임.
+  현상이었을 가능성이 높다.
+* **확인됨(#6 수정):** direct 모델에서 Task 750의 주입이 멈춘 까닭은 gate thunk의 프레임(게스트 스택)과 인터럽트 프레임이 같은
+  자리였기 때문이다. 출구 코드(`push cs; push [eip]; jmp [handler]`)를 거치게 하고 대기 50 ms 뒤부터 주입하자, 12초 최소화에서
+  버려진 tick이 4,456 → 21(pumpit1), 60(pumpit8), 54(pumpitea)가 됐고 보이는 창의 프레임은 그대로다. 대기 시작부터 주입하면
+  i386 pumpit1의 프레임이 약 15% 줄어드는 까닭은 **미확정**. vsync를 끄면 2,100 → 53,197프레임. pumpit8은 439 → 3,288프레임.
 * **확인됨:** inline cache site 탐색은 게스트 주소가 들어 있는 자리를 캐시 주소와 비교하므로 일치할 수 없었다(`content=0`의 이유).
 * **미확정:** pumpitea에 남은 다른 느린 상태(`SpinForRendezvousHint`에 머묾, breakpoint 43만 번). 엔진의 다른 rel32 범위 검사에
   같은 가정이 있는지.
@@ -19376,7 +19380,12 @@ Evidence: [773 log](../work-logs/20261005-773-glide-gate-relink-cost.md) · [des
   v0.0.200 showed 0 of 12 over the same period). **Confirmed (#6):** the change is not the cause. When the window is
   hidden the compositor slows vsync swaps to about 1 fps, and the direct model receives no tick while it waits for the swap
   and drops them (more than 4,200 in 12 s minimised; v0.0.200 and dispatch-off alike). It does not happen with vsync off,
-  and x64 drops no ticks thanks to Task 750's swap-wait injection. The slow state Task 772 saw was very likely the same. With vsync off, 2,100 → 53,197 frames. pumpit8: 439 → 3,288 frames.
+  and x64 drops no ticks thanks to Task 750's swap-wait injection. The slow state Task 772 saw was very likely the same.
+* **Confirmed (#6 fix):** Task 750's injection stopped on the direct model because the gate thunk's frame (on the guest
+  stack) and the interrupt frame were the same slots. Passing through exit code (`push cs; push [eip]; jmp [handler]`) and
+  injecting from 50 ms into the wait, the ticks dropped in 12 s minimised go from 4,456 to 21 (pumpit1), 60 (pumpit8) and 54
+  (pumpitea), with a visible window's frames unchanged. Why injecting from the start of the wait costs i386's pumpit1
+  about 15% of its frames is **unresolved**. With vsync off, 2,100 → 53,197 frames. pumpit8: 439 → 3,288 frames.
 * **Confirmed:** the inline cache site scan compared a field holding a guest address with a cache address and could
   never match (the reason for `content=0`).
 * **Unresolved:** another slow state left in pumpitea (sitting in `SpinForRendezvousHint`, 430,000 breakpoints), and

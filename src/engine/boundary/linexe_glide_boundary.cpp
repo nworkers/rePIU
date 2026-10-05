@@ -1,3 +1,4 @@
+#include "repiu/engine/glide_gate_interrupt_exit.h"
 #include "repiu/engine/aot_boundary_opcode_census.h"
 #include "repiu/runtime/execution_model.h"
 #include "linexe_glide_boundary.h"
@@ -1368,11 +1369,50 @@ bool GlideSwapWaitTicksEnabled()
     {
         return false;
     }
+    // #6. On the direct model the gate leaves into the timer handler through
+    // the interrupt exit; without it the swap stays synchronous.
+    if (runtime::execution_model::RunsGuestBytesDirectly() &&
+        GlideGateInterruptExitAddress() == 0U)
+    {
+        return false;
+    }
     static const bool enabled = [] {
         const char* const value = std::getenv("REPIU_GLIDE_SWAP_WAIT_TICKS");
         return value == nullptr || value[0] != '0';
     }();
     return enabled;
+}
+
+// #6. How long a swap wait runs before owed ticks are injected into it.
+//
+// The cache model injects from the start: that is what gives the guest its
+// ticks on time within a frame (Task 750). On the direct model the same
+// injection costs frames -- pumpit1 drew about 15% fewer with it than
+// without, measured back to back with the window visible -- so there it is
+// held until the wait has outlasted any ordinary swap. A swap that blocks
+// longer than that is the case the direct model needs it for: a hidden
+// window, whose swaps the compositor slows to about one a second, during
+// which ticks used to be dropped past the backlog cap.
+// `REPIU_GLIDE_SWAP_WAIT_TICK_HOLD_MS` overrides it.
+std::chrono::milliseconds GlideSwapWaitTickHold()
+{
+    static const std::chrono::milliseconds hold = [] {
+        const char* const value =
+            std::getenv("REPIU_GLIDE_SWAP_WAIT_TICK_HOLD_MS");
+        if (value != nullptr && value[0] != '\0')
+        {
+            char* end = nullptr;
+            const long parsed = std::strtol(value, &end, 10);
+            if (end != value && *end == '\0' && parsed >= 0L &&
+                parsed <= 10000L)
+            {
+                return std::chrono::milliseconds(parsed);
+            }
+        }
+        return std::chrono::milliseconds(
+            runtime::execution_model::RunsGuestBytesDirectly() ? 50 : 0);
+    }();
+    return hold;
 }
 
 // Task 750. The address of the `call rel32` that reached the gate, or zero.
@@ -1468,7 +1508,11 @@ bool ContinueGlideSwapWait(repiu::platform::GuestCpuContext* win32_context,
     while (!context->glide_backend.WaitForPendingSwaps(
         std::chrono::microseconds(0)))
     {
-        if (call_eip != 0U)
+        // #6: nothing is injected until the wait has lasted the hold.
+        const bool past_hold =
+            std::chrono::steady_clock::now() - context->glide_swap_wait_begin >=
+            GlideSwapWaitTickHold();
+        if (call_eip != 0U && past_hold)
         {
             std::lock_guard<std::mutex> arm_lock(context->timer_tick_arm_mutex);
             if (context->timer_tick_arm)
@@ -1476,7 +1520,7 @@ bool ContinueGlideSwapWait(repiu::platform::GuestCpuContext* win32_context,
                 context->timer_tick_arm();
             }
         }
-        if (call_eip != 0U &&
+        if (call_eip != 0U && past_hold &&
             context->timer_interrupt_pending.load(std::memory_order_acquire))
         {
             win32_context->Eip = call_eip;
@@ -3086,6 +3130,8 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                      context->glide_backend.PostBufferSwap(swap_interval))
             {
                 context->glide_swap_wait_active = true;
+                context->glide_swap_wait_begin =
+                    std::chrono::steady_clock::now();
                 context->glide_backend.NoteSwapWaitBegin();
                 return ContinueGlideSwapWait(win32_context, context,
                                              return_address);

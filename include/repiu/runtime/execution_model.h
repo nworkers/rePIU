@@ -38,9 +38,11 @@ namespace repiu::runtime::execution_model
 
 // Task 750. Whether owed timer ticks can be injected while grBufferSwap waits.
 // The injected frame returns to the call that reached the gate, which the
-// cache model resumes through the cache. On the direct model the first
-// injected tick never returned to the call (seen on Win32), so it stays off
-// there until that continuation is made to work.
+// cache model resumes through the cache. Since #6 the direct model does it
+// too: its gate thunk leaves into the handler through the interrupt exit
+// (glide_gate_interrupt_exit.h). Before that the first injected tick never
+// returned to the call, because the interrupt frame lay over the thunk's own
+// frame on the guest stack.
 [[nodiscard]] bool InjectsTicksDuringSwapWait();
 
 }  // namespace repiu::runtime::execution_model

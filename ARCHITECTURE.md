@@ -3420,6 +3420,12 @@ without that thunk, actual direct dispatch is false and the validated base HLE
 gate image remains installed, allowing LINEXE activation and the existing
 trap/HLE boundary to continue.
 
+### swap 대기 중 타이머 tick / Timer ticks during the swap wait
+
+`grBufferSwap` gate는 present를 호스트 스레드에 게시하고 기다리는 동안 밀린 타이머 tick을 "gate에 도달한 `call` 직전의 인터럽트"로 주입합니다(Task 750). cache 모델은 대기 시작부터 주입합니다. direct 모델(#6)은 gate thunk가 게스트 스택에 둔 프레임과 인터럽트 프레임이 겹치므로, resolver가 thunk의 끝을 엔진이 만든 출구 코드(`GlideGateInterruptExit`: `push cs; push [eip]; jmp [handler]`)로 보내 핸들러에 들어갑니다. direct 모델은 대기가 50 ms를 넘긴 뒤에만 주입하므로(`REPIU_GLIDE_SWAP_WAIT_TICK_HOLD_MS`) 보통의 swap은 이전과 같고, 숨겨진 창처럼 swap이 오래 막힐 때 tick이 버려지지 않습니다. `REPIU_GLIDE_SWAP_WAIT_TICKS=0`으로 끕니다.
+
+While the `grBufferSwap` gate waits for the present it posted to the host thread, owed timer ticks are injected as "an interrupt just before the `call` that reached the gate" (Task 750). The cache model injects from the start of the wait. On the direct model (#6) the interrupt frame overlaps the frame the gate thunk keeps on the guest stack, so the resolver sends the thunk's tail through exit code the engine generates (`GlideGateInterruptExit`: `push cs; push [eip]; jmp [handler]`) into the handler. The direct model injects only once the wait has lasted 50 ms (`REPIU_GLIDE_SWAP_WAIT_TICK_HOLD_MS`), so an ordinary swap is as before and a swap that stays blocked, as for a hidden window, no longer loses ticks. `REPIU_GLIDE_SWAP_WAIT_TICKS=0` switches it off.
+
 ### Glide gate 직접 dispatch 기본 정책 / Glide-gate direct-dispatch default policy
 
 `0|off|false`, 빈 문자열, 알 수 없는 값은 fail-closed opt-out입니다. 자산 유래 gate/ABI 검증 실패와 `dynamic` 이외 backend는 기존 UD2/INT3/VEH 경로를 유지합니다.

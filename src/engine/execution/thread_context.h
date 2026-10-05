@@ -44,6 +44,7 @@
 #include "repiu/engine/veh_exit_site.h"
 #include "native_fast_path.h"
 
+#include <chrono>
 #include <functional>
 #include <mutex>
 #include <memory>
@@ -797,6 +798,10 @@ struct ThreadContext
     // gate handler's last return left an injected interrupt frame rather
     // than the gate's own return.
     bool glide_swap_wait_active = false;
+    // #6. When the current swap wait began. Kept across the gate re-entries
+    // that injected ticks cause, so the hold before the first injection is
+    // measured from the wait's start.
+    std::chrono::steady_clock::time_point glide_swap_wait_begin{};
     // Task 750. The host poll loop's tick arming, callable from the guest
     // thread too: that loop is the host thread, which is inside the present
     // (a vblank wait, a pacing sleep) exactly when the guest waits the swap
