@@ -1,6 +1,8 @@
 #ifndef REPIU_ENGINE_GLIDE_OSD_H_
 #define REPIU_ENGINE_GLIDE_OSD_H_
 
+#include "repiu/engine/gl_renderer_identity.h"
+
 #include <atomic>
 #include <string>
 
@@ -12,7 +14,8 @@ class GlidePostProcess;
 // Task 761. The in-game on-screen display the launcher section of
 // ARCHITECTURE.md promised: the same Dear ImGui layer, drawn inside the Glide
 // backend's SDL window while the guest runs. It holds the LFB high-precision
-// presentation toggle and, since Task 768, the screen shader menu.
+// presentation toggle and, since Task 768, the screen shader menu; since #5 it
+// opens with what draws the picture (GL renderer, vendor, version, driver).
 //
 // Threading: every method runs on the backend's host thread, the one that owns
 // the SDL window and the GL context. The toggle the checkbox flips is an
@@ -56,9 +59,15 @@ public:
     void Render(std::atomic<bool>* lfb_high_precision,
                 GlidePostProcess* post_process);
 
+    // #5. The renderer section at the top of the overlay. Set once, after the
+    // GL context exists; until then the section is not drawn.
+    void SetRendererIdentity(const GlRendererIdentity& identity);
+
 private:
     bool initialized_ = false;
     bool visible_ = false;
+    bool has_renderer_identity_ = false;
+    GlRendererIdentity renderer_identity_;
 };
 
 }  // namespace repiu::engine

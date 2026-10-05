@@ -38,6 +38,7 @@
 #include "pic_timer_in_service_probe.h"
 #include "glide_gate_fixup_index_probe.h"
 #include "glide_gate_interrupt_exit_probe.h"
+#include "gl_renderer_identity_probe.h"
 #include "timer_return_pad_probe.h"
 #include "build_identity_probe.h"
 #include "flat_stack_segment_fold_probe.h"
@@ -190,6 +191,8 @@ constexpr CoreProbe kCoreProbes[] = {
     // #6. Bytes and a replayed stack, so every host runs it.
     {"glide_gate_interrupt_exit",
      &repiu::tools::RunGlideGateInterruptExitProbe},
+    // #5. String matching, no GL context, so every host runs it.
+    {"gl_renderer_identity", &repiu::tools::RunGlRendererIdentityProbe},
     // Task 738. The window-title label, checked against this compiler.
     {"build_identity", &repiu::tools::RunBuildIdentityProbe},
 };

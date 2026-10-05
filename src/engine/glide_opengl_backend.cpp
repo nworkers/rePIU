@@ -1,5 +1,6 @@
 #include "repiu/engine/glide_opengl_backend.h"
 #include "repiu/engine/active_jamma_bindings.h"
+#include "repiu/engine/gl_renderer_identity.h"
 #include "repiu/engine/glide_letterbox.h"
 #include "repiu/engine/glide_osd.h"
 #include "repiu/engine/glide_post_process.h"
@@ -1125,6 +1126,7 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
     return true;
   }
+  GlRendererIdentity renderer_identity;
   {
     // Task 752: say what draws. A software renderer here is why a frame's
     // present takes 11 ms where the GPU takes 5.
@@ -1138,6 +1140,20 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
             glide_swap_interval_policy_.wsl_d3d12_selected
                 ? " (Mesa D3D12 chosen for WSL)"
                 : "");
+    // #5: the rest of what the OSD shows. The line above stays as it is;
+    // scripts look for it.
+    renderer_identity = MakeGlRendererIdentity(
+        renderer, reinterpret_cast<const char *>(glGetString(GL_VENDOR)),
+        reinterpret_cast<const char *>(glGetString(GL_VERSION)),
+        SDL_GetCurrentVideoDriver(),
+        glide_swap_interval_policy_.wsl_d3d12_selected);
+    fprintf(stderr,
+            "[repiu-glide] GL vendor/version/video driver/software: "
+            "%s/%s/%s/%s\n",
+            renderer_identity.vendor.c_str(),
+            renderer_identity.version.c_str(),
+            renderer_identity.video_driver.c_str(),
+            renderer_identity.software ? "true" : "false");
   }
 
   window_ = window;
@@ -1153,6 +1169,8 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
     if (!osd_->Initialize(window, render_context, &osd_message)) {
       fprintf(stderr, "[repiu-osd] disabled: %s\n", osd_message.c_str());
       osd_.reset();
+    } else {
+      osd_->SetRendererIdentity(renderer_identity);
     }
   }
   // Task 768: the post-processing pass and its initial shader. `none` when

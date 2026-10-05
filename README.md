@@ -300,6 +300,14 @@ their parameters for that run. On the command line it is `repiu pumpit8 --post-s
 `REPIU_POST_SHADER=crt` and the launcher setting (Task 771). The format and
 a check procedure are in the [post-processing shader guide](docs/guides/post-process-shaders.md).*
 
+`Tab` OSD 맨 위에는 지금 화면을 그리는 OpenGL renderer, vendor, GL 버전, SDL 비디오 드라이버(`windows`,
+`x11`, `wayland`)가 나옵니다(#5). llvmpipe 같은 소프트웨어 렌더러면 빨간 글씨로 "Software rendering: no 3D
+acceleration"을 표시합니다. 게임이 유난히 느리면 먼저 여기를 보십시오.
+
+*The top of the `Tab` OSD shows the OpenGL renderer drawing the picture, its vendor, the GL version and the SDL
+video driver (`windows`, `x11`, `wayland`) (#5). A software renderer such as llvmpipe is shown in red with
+"Software rendering: no 3D acceleration". If the game runs unusually slowly, look here first.*
+
 게임 창은 더블클릭 또는 `Alt+Enter`로 전체화면과 창 모드를 오갑니다(Task 769). 전체화면은
 디스플레이 해상도를 바꾸지 않는 테두리 없는 창이고, 창 크기를 바꾸든 전체화면이든 원래 4:3 비율을
 유지하며 남는 부분은 검은 띠가 됩니다. `Alt+1`~`Alt+4`는 창 모드에서 1~4배 크기를 고릅니다.
