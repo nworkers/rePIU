@@ -265,7 +265,7 @@ If the requirement is a simple question or confirmation request, answer it direc
 * 사용자가 머지를 요청하면 `main`에 머지하기 전에 patch 버전을 1 증가시킨다.
 * 사용자가 minor 버전 증가를 요청하면 minor 버전을 1 증가시키고 patch 버전은 0으로 리셋한다.
 * 사용자가 major 버전 증가를 요청하면 major 버전을 1 증가시키고 minor와 patch 버전은 0으로 리셋한다.
-* 사용자가 머지를 요청하면 작업 브랜치로 GitHub pull request를 만들고, 그 PR을 squash merge해 `main`에 넣는다. 머지한 뒤 `git pull`로 로컬 `main`을 원격과 같게 갱신한다.
+* 사용자가 머지를 요청하면 작업 브랜치를 원격에 push하고 GitHub pull request를 만든 뒤(머지 요청이 이 push와 PR 생성의 승인이다), 그 PR을 squash merge해 `main`에 넣는다. 머지한 뒤 `git pull`로 로컬 `main`을 원격과 같게 갱신한다.
 * PR 본문에는 해결하는 issue를 `Closes #6`처럼 적는다.
 * squash merge의 커밋 제목은 작업 브랜치 안의 커밋 제목들을 확인하고, 전체 변경 내용을 잘 표현하는 제목으로 만든다.
 * `main`에 머지한 뒤에는 그 머지 커밋에 `VERSION`과 같은 값의 annotated tag를 `vmajor.minor.patch` 형식으로 붙인다. 예: `VERSION`이 `0.0.81`이면 `v0.0.81`.
@@ -283,7 +283,7 @@ If the requirement is a simple question or confirmation request, answer it direc
 * When the user requests a merge, increment the patch version by 1 before merging into `main`.
 * When the user requests a minor version bump, increment the minor version by 1 and reset the patch version to 0.
 * When the user requests a major version bump, increment the major version by 1 and reset the minor and patch versions to 0.
-* When the user requests a merge, open a GitHub pull request from the task branch and squash-merge it into `main`. After the merge, update local `main` to match the remote with `git pull`.
+* When the user requests a merge, push the task branch to the remote, open a GitHub pull request from it (the merge request approves this push and the pull request), and squash-merge it into `main`. After the merge, update local `main` to match the remote with `git pull`.
 * Name the issues the pull request resolves in its description, as in `Closes #6`.
 * For the squash merge's commit title, inspect the commit titles in the task branch and write one that best describes the complete change.
 * After merging into `main`, tag that merge commit with an annotated tag matching `VERSION`, in the form `vmajor.minor.patch`. For example, tag `v0.0.81` when `VERSION` reads `0.0.81`.
