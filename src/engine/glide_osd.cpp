@@ -1,6 +1,7 @@
 #include "repiu/engine/glide_osd.h"
 
 #include "repiu/engine/glide_post_process.h"
+#include "repiu/engine/imgui_ui_scale.h"
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -8,6 +9,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <cfloat>
 #include <string>
 
 namespace repiu::engine
@@ -47,6 +49,7 @@ bool GlideOsd::Initialize(void* sdl_window, void* gl_context,
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr;
+    AddImGuiUiFont();
     ImGui::StyleColorsDark();
     if (!ImGui_ImplSDL3_InitForOpenGL(
             static_cast<SDL_Window*>(sdl_window),
@@ -69,6 +72,8 @@ bool GlideOsd::Initialize(void* sdl_window, void* gl_context,
         }
         return false;
     }
+    base_style_ = std::make_unique<ImGuiStyle>(ImGui::GetStyle());
+    applied_scale_ = 0.0F;
     initialized_ = true;
     return true;
 }
@@ -104,6 +109,11 @@ void GlideOsd::SetRendererIdentity(const GlRendererIdentity& identity)
 {
     renderer_identity_ = identity;
     has_renderer_identity_ = true;
+}
+
+void GlideOsd::SetInfoLines(const std::vector<std::string>& lines)
+{
+    info_lines_ = lines;
 }
 
 namespace
@@ -196,12 +206,34 @@ void GlideOsd::Render(std::atomic<bool>* lfb_high_precision,
     }
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    // #15: the SDL backend has just set the display size, so the scale for
+    // this frame is known before ImGui lays anything out.
+    ImGuiIO& io = ImGui::GetIO();
+    const float scale = UiScaleForHeight(io.DisplaySize.y, kOsdUiScale);
+    if (scale != applied_scale_ && base_style_ != nullptr)
+    {
+        ApplyImGuiUiScale(*base_style_, scale);
+        applied_scale_ = scale;
+    }
     ImGui::NewFrame();
-    ImGui::SetNextWindowPos(ImVec2(16.0F, 16.0F), ImGuiCond_FirstUseEver);
+    // re2DJ's layout: pinned across the full width at the top, the height
+    // following the content. The width is held by a constraint because
+    // auto-resize would otherwise shrink it to the content as well.
+    ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(io.DisplaySize.x, 0.0F),
+                                        ImVec2(io.DisplaySize.x, FLT_MAX));
     if (ImGui::Begin("rePIU OSD", nullptr,
                      ImGuiWindowFlags_AlwaysAutoResize |
-                         ImGuiWindowFlags_NoCollapse))
+                         ImGuiWindowFlags_NoTitleBar |
+                         ImGuiWindowFlags_NoCollapse |
+                         ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoSavedSettings))
     {
+        for (const std::string& line : info_lines_)
+        {
+            ImGui::TextUnformatted(line.c_str());
+        }
         if (has_renderer_identity_)
         {
             DrawRendererSection(renderer_identity_);

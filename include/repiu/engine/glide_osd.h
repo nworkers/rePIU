@@ -4,7 +4,11 @@
 #include "repiu/engine/gl_renderer_identity.h"
 
 #include <atomic>
+#include <memory>
 #include <string>
+#include <vector>
+
+struct ImGuiStyle;
 
 namespace repiu::engine
 {
@@ -16,6 +20,9 @@ class GlidePostProcess;
 // backend's SDL window while the guest runs. It holds the LFB high-precision
 // presentation toggle and, since Task 768, the screen shader menu; since #5 it
 // opens with what draws the picture (GL renderer, vendor, version, driver).
+// Since #15 it takes re2DJ's layout: pinned across the full width at the top,
+// as tall as its content, opening with the name, version, build date and
+// target profile, and with text and spacing that follow the window height.
 //
 // Threading: every method runs on the backend's host thread, the one that owns
 // the SDL window and the GL context. The toggle the checkbox flips is an
@@ -63,11 +70,20 @@ public:
     // GL context exists; until then the section is not drawn.
     void SetRendererIdentity(const GlRendererIdentity& identity);
 
+    // #15. The lines that open the overlay, in order: the name, version and
+    // build date, then the target profile.
+    void SetInfoLines(const std::vector<std::string>& lines);
+
 private:
     bool initialized_ = false;
     bool visible_ = false;
     bool has_renderer_identity_ = false;
     GlRendererIdentity renderer_identity_;
+    std::vector<std::string> info_lines_;
+    // #15. The style as first set up, which every scale starts again from,
+    // and the scale last applied.
+    std::unique_ptr<ImGuiStyle> base_style_;
+    float applied_scale_ = 0.0F;
 };
 
 }  // namespace repiu::engine

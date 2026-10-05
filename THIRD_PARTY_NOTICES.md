@@ -15,10 +15,12 @@ Generated file SHA-256 values:
 
 The vendored amalgamation is used only for x86 instruction decoding and metadata. Original PIU code continues to execute directly; Zydis does not replace game or resource-processing logic.
 
-## Dear ImGui v1.92.1
-rePIU fetches Dear ImGui tag `v1.92.1` and builds only its core sources with the
-`imgui_impl_sdl3` and `imgui_impl_opengl3` backends, which draw the launcher inside the SDL3
-window the host already creates. Dear ImGui uses the MIT License.
+## Dear ImGui v1.92.9
+rePIU fetches Dear ImGui v1.92.9 (commit `01380c579715e62fb9a8d6ec0502c4ea83bfde6e`) and builds
+only its core sources with the `imgui_impl_sdl3` and `imgui_impl_opengl3` backends, which draw the
+launcher and the in-game OSD inside the SDL3 windows the host already creates. The OSD and the
+launcher draw with ProggyForever, the scalable default font embedded in Dear ImGui. Dear ImGui uses
+the MIT License.
 - Upstream: https://github.com/ocornut/imgui
 - License text ships with the fetched sources as `LICENSE.txt`.
 

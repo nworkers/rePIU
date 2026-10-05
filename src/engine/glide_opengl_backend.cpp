@@ -5,6 +5,7 @@
 #include "repiu/engine/glide_osd.h"
 #include "repiu/engine/glide_post_process.h"
 #include "repiu/engine/post_shader_catalog.h"
+#include "repiu/engine/session_identity.h"
 #include "repiu/hle/glide_lfb.h"
 #include "repiu/runtime/env_toggle.h"
 #include "repiu/hle/glide_texture_decode.h"
@@ -1171,6 +1172,12 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
       osd_.reset();
     } else {
       osd_->SetRendererIdentity(renderer_identity);
+      // #15: the overlay opens the way re2DJ's does, with the first half of
+      // the window title and the target profile.
+      osd_->SetInfoLines(
+          {std::string("rePIU v" REPIU_VERSION " (") +
+               repiu::platform::BuildIdentityLabel() + ") - Build " __DATE__,
+           "Target Profile : " + SessionTargetProfile()});
     }
   }
   // Task 768: the post-processing pass and its initial shader. `none` when
