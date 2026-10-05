@@ -19303,10 +19303,12 @@ Work log: [755](../work-logs/20260928-755-wsl-audio-rate-and-clock-tug-of-war.md
   Linux i386은 코드 캐시가 `0xE8…`, gate가 `0x01…`라 모든 slot이 건너뛰어졌고, 그래서 같은 경계 INT3을 매번 밟았다. Windows는
   캐시가 `0x0E…`라 범위 안이어서 첫 호출에 이어졌다. 32비트 명령 포인터는 2³²로 감기므로 direct 모델에서는 검사가 필요 없다.
 * **확인됨:** 감은 변위를 쓰게 하자 pumpit1(i386, 60초)이 약 1,990 → 3,190프레임, 게스트 스레드 CPU 99.4% → 16.3%, Activate
-  호출이 2초에 1.1만 번 → 60초에 148번, 느린 상태 9회 중 0회. vsync를 끄면 2,100 → 53,197프레임. pumpit8은 439 → 3,288프레임.
+  호출이 2초에 1.1만 번 → 60초에 148번. 느린 상태는 처음 9회 중 0회였으나 이후 38회 중 11회 다시 나왔다(샘플은
+  `SpinForRendezvousHint`, tick 대량 drop; 같은 기간 v0.0.200은 12회 중 0회). 수정 탓인지 그때의 부하 탓인지는 **미확정**. vsync를 끄면 2,100 → 53,197프레임. pumpit8은 439 → 3,288프레임.
 * **확인됨:** inline cache site 탐색은 게스트 주소가 들어 있는 자리를 캐시 주소와 비교하므로 일치할 수 없었다(`content=0`의 이유).
 * **미확정:** pumpitea에 남은 다른 느린 상태(`SpinForRendezvousHint`에 머묾, breakpoint 43만 번). 엔진의 다른 rel32 범위 검사에
   같은 가정이 있는지.
+* **확인됨:** i386(x11)은 32비트 NVIDIA GLX 드라이버로 하드웨어 가속된다(`libnvidia-glcore` 매핑, `nvidia-smi pmon`의 G 클라이언트).
 * **확인됨(환경):** 32비트 Wayland 패키지가 있으면 i386은 Wayland를 고르고 NVIDIA에서 `eglCreateWindowSurface`가 실패해 dummy로
   넘어간다(0프레임). `SDL_VIDEO_DRIVER=x11`이면 동작한다.
 * HiDPI: 게임 창이 고밀도 픽셀을 요청하지 않아 배율 2 화면에서 Wayland는 확대(2560×1440 논리), x11은 절반 크기 창이 된다.
@@ -19366,12 +19368,16 @@ Evidence: [773 log](../work-logs/20261005-773-glide-gate-relink-cost.md) · [des
   skipped and the same boundary INT3 was hit every time. On Windows the cache is at `0x0E…`, in range, so the first call
   linked it. A 32-bit instruction pointer wraps at 2³², so the direct model needs no such check.
 * **Confirmed:** with the wrapped displacement written, pumpit1 (i386, 60 s) goes from about 1,990 to 3,190 frames, the
-  guest thread from 99.4% to 16.3% CPU, Activate from 11,000 calls every 2 s to 148 in 60 s, and the slow state appears
-  in 0 of 9 runs. With vsync off, 2,100 → 53,197 frames. pumpit8: 439 → 3,288 frames.
+  guest thread from 99.4% to 16.3% CPU, and Activate from 11,000 calls every 2 s to 148 in 60 s. The slow state was absent
+  in the first 9 runs but returned in 11 of 38 later ones (samples in `SpinForRendezvousHint`, ticks dropped in bulk;
+  v0.0.200 showed 0 of 12 over the same period). Whether the change or the load of that moment causes it is
+  **unresolved**. With vsync off, 2,100 → 53,197 frames. pumpit8: 439 → 3,288 frames.
 * **Confirmed:** the inline cache site scan compared a field holding a guest address with a cache address and could
   never match (the reason for `content=0`).
 * **Unresolved:** another slow state left in pumpitea (sitting in `SpinForRendezvousHint`, 430,000 breakpoints), and
   whether the engine's other rel32 range checks carry the same assumption.
+* **Confirmed:** i386 (x11) is hardware accelerated through the 32-bit NVIDIA GLX driver (`libnvidia-glcore` mapped; a G
+  client in `nvidia-smi pmon`).
 * **Confirmed (environment):** with the 32-bit Wayland packages present, i386 picks Wayland and on NVIDIA
   `eglCreateWindowSurface` fails, falling back to the dummy (0 frames). It runs with `SDL_VIDEO_DRIVER=x11`.
 * HiDPI: the game window does not ask for high pixel density, so on a scale-2 screen Wayland upscales it (logical

@@ -9,8 +9,8 @@
 Linux i386에서 Glide 호출마다 breakpoint를 밟던 원인을 찾아 고쳤습니다. gate로 가는 `call rel32`를 고쳐 쓰는 코드가 변위를
 64비트로 계산해 `int32` 범위 밖이면 건너뛰었는데, Linux i386은 코드 캐시(`0xE8…`)와 gate(`0x01…`)가 2 GiB 넘게 떨어져 있어
 **한 번도 쓰지 못했습니다.** 32비트 명령 포인터는 2³²로 감기므로 그 검사는 direct 모델에 필요 없습니다. 감아 쓰게 하자 pumpit1은
-60초에 약 1,990프레임에서 3,190프레임이 되고, 게스트 스레드 CPU는 99.4%에서 16.3%로 내려갔으며, Task 772의 느린 상태는 9회 중
-0회였습니다. Task 517~527이 남긴 질문의 답입니다.
+60초에 약 1,990프레임에서 3,190프레임이 되고, 게스트 스레드 CPU는 99.4%에서 16.3%로 내려갔습니다. 다만 느린 상태가 없어진 것은
+아닙니다(처음 9회는 0회였지만 이후 측정에서 다시 나옴, 아래 "추가 확인"). Task 517~527이 남긴 질문의 답입니다.
 
 ## 바꾼 것
 
@@ -74,6 +74,35 @@ flowchart LR
 * 간접 호출로 gate에 가는 경우(`elsewhere` 6,699 / 60초)는 여전히 경계를 거칩니다. 전체의 1.5%입니다.
 * 엔진의 다른 rel32 범위 검사에 같은 가정이 있는지는 보지 않았습니다.
 
+## 추가 확인 (같은 날): 3D 가속과, 수정 후에도 남은 느린 상태
+
+**i386의 3D 가속은 동작합니다(x11).** 실행 중인 i386 프로세스의 `/proc/<pid>/maps`에 32비트 `libGLX_nvidia.so.595.91.07`,
+`libnvidia-glcore.so.595.91.07`, `libnvidia-tls.so.595.91.07`이 올라와 있고 Mesa·llvmpipe는 없습니다. `nvidia-smi pmon`에 그
+프로세스가 GPU 0의 그래픽(G) 클라이언트로 나오며, 로그의 renderer는 `NVIDIA GeForce RTX 4090/PCIe/SSE2`입니다. Wayland에서는 위에
+적은 대로 창을 열지 못해 GL 자체가 없습니다(dummy).
+
+**위 요약의 "느린 상태 9회 중 0회"는 그 조용한 시간대에만 맞습니다.** 그 뒤(Chrome이 CPU 32~36%를 쓰는 동안) 25초 실행을
+다시 재니 수정 빌드에서도 느린 상태가 나왔습니다. 샘플은 `SpinForRendezvousHint`에 모이고 tick이 대량으로 버려집니다
+(`due/injected/dropped` 5,860/2,137/3,723). pumpitea에서 본 것과 같은 모양입니다.
+
+| 구간 (순서대로) | 수정 빌드 | v0.0.200 i386 | 비고 |
+|---|---|---|---|
+| x11 강제, 연속 10회 | 7회 느림 (29~845프레임, 정상 약 1,112) | — | |
+| `WAYLAND_DISPLAY=repiu-none`, 연속 6회 | 3회 느림 | — | |
+| 그 직후 연속 6회 | — | 0회 (912~925프레임) | x64 Release 9회도 0회 (1,084~1,092) |
+| 교대 6쌍 | 1회 느림 | 0회 (887~892) | |
+| gate 직접 호출 켬·끔 교대 8쌍 | 켬 0회 | — | 끔(`REPIU_AOT_DBT_GLIDE_GATE_DISPATCH=0`) 0회, 1,111~1,117프레임 |
+
+* **확인됨:** 수정 빌드는 느린 상태에 들어갈 수 있습니다(합계 38회 중 11회). 같은 기간 v0.0.200 i386은 12회 중 0회였습니다.
+* **미확정:** 느린 실행이 시간대에 몰려 있어(처음 16회에 10회, 이후 22회에 1회) 수정이 원인인지 그때의 외부 부하가 원인인지 이
+  자료로는 가릴 수 없습니다. v0.0.200도 Task 772에서는 다른 모양(Activate 루프)의 느린 상태를 보였습니다.
+* **추정:** 수정 전에는 Glide 호출마다의 breakpoint가 밀린 타이머 tick을 넣을 기회였는데, 직접 호출이 되면서 그 기회가 사라져
+  safe point에만 의존하게 됐을 수 있습니다. 확인하지 않았습니다.
+* 참고: gate 직접 호출을 끄면 비싼 탐색도 돌지 않으므로(Activate가 바로 반환) 수정 빌드의 정상 속도와 같은 프레임이 나옵니다.
+
+**따라서 머지 전에 이 느린 상태의 조사가 필요합니다.** 부하를 일부러 건 상태에서 켬·끔·v0.0.200을 교대로 충분히 재고,
+느린 실행의 tick 전달 경로(`deferred` 사유)를 봐야 합니다.
+
 ---
 
 # Task 773 Work Log: The Glide Gate Relink — Removing Its Cost, and Making It Link on Linux i386
@@ -88,8 +117,8 @@ The reason every Glide call hit a breakpoint on Linux i386 is found and fixed. T
 go to the gate computed the displacement in 64 bits and skipped it when it fell outside `int32`; on Linux i386 the code
 cache (`0xE8…`) and the gates (`0x01…`) are more than 2 GiB apart, so **it never wrote once.** A 32-bit instruction
 pointer wraps at 2³², so the check is not needed on the direct model. With the wrapped displacement written, pumpit1 goes
-from about 1,990 to 3,190 frames in 60 s, the guest thread from 99.4% to 16.3% CPU, and Task 772's slow state appeared in
-0 of 9 runs. This answers the question Tasks 517 to 527 left.
+from about 1,990 to 3,190 frames in 60 s and the guest thread from 99.4% to 16.3% CPU. The slow state is not gone,
+though: 0 of the first 9 runs, but it came back in later measurements ("Further checks" below). This answers the question Tasks 517 to 527 left.
 
 ## Changes
 
@@ -159,3 +188,36 @@ flowchart LR
   `repiu_aot_probe --glide-gate-fixup-index` and a pumpit1 run need checking.
 * Gates reached by indirect calls (`elsewhere`, 6,699 in 60 s) still cross the boundary: 1.5% of the total.
 * Whether the engine's other rel32 range checks carry the same assumption was not examined.
+
+## Further checks (same day): 3D acceleration, and a slow state that remains
+
+**3D acceleration works on i386 (x11).** The running i386 process maps the 32-bit `libGLX_nvidia.so.595.91.07`,
+`libnvidia-glcore.so.595.91.07` and `libnvidia-tls.so.595.91.07` (`/proc/<pid>/maps`) and no Mesa or llvmpipe;
+`nvidia-smi pmon` lists it as a graphics (G) client of GPU 0; the log's renderer is `NVIDIA GeForce RTX 4090/PCIe/SSE2`.
+Under Wayland it cannot open its window, as said above, and has no GL at all (dummy).
+
+**The summary's "slow state in 0 of 9 runs" holds only for that quiet period.** Measured again later with 25-second
+runs (while Chrome used 32–36% CPU), the changed build did enter a slow state. Its samples sit in
+`SpinForRendezvousHint` and ticks are dropped in bulk (`due/injected/dropped` 5,860/2,137/3,723), the shape seen in
+pumpitea.
+
+| Stretch (in order) | Changed build | v0.0.200 i386 | Note |
+|---|---|---|---|
+| forced x11, 10 in a row | 7 slow (29–845 frames; normal about 1,112) | — | |
+| `WAYLAND_DISPLAY=repiu-none`, 6 in a row | 3 slow | — | |
+| right after, 6 in a row | — | 0 (912–925 frames) | x64 Release: 0 of 9 (1,084–1,092) |
+| 6 alternating pairs | 1 slow | 0 (887–892) | |
+| gate dispatch on/off, 8 alternating pairs | on: 0 | — | off (`REPIU_AOT_DBT_GLIDE_GATE_DISPATCH=0`): 0, 1,111–1,117 frames |
+
+* **Confirmed:** the changed build can enter a slow state (11 of 38 runs). Over the same period v0.0.200 i386 showed 0 of
+  12.
+* **Unresolved:** the slow runs cluster in time (10 of the first 16, 1 of the next 22), so this data cannot tell whether
+  the change or the outside load of that moment is the cause. v0.0.200 had its own slow state of a different shape (the
+  Activate loop) in Task 772.
+* **Inferred:** before the change, the breakpoint on every Glide call was a chance to inject owed timer ticks; with direct
+  calls that chance is gone and delivery may rest on safe points alone. Not verified.
+* Note: with gate dispatch off the costly scans do not run either (Activate returns at once), so it draws the same frames
+  as the changed build at normal speed.
+
+**So this slow state needs investigating before a merge**: enough alternating runs of on, off and v0.0.200 under
+deliberate load, and the tick delivery path (the reasons behind `deferred`) of a slow run.
