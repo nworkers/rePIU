@@ -209,7 +209,9 @@ WSL에서는 같은 줄이 +5.4%, 71초 중 71초 초과였습니다. Task 755�
   ([`HandleAotReentry`](../../src/engine/aot/aot_runtime_dispatch.cpp)). 한 번 부를 때마다 site 약 7,100개(읽기 약 2.8만 번)와
   fixup 약 10만 개를 훑고, 코드 캐시 전체(16 MB)에 `mprotect`를 두 번 합니다.
 * 임시 계측(조사 뒤 되돌림)으로 잰 정상 상태 비용: **호출당 약 160 µs**(site 탐색 약 45 µs, 나머지 약 115 µs), 2초에
-  약 1.1만 번. 정상 상태에서 실제로 고칠 것은 없습니다(content 패치 0개, fixup 1~10개를 같은 값으로 다시 씀).
+  약 1.1만 번. content 패치는 0개이고 fixup은 1~10개가 모입니다. (처음에는 "같은 값으로 다시 쓴다"고 적었지만 재지 않은
+  추정이었고 틀렸습니다. [Task 773](20261005-773-glide-gate-relink-cost.md)이 확인한 대로 그 slot들은 rel32 범위 검사에 걸려
+  한 번도 쓰이지 않았습니다.)
 * **정상 상태에서도 게스트 스레드는 CPU 99.4%로 포화되어 있습니다**(`/proc/<pid>/task` 1초 간격, 20~40초 평균). 메인
   스레드는 16.7%, 오디오 등 나머지는 1% 미만입니다. 호출 수와 회당 비용으로 보면 그중 약 88%가 이 함수입니다.
 * 느린 상태(1 ms 기준으로 계측한 실행, dropped 922)에서는 같은 호출이 1~4 ms로 늘고, 탐색 도중 비자발적 문맥 전환이 4~7번 일어납니다(정상은 0). 페이지 폴트는
@@ -219,11 +221,10 @@ WSL에서는 같은 줄이 +5.4%, 71초 중 71초 초과였습니다. Task 755�
 
 ### 추정
 
-* 게스트 스레드가 여유 없이 포화된 상태에서는, 외부 부하로 잠깐 CPU를 빼앗기기만 해도 타이머 tick이 밀립니다. vsync가 켜져
-  있으면 [Task 750의 swap 대기](../../src/engine/boundary/linexe_glide_boundary.cpp)(`ContinueGlideSwapWait`)가 밀린 tick을
-  `call` 지점으로 되돌려 주입하고, 그때마다 gate 재진입과 Activate 비용이 더해져 다시 tick이 밀리는 되먹임이 생겨 느린 상태가
-  유지되는 것으로 보입니다. vsync를 끄면 이 대기 경로를 타지 않습니다.
-* x64는 async present를 쓰고 cache 모델이라 이 경로를 타지 않습니다.
+* 게스트 스레드가 여유 없이 포화된 상태에서는, 외부 부하로 잠깐 CPU를 빼앗기기만 해도 타이머 tick이 밀립니다.
+* **철회:** 처음에는 Task 750의 swap 대기(`ContinueGlideSwapWait`)가 되먹임을 만든다고 적었습니다. direct 모델은
+  `InjectsTicksDuringSwapWait()`가 false라 그 경로를 타지 않으므로(실행 로그도 `swap wait ticks 0/0`) 틀린 추정입니다. vsync가
+  왜 방아쇠였는지는 확인하지 못했고, Task 773의 수정 뒤에는 포화 자체가 사라져 재현되지 않습니다.
 
 ### 미확정
 
@@ -462,8 +463,10 @@ stripped and its function symbols were enough.
   ([`HandleAotReentry`](../../src/engine/aot/aot_runtime_dispatch.cpp)). Each call walks about 7,100 sites (about
   28,000 reads) and about 100,000 fixups and runs `mprotect` twice over the whole 16 MB code cache.
 * Measured with temporary instrumentation (reverted afterwards), in the normal state: **about 160 µs a call** (about
-  45 µs for the site scan, about 115 µs for the rest), about 11,000 calls every 2 s. In the normal state there is nothing
-  to fix (0 content patches; 1 to 10 fixups rewritten with the same value).
+  45 µs for the site scan, about 115 µs for the rest), about 11,000 calls every 2 s. There are 0 content patches and 1 to
+  10 fixups collected. (This first said they were "rewritten with the same value"; that was an unmeasured inference and
+  wrong. As [Task 773](20261005-773-glide-gate-relink-cost.md) established, those slots failed the rel32 range check and
+  were never written.)
 * **Even in the normal state the guest thread is saturated at 99.4% CPU** (`/proc/<pid>/task` once a second, 20–40 s
   average). The main thread uses 16.7% and the rest, audio included, under 1%. By call count and cost, about 88% of that
   is this function.
@@ -476,11 +479,11 @@ stripped and its function symbols were enough.
 ### Inferred
 
 * With the guest thread saturated and no headroom, losing the CPU briefly to outside load is enough for timer ticks to
-  fall behind. With vsync on, [Task 750's swap wait](../../src/engine/boundary/linexe_glide_boundary.cpp)
-  (`ContinueGlideSwapWait`) injects an owed tick by sending the guest back to the `call`, and each time adds a gate
-  reentry and an Activate call, so ticks fall further behind: a feedback that holds the slow state. With vsync off this
-  wait path is not taken.
-* x64 uses async present and the cache model, so it does not take this path.
+  fall behind.
+* **Withdrawn:** this first said Task 750's swap wait (`ContinueGlideSwapWait`) creates a feedback. The direct model
+  answers false to `InjectsTicksDuringSwapWait()` and never takes that path (the run logs read `swap wait ticks 0/0`), so
+  the inference was wrong. Why vsync was the trigger was not established; after Task 773's fix the saturation itself is
+  gone and the state no longer reproduces.
 
 ### Unresolved
 

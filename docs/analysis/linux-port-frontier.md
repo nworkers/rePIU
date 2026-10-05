@@ -19291,10 +19291,24 @@ Work log: [755](../work-logs/20260928-755-wsl-audio-rate-and-clock-tug-of-war.md
   약 160 µs가 든다. 정상 상태에서도 게스트 스레드는 CPU 99.4%로 포화되어 있고 그중 약 88%가 이 함수다. 정상 상태에서는
   바꿀 것이 없다(content 0, fixup 1~10개를 같은 값으로 다시 씀).
 * **확인됨:** 느린 상태의 호출은 1~4 ms이고 탐색 중 비자발적 문맥 전환이 4~7번(정상 0), 페이지 폴트 0.
-* **추정:** 여유가 없는 게스트 스레드가 외부 부하로 밀리면 tick이 밀리고, vsync의 swap 대기(Task 750)가 밀린 tick마다 gate
-  재진입과 Activate 비용을 더해 느린 상태를 유지한다.
-* **미확정:** Linux i386에서 Glide 호출마다 같은 경계 breakpoint를 다시 밟는 이유(Task 517~527의 질문).
+* ~~추정: vsync의 swap 대기(Task 750)가 되먹임을 만든다~~ → 철회. direct 모델은 그 경로를 타지 않는다.
+* ~~미확정: Glide 호출마다 같은 경계 breakpoint를 다시 밟는 이유~~ → Task 773이 확인(아래).
 * 근거: [Task 772 로그 8절](../work-logs/20261005-772-linux-native-verification.md).
+
+### Task 773 — Task 517~527의 질문에 대한 답
+
+근거: [773 로그](../work-logs/20261005-773-glide-gate-relink-cost.md) · [설계](../design/20261005-773-glide-gate-relink-cost.md)
+
+* **확인됨:** `ActivateGlideGateDirectTarget`은 gate로 가는 `call rel32`의 변위를 64비트로 계산해 `int32` 밖이면 건너뛰었다.
+  Linux i386은 코드 캐시가 `0xE8…`, gate가 `0x01…`라 모든 slot이 건너뛰어졌고, 그래서 같은 경계 INT3을 매번 밟았다. Windows는
+  캐시가 `0x0E…`라 범위 안이어서 첫 호출에 이어졌다. 32비트 명령 포인터는 2³²로 감기므로 direct 모델에서는 검사가 필요 없다.
+* **확인됨:** 감은 변위를 쓰게 하자 pumpit1(i386, 60초)이 약 1,990 → 3,190프레임, 게스트 스레드 CPU 99.4% → 16.3%, Activate
+  호출이 2초에 1.1만 번 → 60초에 148번, 느린 상태 9회 중 0회. vsync를 끄면 2,100 → 53,197프레임. pumpit8은 439 → 3,288프레임.
+* **확인됨:** inline cache site 탐색은 게스트 주소가 들어 있는 자리를 캐시 주소와 비교하므로 일치할 수 없었다(`content=0`의 이유).
+* **미확정:** pumpitea에 남은 다른 느린 상태(`SpinForRendezvousHint`에 머묾, breakpoint 43만 번). 엔진의 다른 rel32 범위 검사에
+  같은 가정이 있는지.
+* **확인됨(환경):** 32비트 Wayland 패키지가 있으면 i386은 Wayland를 고르고 NVIDIA에서 `eglCreateWindowSurface`가 실패해 dummy로
+  넘어간다(0프레임). `SDL_VIDEO_DRIVER=x11`이면 동작한다.
 * HiDPI: 게임 창이 고밀도 픽셀을 요청하지 않아 배율 2 화면에서 Wayland는 확대(2560×1440 논리), x11은 절반 크기 창이 된다.
   바꿀지는 정하지 않았다.
 
@@ -19339,10 +19353,26 @@ Work log: [772](../work-logs/20261005-772-linux-native-verification.md)
   rewritten with the same value).
 * **Confirmed:** in the slow state a call takes 1–4 ms with 4 to 7 involuntary context switches during the scan (0
   normally) and no page faults.
-* **Inferred:** a guest thread with no headroom falls behind on ticks when outside load takes the CPU, and vsync's swap
-  wait (Task 750) adds a gate reentry and an Activate call for every owed tick, holding the slow state.
-* **Unresolved:** why Linux i386 hits the same boundary breakpoint again on every Glide call (Tasks 517 to 527's
-  question).
+* ~~Inferred: vsync's swap wait (Task 750) creates a feedback~~: withdrawn. The direct model does not take that path.
+* ~~Unresolved: why every Glide call hits the same boundary breakpoint again~~: established by Task 773 (below).
 * Evidence: [Task 772 log, section 8](../work-logs/20261005-772-linux-native-verification.md).
+
+### Task 773 — the answer to Tasks 517 to 527's question
+
+Evidence: [773 log](../work-logs/20261005-773-glide-gate-relink-cost.md) · [design](../design/20261005-773-glide-gate-relink-cost.md)
+
+* **Confirmed:** `ActivateGlideGateDirectTarget` computed the displacement of a `call rel32` to a gate in 64 bits and
+  skipped it outside `int32`. On Linux i386 the code cache is at `0xE8…` and the gates at `0x01…`, so every slot was
+  skipped and the same boundary INT3 was hit every time. On Windows the cache is at `0x0E…`, in range, so the first call
+  linked it. A 32-bit instruction pointer wraps at 2³², so the direct model needs no such check.
+* **Confirmed:** with the wrapped displacement written, pumpit1 (i386, 60 s) goes from about 1,990 to 3,190 frames, the
+  guest thread from 99.4% to 16.3% CPU, Activate from 11,000 calls every 2 s to 148 in 60 s, and the slow state appears
+  in 0 of 9 runs. With vsync off, 2,100 → 53,197 frames. pumpit8: 439 → 3,288 frames.
+* **Confirmed:** the inline cache site scan compared a field holding a guest address with a cache address and could
+  never match (the reason for `content=0`).
+* **Unresolved:** another slow state left in pumpitea (sitting in `SpinForRendezvousHint`, 430,000 breakpoints), and
+  whether the engine's other rel32 range checks carry the same assumption.
+* **Confirmed (environment):** with the 32-bit Wayland packages present, i386 picks Wayland and on NVIDIA
+  `eglCreateWindowSurface` fails, falling back to the dummy (0 frames). It runs with `SDL_VIDEO_DRIVER=x11`.
 * HiDPI: the game window does not ask for high pixel density, so on a scale-2 screen Wayland upscales it (logical
   2560×1440) and x11 gives a half-size window. Whether to change that is not decided.
