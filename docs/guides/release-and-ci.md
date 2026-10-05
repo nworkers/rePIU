@@ -8,10 +8,14 @@
 
 ## 1. 릴리스 절차
 
-AGENTS.md의 머지·태그 규칙을 따른 뒤, 태그를 원격에 올리면 CI가 나머지를 합니다.
+AGENTS.md의 머지·태그 규칙을 따른 뒤, 태그를 원격에 올리면 CI가 나머지를 합니다. issue #4부터 머지는
+pull request의 squash merge이고, 릴리스 노트(`docs/release-notes/v<version>.md`)에는 해결된 issue 번호와 커밋 ID를
+함께 적습니다.
 
 ```powershell
-# 1) 머지와 태그는 로컬에서 (AGENTS.md Git 규칙)
+# 1) PR을 squash merge하고 로컬 main을 갱신한 뒤, 태그는 로컬에서 (AGENTS.md Git 규칙)
+gh pr merge <번호> --squash
+git switch main; git pull
 git tag -a v0.0.136 -m "..."
 
 # 2) 태그 push가 release.yml을 깨웁니다
@@ -187,7 +191,10 @@ work logs.
 
 ## 1. Releasing
 
-Follow AGENTS.md's merge and tag rules, then push the tag; `release.yml` does the rest. It
+Follow AGENTS.md's merge and tag rules, then push the tag; `release.yml` does the rest. Since
+issue #4 a merge is the squash merge of a pull request (`gh pr merge <number> --squash`, then
+`git pull` on `main` before tagging), and the release notes (`docs/release-notes/v<version>.md`)
+record the resolved issue numbers together with their commit IDs. It
 gates the tag against `VERSION`, then builds in parallel. The Win32 job builds Release, runs the
 two probes, installs OpenWatcom and builds the 819 samples, and compares against the baseline.
 Since Task 767 the Linux jobs build i386 and x64 Release on `ubuntu-22.04` with the C++ runtime
