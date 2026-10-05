@@ -26,7 +26,7 @@ std::uintptr_t LongModeReturnThunkAddress()
 
 bool InjectsTicksDuringSwapWait()
 {
-    return false;
+    return true;
 }
 
 }  // namespace repiu::runtime::execution_model

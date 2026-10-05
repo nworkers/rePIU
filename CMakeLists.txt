@@ -311,6 +311,8 @@ target_sources(repiu_exe
         src/engine/cd_audio_wave_out.cpp
         src/engine/aot_code_cache.cpp
         src/engine/aot_cache_address_index.cpp
+        src/engine/aot_glide_gate_fixup_index.cpp
+        src/engine/glide_gate_interrupt_exit.cpp
         src/engine/aot_inline_cache_site_index.cpp
         src/engine/aot_return_dispatch_site_index.cpp
         src/engine/aot_return_patch_policy.cpp
@@ -783,6 +785,8 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/shutdown_recovery_policy_probe.cpp
     src/tools/aot_probe/pic_timer_in_service_probe.cpp
     src/tools/aot_probe/timer_return_pad_probe.cpp
+    src/tools/aot_probe/glide_gate_fixup_index_probe.cpp
+    src/tools/aot_probe/glide_gate_interrupt_exit_probe.cpp
     src/tools/aot_probe/build_identity_probe.cpp
     src/tools/aot_probe/code_cache_placement_probe.cpp
     src/tools/aot_probe/dos_console_device_probe.cpp
@@ -1010,6 +1014,8 @@ if(WIN32)
         src/tools/aot_probe/shutdown_recovery_policy_probe.cpp
         src/tools/aot_probe/pic_timer_in_service_probe.cpp
         src/tools/aot_probe/timer_return_pad_probe.cpp
+        src/tools/aot_probe/glide_gate_fixup_index_probe.cpp
+        src/tools/aot_probe/glide_gate_interrupt_exit_probe.cpp
         src/tools/aot_probe/build_identity_probe.cpp
         src/tools/aot_probe/glide_setter_state_census_probe.cpp
         src/tools/aot_probe/glide_async_present_probe.cpp

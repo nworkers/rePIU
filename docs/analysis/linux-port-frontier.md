@@ -19256,3 +19256,143 @@ Work log: [755](../work-logs/20260928-755-wsl-audio-rate-and-clock-tug-of-war.md
 * **The user's check (2026-09-28)**: with the Windows clock synchronised MP3 playback was as slow as
   before. That run's clock report was not received, so whether the slew stopped is not known. **On
   hold** — a comparison on real hardware is needed to judge.
+
+## 2026-10-05 Task 772 — 실기(GNOME Wayland, NVIDIA)에서 본 v0.0.198~v0.0.201
+
+작업 로그: [772](../work-logs/20261005-772-linux-native-verification.md)
+
+### 확인됨
+
+* **Task 769의 두 WSL 의문은 WSL의 문제였다.** RTX 4090(GLX·EGL)에서 `glide_letterbox_gl=true`(WSL의 Mesa에서는 false:
+  Mesa는 다음 swap에서야 back buffer 크기를 바꾼다). GNOME(mutter) Wayland에서 전체화면 해제는 실제 커널 입력으로
+  3~67 ms 안에 끝나고, 여섯 번 모두 첫 시도에 전환된다(WSLg에서는 13~368번 swap이 걸리거나 풀리지 않았다).
+* **Task 755의 시계 끌림은 실기에 없다.** `host clock raw-against-steady`가 −18~−19 ppm, 0.5% 초과 0초.
+* **Linux i386 Release는 vsync가 켜져 있으면 실행 도중 한 호스트 루프에 빠진다.** 빠지면 끝까지 나오지 못하고 타이머
+  tick이 대량으로 버려져(backlog 상한 64) 게임이 느려진다. 60초 4/4, 20초 19회 중 6회. v0.0.198에도 있다.
+  `REPIU_GLIDE_SWAP_INTERVAL=0`이면 60초 0/4. x64(cache 모델)는 0/6.
+* i386 아카이브는 32비트 `libwayland-egl1`·`libwayland-cursor0`가 없으면 Wayland를 못 쓰고 x11로 넘어간다(릴리스 가이드의
+  패키지 목록대로 설치하면 해결되는 환경 조건).
+
+### 추정
+
+* xdg-desktop-portal이 막히면 x64 SDL3의 초기화가 D-Bus 타임아웃(25초×3)으로 약 75초 늦어진다. i386 아카이브가 영향을
+  받지 않은 이유는 미확정이다(D-Bus 없는 빌드라는 처음 추정은 CI의 `libdbus-1-dev:i386` 설치로 철회).
+* i386 루프의 vsync 의존은 swap이 vblank를 기다리는 동안 쌓이는 tick과 관련 있어 보인다.
+
+### 미확정
+
+* ~~i386 루프가 어느 하위 시스템인지~~ → 같은 날 후속 조사에서 확인(아래 "후속").
+* Win32(같은 direct 모델)에서도 느린 상태가 생기는지.
+
+### 후속 (같은 날, 심볼 있는 i386 빌드)
+
+* **확인됨:** 루프는 `ActivateGlideGateDirectTarget`이다. Linux i386에서는 Glide 호출마다 AOT 경계 breakpoint를 거쳐 이 함수가
+  불리고(2초에 약 1.1만 번), 한 번에 site 약 7,100개·fixup 약 10만 개를 훑고 16 MB 코드 캐시 전체에 `mprotect`를 두 번 해
+  약 160 µs가 든다. 정상 상태에서도 게스트 스레드는 CPU 99.4%로 포화되어 있고 그중 약 88%가 이 함수다. 정상 상태에서는
+  바꿀 것이 없다(content 0, fixup 1~10개를 같은 값으로 다시 씀).
+* **확인됨:** 느린 상태의 호출은 1~4 ms이고 탐색 중 비자발적 문맥 전환이 4~7번(정상 0), 페이지 폴트 0.
+* ~~추정: vsync의 swap 대기(Task 750)가 되먹임을 만든다~~ → 철회. direct 모델은 그 경로를 타지 않는다.
+* ~~미확정: Glide 호출마다 같은 경계 breakpoint를 다시 밟는 이유~~ → Task 773이 확인(아래).
+* 근거: [Task 772 로그 8절](../work-logs/20261005-772-linux-native-verification.md).
+
+### Task 773 — Task 517~527의 질문에 대한 답
+
+근거: [773 로그](../work-logs/20261005-773-glide-gate-relink-cost.md) · [설계](../design/20261005-773-glide-gate-relink-cost.md)
+
+* **확인됨:** `ActivateGlideGateDirectTarget`은 gate로 가는 `call rel32`의 변위를 64비트로 계산해 `int32` 밖이면 건너뛰었다.
+  Linux i386은 코드 캐시가 `0xE8…`, gate가 `0x01…`라 모든 slot이 건너뛰어졌고, 그래서 같은 경계 INT3을 매번 밟았다. Windows는
+  캐시가 `0x0E…`라 범위 안이어서 첫 호출에 이어졌다. 32비트 명령 포인터는 2³²로 감기므로 direct 모델에서는 검사가 필요 없다.
+* **확인됨:** 감은 변위를 쓰게 하자 pumpit1(i386, 60초)이 약 1,990 → 3,190프레임, 게스트 스레드 CPU 99.4% → 16.3%, Activate
+  호출이 2초에 1.1만 번 → 60초에 148번. 느린 상태는 처음 9회 중 0회였으나 이후 38회 중 11회 다시 나왔다(샘플은
+  `SpinForRendezvousHint`, tick 대량 drop). **확인됨(#6):** 수정 탓이 아니다. 창이 숨겨지면 컴포지터가 vsync swap을 약 1 fps로
+  늦추고, direct 모델은 swap을 기다리는 동안 tick을 받지 못해 버린다(최소화 12초에 4,200개 이상; v0.0.200과 직접 호출 끔도 같음).
+  vsync를 끄면 생기지 않고, x64는 Task 750의 swap 대기 tick 주입 덕분에 tick을 버리지 않는다. Task 772가 본 느린 상태도 같은
+  현상이었을 가능성이 높다.
+* **확인됨(#6 수정):** direct 모델에서 Task 750의 주입이 멈춘 까닭은 gate thunk의 프레임(게스트 스택)과 인터럽트 프레임이 같은
+  자리였기 때문이다. 출구 코드(`push cs; push [eip]; jmp [handler]`)를 거치게 하고 대기 50 ms 뒤부터 주입하자, 12초 최소화에서
+  버려진 tick이 4,456 → 21(pumpit1), 60(pumpit8), 54(pumpitea)가 됐고 보이는 창의 프레임은 그대로다. 대기 시작부터 주입하면
+  i386 pumpit1의 프레임이 약 15% 줄어드는 까닭은 **미확정**. vsync를 끄면 2,100 → 53,197프레임. pumpit8은 439 → 3,288프레임.
+* **확인됨:** inline cache site 탐색은 게스트 주소가 들어 있는 자리를 캐시 주소와 비교하므로 일치할 수 없었다(`content=0`의 이유).
+* **미확정:** pumpitea에 남은 다른 느린 상태(`SpinForRendezvousHint`에 머묾, breakpoint 43만 번). 엔진의 다른 rel32 범위 검사에
+  같은 가정이 있는지.
+* **확인됨:** i386(x11)은 32비트 NVIDIA GLX 드라이버로 하드웨어 가속된다(`libnvidia-glcore` 매핑, `nvidia-smi pmon`의 G 클라이언트).
+* **확인됨(환경):** 32비트 Wayland 패키지가 있으면 i386은 Wayland를 고르고 NVIDIA에서 `eglCreateWindowSurface`가 실패해 dummy로
+  넘어간다(0프레임). `SDL_VIDEO_DRIVER=x11`이면 동작한다.
+* HiDPI: 게임 창이 고밀도 픽셀을 요청하지 않아 배율 2 화면에서 Wayland는 확대(2560×1440 논리), x11은 절반 크기 창이 된다.
+  바꿀지는 정하지 않았다.
+
+## English
+
+## 2026-10-05 Task 772 — v0.0.198 to v0.0.201 on real hardware (GNOME Wayland, NVIDIA)
+
+Work log: [772](../work-logs/20261005-772-linux-native-verification.md)
+
+### Confirmed
+
+* **Task 769's two WSL questions were WSL's.** On an RTX 4090 (GLX and EGL) `glide_letterbox_gl=true` (false on WSL's
+  Mesa, which resizes the back buffer only at the next swap). On GNOME (mutter) Wayland, leaving fullscreen through real
+  kernel input completes within 3 to 67 ms, all six transitions at the first attempt (on WSLg it took 13 to 368 swaps
+  or never happened).
+* **Task 755's clock drag is absent on real hardware.** `host clock raw-against-steady` reads −18 to −19 ppm with no
+  second over 0.5%.
+* **With vsync on, Linux i386 Release falls into one host loop mid-run.** Once in, it never leaves; timer ticks are
+  dropped in bulk (backlog at its cap of 64) and the game slows. 4 of 4 60-second runs, 6 of 19 20-second runs; present
+  in v0.0.198 too. With `REPIU_GLIDE_SWAP_INTERVAL=0`, 0 of 4 60-second runs. x64 (the cache model): 0 of 6.
+* Without 32-bit `libwayland-egl1` and `libwayland-cursor0`, the i386 archive cannot use Wayland and falls back to x11
+  (an environment condition that the release guide's package list resolves).
+
+### Inferred
+
+* A blocked xdg-desktop-portal delays x64 SDL3's initialisation by about 75 s through D-Bus timeouts (25 s × 3). Why
+  the i386 archive was unaffected is unresolved (the first guess, a build without D-Bus, is withdrawn: CI installs
+  `libdbus-1-dev:i386`).
+* The i386 loop's dependence on vsync seems related to ticks piling up while the swap waits for vblank.
+
+### Unresolved
+
+* ~~Which subsystem the i386 loop belongs to~~: confirmed by the same day's follow-up (below).
+* Whether Win32 (the same direct model) enters the slow state.
+
+### Follow-up (same day, a symbolised i386 build)
+
+* **Confirmed:** the loop is `ActivateGlideGateDirectTarget`. On Linux i386 every Glide call reaches it through an AOT
+  boundary breakpoint (about 11,000 calls every 2 s); each call walks about 7,100 sites and about 100,000 fixups and runs
+  `mprotect` twice over the whole 16 MB code cache, about 160 µs. Even in the normal state the guest thread is saturated
+  at 99.4% CPU, about 88% of it in this function, and there is nothing to change (0 content patches; 1 to 10 fixups
+  rewritten with the same value).
+* **Confirmed:** in the slow state a call takes 1–4 ms with 4 to 7 involuntary context switches during the scan (0
+  normally) and no page faults.
+* ~~Inferred: vsync's swap wait (Task 750) creates a feedback~~: withdrawn. The direct model does not take that path.
+* ~~Unresolved: why every Glide call hits the same boundary breakpoint again~~: established by Task 773 (below).
+* Evidence: [Task 772 log, section 8](../work-logs/20261005-772-linux-native-verification.md).
+
+### Task 773 — the answer to Tasks 517 to 527's question
+
+Evidence: [773 log](../work-logs/20261005-773-glide-gate-relink-cost.md) · [design](../design/20261005-773-glide-gate-relink-cost.md)
+
+* **Confirmed:** `ActivateGlideGateDirectTarget` computed the displacement of a `call rel32` to a gate in 64 bits and
+  skipped it outside `int32`. On Linux i386 the code cache is at `0xE8…` and the gates at `0x01…`, so every slot was
+  skipped and the same boundary INT3 was hit every time. On Windows the cache is at `0x0E…`, in range, so the first call
+  linked it. A 32-bit instruction pointer wraps at 2³², so the direct model needs no such check.
+* **Confirmed:** with the wrapped displacement written, pumpit1 (i386, 60 s) goes from about 1,990 to 3,190 frames, the
+  guest thread from 99.4% to 16.3% CPU, and Activate from 11,000 calls every 2 s to 148 in 60 s. The slow state was absent
+  in the first 9 runs but returned in 11 of 38 later ones (samples in `SpinForRendezvousHint`, ticks dropped in bulk;
+  v0.0.200 showed 0 of 12 over the same period). **Confirmed (#6):** the change is not the cause. When the window is
+  hidden the compositor slows vsync swaps to about 1 fps, and the direct model receives no tick while it waits for the swap
+  and drops them (more than 4,200 in 12 s minimised; v0.0.200 and dispatch-off alike). It does not happen with vsync off,
+  and x64 drops no ticks thanks to Task 750's swap-wait injection. The slow state Task 772 saw was very likely the same.
+* **Confirmed (#6 fix):** Task 750's injection stopped on the direct model because the gate thunk's frame (on the guest
+  stack) and the interrupt frame were the same slots. Passing through exit code (`push cs; push [eip]; jmp [handler]`) and
+  injecting from 50 ms into the wait, the ticks dropped in 12 s minimised go from 4,456 to 21 (pumpit1), 60 (pumpit8) and 54
+  (pumpitea), with a visible window's frames unchanged. Why injecting from the start of the wait costs i386's pumpit1
+  about 15% of its frames is **unresolved**. With vsync off, 2,100 → 53,197 frames. pumpit8: 439 → 3,288 frames.
+* **Confirmed:** the inline cache site scan compared a field holding a guest address with a cache address and could
+  never match (the reason for `content=0`).
+* **Unresolved:** another slow state left in pumpitea (sitting in `SpinForRendezvousHint`, 430,000 breakpoints), and
+  whether the engine's other rel32 range checks carry the same assumption.
+* **Confirmed:** i386 (x11) is hardware accelerated through the 32-bit NVIDIA GLX driver (`libnvidia-glcore` mapped; a G
+  client in `nvidia-smi pmon`).
+* **Confirmed (environment):** with the 32-bit Wayland packages present, i386 picks Wayland and on NVIDIA
+  `eglCreateWindowSurface` fails, falling back to the dummy (0 frames). It runs with `SDL_VIDEO_DRIVER=x11`.
+* HiDPI: the game window does not ask for high pixel density, so on a scale-2 screen Wayland upscales it (logical
+  2560×1440) and x11 gives a half-size window. Whether to change that is not decided.

@@ -3,6 +3,8 @@
 #include "aot_runtime_dispatch.h"
 #include "aot_residency_sample.h"
 #include "repiu/engine/aot_code_cache.h"
+#include "repiu/engine/aot_glide_gate_fixup_index.h"
+#include "repiu/engine/glide_gate_interrupt_exit.h"
 #include "../boundary/linexe_glide_boundary.h"
 #include "../execution/execution_internal.h"
 #include "../execution/thread_context.h"
@@ -14,6 +16,7 @@
 #include <string_view>
 #include <utility>
 #include "repiu/platform/guest_cpu_context.h"
+#include "repiu/runtime/execution_model.h"
 #include "repiu/platform/thunk_calling_convention.h"
 #include "repiu/platform/virtual_memory.h"
 #include "aot_dbt_glide_gate_dispatch_state.h"
@@ -133,6 +136,31 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtGlideGateFrame(
     frame[6] = guest_context.Ecx;
     frame[7] = guest_context.Eax;
 
+    if (context->glide_gate_interrupt_injected)
+    {
+        // #6. The swap gate injected a timer tick: the interrupt frame now
+        // lies over this frame's flags, continuation and return slots.
+        // Leave through the interrupt exit, which puts the frame back (with
+        // the real CS, which this path has no context to read) and jumps to
+        // the handler; it then runs in place, as it does after an injection
+        // on the fault path, and its `iret` comes back to the call.
+        const std::uint32_t exit_address = GlideGateInterruptExitAddress();
+        if (exit_address == 0U)
+        {
+            context->aot_terminal_failure.store(true,
+                                                std::memory_order_release);
+            g_terminal_failure_count.fetch_add(1U, std::memory_order_relaxed);
+            return;
+        }
+        ArrangeGlideGateInterruptExit(
+            &frame[kSavedEflagsIndex],
+            guest_context.EFlags & ~0x00000100U, exit_address,
+            static_cast<std::uint32_t>(guest_context.Eip),
+            GlideGateInterruptExitSlotStorage());
+        g_success_count.fetch_add(1U, std::memory_order_relaxed);
+        return;
+    }
+
     std::uint32_t cache_target = 0U;
     if (ResolveAotTransferTarget(
             context, static_cast<std::uint32_t>(guest_context.Eip),
@@ -222,98 +250,72 @@ bool ActivateGlideGateDirectTarget(
         return false;
     }
     auto* placement = context->aot_placement;
-    std::vector<std::uint32_t> patches;
-    for (const runtime::AotIndirectInlineCacheSite& site :
-         placement->indirect_inline_cache_sites)
+    // Task 773. This used to walk every indirect inline cache site as well,
+    // comparing the 4 bytes at each entry's target_immediate_offset with
+    // `cache_boundary_address`. PatchAotIndirectInlineCache writes the guest
+    // target there (the cache address goes into the jump displacement), so a
+    // cache address can never match: Task 519 measured content=0 throughout.
+    // The walk was removed; relink_content_patch_count stays and reports 0.
+    //
+    // The fixups going to this gate come from an index kept over the
+    // append-only fixup array, and only slots that do not already hold the
+    // gate's displacement are written. Once written none differ, and the
+    // whole-cache protection change and flush are skipped. On the direct
+    // model the displacement wraps at 32 bits, so the cache's distance from
+    // the gate no longer keeps a slot from being linked.
+    EnsureAotGlideGateFixupIndex(
+        placement->fixups, context->linexe_arena_layout.gate_code_base,
+        &placement->glide_gate_fixup_index);
+    const std::vector<std::uint32_t>* offsets = FindAotGlideGateFixupOffsets(
+        placement->glide_gate_fixup_index, gate_address);
+    if (offsets == nullptr)
     {
-        const auto inspect = [&](std::uint32_t offset) {
-            std::uint32_t value = 0U;
-            std::memcpy(&value, reinterpret_cast<const void*>(
-                static_cast<std::uintptr_t>(placement->base_address + offset)),
-                sizeof(value));
-            if (value == cache_boundary_address)
-            {
-                patches.push_back(offset);
-            }
-        };
-        if (site.entries.empty())
-        {
-            inspect(site.target_immediate_offset);
-        }
-        else
-        {
-            for (const runtime::AotInlineCacheEntry& entry : site.entries)
-            {
-                inspect(entry.target_immediate_offset);
-            }
-        }
+        return true;
     }
-    std::vector<std::uint32_t> direct_patches;
-    for (const runtime::AotCodeCacheFixup& fixup : placement->fixups)
+    std::vector<GlideGateFixupWrite> writes;
+    CollectGlideGateFixupWrites(
+        reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(placement->base_address)),
+        placement->base_address, *offsets, direct_target,
+        runtime::execution_model::RunsGuestBytesDirectly(), &writes);
+    if (writes.empty())
     {
-        if (fixup.guest_target == gate_address &&
-            (fixup.kind == runtime::AotFixupKind::kDirectCall ||
-             fixup.kind == runtime::AotFixupKind::kDirectJump ||
-             fixup.kind == runtime::AotFixupKind::kBlockFallthrough))
-        {
-            direct_patches.push_back(fixup.cache_patch_offset);
-        }
+        return true;
     }
-    if (!patches.empty() || !direct_patches.empty())
+    auto* cache = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(placement->base_address));
+    repiu::platform::MemoryProtection previous =
+        repiu::platform::MemoryProtection::kOther;
+    if (!repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kExecuteReadWrite,
+            &previous))
     {
-        auto* cache = reinterpret_cast<void*>(
-            static_cast<std::uintptr_t>(placement->base_address));
-        repiu::platform::MemoryProtection previous =
-            repiu::platform::MemoryProtection::kOther;
-        if (!repiu::platform::ProtectMemory(
-                cache, placement->capacity,
-                repiu::platform::MemoryProtection::kExecuteReadWrite,
-                &previous))
-        {
-            return false;
-        }
-        for (std::uint32_t offset : patches)
-        {
-            std::memcpy(reinterpret_cast<void*>(
-                static_cast<std::uintptr_t>(placement->base_address + offset)),
-                &direct_target, sizeof(direct_target));
-        }
-        for (std::uint32_t offset : direct_patches)
-        {
-            const std::int64_t relative =
-                static_cast<std::int64_t>(direct_target) -
-                static_cast<std::int64_t>(
-                    placement->base_address + offset + 4U);
-            if (relative < std::numeric_limits<std::int32_t>::min() ||
-                relative > std::numeric_limits<std::int32_t>::max())
-            {
-                continue;
-            }
-            const std::int32_t displacement =
-                static_cast<std::int32_t>(relative);
-            std::memcpy(reinterpret_cast<void*>(
-                static_cast<std::uintptr_t>(
-                    placement->base_address + offset)),
-                &displacement, sizeof(displacement));
-        }
-        const bool restored = repiu::platform::ProtectMemory(
-            cache, placement->capacity, previous, nullptr);
-        repiu::platform::FlushInstructionCacheRange(cache, placement->size);
-        if (!restored)
-        {
-            return false;
-        }
-        g_relinked_cache_target_count.fetch_add(
-            static_cast<std::uint32_t>(
-                patches.size() + direct_patches.size()),
-            std::memory_order_relaxed);
-        g_relink_content_patch_count.fetch_add(
-            static_cast<std::uint32_t>(patches.size()),
-            std::memory_order_relaxed);
-        g_relink_fixup_patch_count.fetch_add(
-            static_cast<std::uint32_t>(direct_patches.size()),
-            std::memory_order_relaxed);
+        return false;
     }
+    for (const GlideGateFixupWrite& write : writes)
+    {
+        std::memcpy(reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(
+                placement->base_address + write.cache_patch_offset)),
+            &write.displacement, sizeof(write.displacement));
+    }
+    const bool restored = repiu::platform::ProtectMemory(
+        cache, placement->capacity, previous, nullptr);
+    repiu::platform::FlushInstructionCacheRange(cache, placement->size);
+    if (!restored)
+    {
+        return false;
+    }
+    // Since Task 773 these count slots actually rewritten, that is, slots
+    // that no longer held the gate's displacement. Before, every activation
+    // added every collected slot whether it had changed or not.
+    g_relinked_cache_target_count.fetch_add(
+        static_cast<std::uint32_t>(writes.size()),
+        std::memory_order_relaxed);
+    g_relink_fixup_patch_count.fetch_add(
+        static_cast<std::uint32_t>(writes.size()),
+        std::memory_order_relaxed);
     return true;
 }
 

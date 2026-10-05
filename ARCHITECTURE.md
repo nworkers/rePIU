@@ -3403,9 +3403,9 @@ external PMU-class method that avoids both biases.
 
 ## AOT-DBT Glide gate direct dispatch / AOT-DBT Glide 게이트 직접 디스패치
 
-Win32 `dynamic`는 `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH`가 미설정이거나 `1|on|true`이면 자산 유래 Glide gate metadata와 합성 stub 원본을 검증한 뒤 `CALL host-stack thunk + RET argument_bytes` stub을 설치합니다. 첫 cache boundary는 같은 gate를 가리키는 direct fixup과 indirect inline-cache target을 executable LINEXE gate로 재연결하며, 이후 transfer resolution도 검증된 gate를 직접 반환합니다. 일반 excluded range, opt-out, 검증 실패는 기존 `INT3`/VEH 경로를 보존합니다.
+direct 모델(Win32, Linux i386)의 `dynamic`는 `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH`가 미설정이거나 `1|on|true`이면 자산 유래 Glide gate metadata와 합성 stub 원본을 검증한 뒤 `CALL host-stack thunk + RET argument_bytes` stub을 설치합니다. 첫 cache boundary는 같은 gate를 가리키는 direct fixup을 executable LINEXE gate로 재연결하며(Task 773: gate별 fixup 색인 `AotGlideGateFixupIndex`로 찾고, 이미 그 값을 담은 slot은 다시 쓰지 않으며, direct 모델에서는 rel32를 2³²로 감아 캐시와 gate의 거리에 상관없이 잇습니다. 문서에 있던 indirect inline-cache target 재연결은 동작한 적이 없어 제거했습니다), 이후 transfer resolution도 검증된 gate를 직접 반환합니다. 일반 excluded range, opt-out, 검증 실패는 기존 `INT3`/VEH 경로를 보존합니다.
 
-On Win32 `dynamic`, an unset `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH` or `1|on|true` validates asset-derived Glide metadata and the original synthetic stub, then installs a `CALL host-stack thunk + RET argument_bytes` stub. The first cache boundary relinks matching direct fixups and indirect inline-cache targets to the executable LINEXE gate, and later transfer resolution returns validated gates directly. General excluded ranges, opt-out, and validation failures preserve the existing `INT3`/VEH path.
+On the direct model (Win32, Linux i386) under `dynamic`, an unset `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH` or `1|on|true` validates asset-derived Glide metadata and the original synthetic stub, then installs a `CALL host-stack thunk + RET argument_bytes` stub. The first cache boundary relinks matching direct fixups to the executable LINEXE gate (Task 773: found through the per-gate fixup index `AotGlideGateFixupIndex`, slots already holding the value are not rewritten, and on the direct model the rel32 wraps at 2³² so the link is made whatever the distance between the cache and the gate; the indirect inline-cache target relink this document described never worked and was removed), and later transfer resolution returns validated gates directly. General excluded ranges, opt-out, and validation failures preserve the existing `INT3`/VEH path.
 
 direct-dispatch 설정은 정책 요청이며 capability 보장이 아닙니다. loader와
 LINEXE setup은 32비트 guest image에 표현 가능한 host thunk가 실제로
@@ -3419,6 +3419,12 @@ that can be represented in the 32-bit guest image. On Linux x64 and other hosts
 without that thunk, actual direct dispatch is false and the validated base HLE
 gate image remains installed, allowing LINEXE activation and the existing
 trap/HLE boundary to continue.
+
+### swap 대기 중 타이머 tick / Timer ticks during the swap wait
+
+`grBufferSwap` gate는 present를 호스트 스레드에 게시하고 기다리는 동안 밀린 타이머 tick을 "gate에 도달한 `call` 직전의 인터럽트"로 주입합니다(Task 750). cache 모델은 대기 시작부터 주입합니다. direct 모델(#6)은 gate thunk가 게스트 스택에 둔 프레임과 인터럽트 프레임이 겹치므로, resolver가 thunk의 끝을 엔진이 만든 출구 코드(`GlideGateInterruptExit`: `push cs; push [eip]; jmp [handler]`)로 보내 핸들러에 들어갑니다. direct 모델은 대기가 50 ms를 넘긴 뒤에만 주입하므로(`REPIU_GLIDE_SWAP_WAIT_TICK_HOLD_MS`) 보통의 swap은 이전과 같고, 숨겨진 창처럼 swap이 오래 막힐 때 tick이 버려지지 않습니다. `REPIU_GLIDE_SWAP_WAIT_TICKS=0`으로 끕니다.
+
+While the `grBufferSwap` gate waits for the present it posted to the host thread, owed timer ticks are injected as "an interrupt just before the `call` that reached the gate" (Task 750). The cache model injects from the start of the wait. On the direct model (#6) the interrupt frame overlaps the frame the gate thunk keeps on the guest stack, so the resolver sends the thunk's tail through exit code the engine generates (`GlideGateInterruptExit`: `push cs; push [eip]; jmp [handler]`) into the handler. The direct model injects only once the wait has lasted 50 ms (`REPIU_GLIDE_SWAP_WAIT_TICK_HOLD_MS`), so an ordinary swap is as before and a swap that stays blocked, as for a hidden window, no longer loses ticks. `REPIU_GLIDE_SWAP_WAIT_TICKS=0` switches it off.
 
 ### Glide gate 직접 dispatch 기본 정책 / Glide-gate direct-dispatch default policy
 

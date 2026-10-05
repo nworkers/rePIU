@@ -5,6 +5,7 @@
 #include "repiu/engine/aot_page_coherence.h"
 #include "repiu/engine/aot_boundary_provenance.h"
 #include "repiu/engine/aot_cache_address_index.h"
+#include "repiu/engine/aot_glide_gate_fixup_index.h"
 #include "repiu/engine/aot_inline_cache_site_index.h"
 #include "repiu/engine/aot_return_dispatch_site_index.h"
 #include "repiu/engine/aot_return_patch_policy.h"
@@ -74,6 +75,10 @@ struct AotCodeCachePlacement
     // about 75,100 cycles per call. Treated as a cache in the same way:
     // PatchAotIndirectInlineCache falls back to the scan when it is stale.
     AotInlineCacheSiteIndex inline_cache_site_index;
+
+    // Task 773: the fixups that go to Glide gate code, by target, so a gate
+    // activation looks its few slots up instead of walking every fixup.
+    AotGlideGateFixupIndex glide_gate_fixup_index;
 
     // Task 480: exact miss-offset lookup for the return miss thunk. The index
     // remains a cache; a stale count falls back to the original scan.

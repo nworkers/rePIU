@@ -36,6 +36,8 @@
 #include "glide_lfb_lock_interval_probe.h"
 #include "shutdown_recovery_policy_probe.h"
 #include "pic_timer_in_service_probe.h"
+#include "glide_gate_fixup_index_probe.h"
+#include "glide_gate_interrupt_exit_probe.h"
 #include "timer_return_pad_probe.h"
 #include "build_identity_probe.h"
 #include "glide_lfb_staging_shadow_probe.h"
@@ -674,6 +676,16 @@ int main(int argc, char** argv)
     if (argc == 2 && std::strcmp(argv[1], "--timer-return-pad") == 0)
     {
         return repiu::tools::RunTimerReturnPadProbe() ? 0 : 1;
+    }
+    if (argc == 2 &&
+        std::strcmp(argv[1], "--glide-gate-fixup-index") == 0)
+    {
+        return repiu::tools::RunGlideGateFixupIndexProbe() ? 0 : 1;
+    }
+    if (argc == 2 &&
+        std::strcmp(argv[1], "--glide-gate-interrupt-exit") == 0)
+    {
+        return repiu::tools::RunGlideGateInterruptExitProbe() ? 0 : 1;
     }
     if (argc == 2 && std::strcmp(argv[1], "--pic-timer-in-service") == 0)
     {
