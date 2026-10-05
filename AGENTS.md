@@ -150,7 +150,7 @@ If the requirement is a simple question or confirmation request, answer it direc
 * 현재 구현되는 코드의 설계와 구조는 `ARCHITECTURE.md`에 지속적으로 반영한다.
 * 원본 파일 분석으로 확인한 구조와 설계는 `docs/EXE_DESIGN.ko.md`, `docs/EXE_DESIGN.en.md`에 누적 반영한다.
 * 규칙이 바뀌면 `AGENTS.md`와 관련 문서를 함께 갱신한다.
-* 작업 단위 문서 파일명은 가능하면 `YYYYMMDD-###-slug.md` 형식을 사용한다.
+* 작업 단위 문서 파일명은 가능하면 `YYYYMMDD-i###-slug.md` 형식을 사용한다. `###`은 task의 GitHub issue 번호를 세 자리로 맞춘 값이다(예: issue #6 → `20261005-i006-slug.md`). issue로 바꾸기 전의 문서(Task 773까지)는 `YYYYMMDD-###-slug.md`로 남아 있으며, 이 번호는 저장소 안에서 매긴 순번이다.
 * Markdown 문서에서 구조, 관계, 흐름, 호출 순서, 상태 전이, 주소 변환을 도식화할 수 있으면 이해를 돕기 위해 Mermaid를 적극적으로 사용한다.
 * 세 개 이상의 구성요소·단계·분기·계층이 있으면 Mermaid 적용 가능성을 검토하고, flowchart, sequenceDiagram, stateDiagram, classDiagram 등 내용에 맞는 형식을 선택한다.
 * 도식이 본문 이해를 실질적으로 개선하는 경우 최대한 포함하되, 단순 사실 하나나 한 단계 설명에는 불필요한 도식을 강제하지 않는다.
@@ -170,7 +170,7 @@ If the requirement is a simple question or confirmation request, answer it direc
 * Continuously reflect the design and structure of currently implemented code in `ARCHITECTURE.md`.
 * Accumulate original executable analysis findings and design notes in `docs/EXE_DESIGN.ko.md` and `docs/EXE_DESIGN.en.md`.
 * When rules change, update `AGENTS.md` and the related documents together.
-* Use the `YYYYMMDD-###-slug.md` filename format for task documents whenever possible.
+* Use the `YYYYMMDD-i###-slug.md` filename format for task documents whenever possible, where `###` is the task's GitHub issue number padded to three digits (for example issue #6 → `20261005-i006-slug.md`). Documents from before the switch to issues (up to Task 773) keep `YYYYMMDD-###-slug.md`, whose number was a sequence kept in the repository.
 * Actively use Mermaid in Markdown documents whenever structure, relationships, flows, call sequences, state transitions, or address translation can be visualized to improve understanding.
 * Evaluate Mermaid whenever content has three or more components, steps, branches, or layers, choosing an appropriate form such as flowchart, sequenceDiagram, stateDiagram, or classDiagram.
 * Include useful diagrams as broadly as practical when they materially improve the prose, but do not force them into single-fact or one-step explanations.
@@ -236,6 +236,9 @@ If the requirement is a simple question or confirmation request, answer it direc
 
 ## 작업 단위 규칙
 
+* task는 GitHub issue로 만든다. task 번호는 GitHub issue 번호를 쓴다. Task 773까지의 번호는 저장소 안에서 매긴 순번이었고, issue #4부터는 issue 번호다.
+* 기존 task의 후속 작업(남은 검증, 후속 수정)은 새 issue를 만들지 않고 그 task의 issue에 붙인다.
+* 커밋 제목 끝에 관련 issue 번호를 `(#6)`처럼 붙인다.
 * 의미 있는 작업마다 하나의 작업 지시 문서를 만든다.
 * 작업이 끝나면 대응되는 작업 로그를 남긴다.
 * 설계 없이 바로 코드만 추가하지 않는다.
@@ -243,6 +246,9 @@ If the requirement is a simple question or confirmation request, answer it direc
 
 ## Task Unit Rules
 
+* A task is created as a GitHub issue, and the task number is the GitHub issue number. Numbers up to Task 773 were a sequence kept in the repository; from issue #4 on they are issue numbers.
+* Follow-up work on an existing task (verification left open, a follow-up fix) goes to that task's issue rather than a new one.
+* End commit titles with the related issue number, as in `(#6)`.
 * Create one work-order document for each meaningful task.
 * When the task is complete, leave the corresponding work log.
 * Do not add code directly without a design.
@@ -259,12 +265,14 @@ If the requirement is a simple question or confirmation request, answer it direc
 * 사용자가 머지를 요청하면 `main`에 머지하기 전에 patch 버전을 1 증가시킨다.
 * 사용자가 minor 버전 증가를 요청하면 minor 버전을 1 증가시키고 patch 버전은 0으로 리셋한다.
 * 사용자가 major 버전 증가를 요청하면 major 버전을 1 증가시키고 minor와 patch 버전은 0으로 리셋한다.
-* 사용자가 머지를 요청하면 현재 작업 브랜치의 모든 커밋을 하나로 합쳐 `main`에 머지한다.
-* `main`에 머지할 때는 작업 브랜치 안의 커밋 제목들을 확인하고, 전체 변경 내용을 잘 표현하는 최종 커밋 제목을 만들어 사용한다.
+* 사용자가 머지를 요청하면 작업 브랜치로 GitHub pull request를 만들고, 그 PR을 squash merge해 `main`에 넣는다. 머지한 뒤 `git pull`로 로컬 `main`을 원격과 같게 갱신한다.
+* PR 본문에는 해결하는 issue를 `Closes #6`처럼 적는다.
+* squash merge의 커밋 제목은 작업 브랜치 안의 커밋 제목들을 확인하고, 전체 변경 내용을 잘 표현하는 제목으로 만든다.
 * `main`에 머지한 뒤에는 그 머지 커밋에 `VERSION`과 같은 값의 annotated tag를 `vmajor.minor.patch` 형식으로 붙인다. 예: `VERSION`이 `0.0.81`이면 `v0.0.81`.
 * tag 메시지에는 해당 버전의 핵심 변경을 한 줄로 남긴다.
 * tag는 로컬까지만 만들고 원격 push는 사용자가 직접 수행한다.
 * 머지가 완료되면 현재 작업 브랜치를 삭제한다.
+* 릴리스 노트(`docs/release-notes/v<version>.md`)에는 해결된 issue 번호와 그 커밋 ID를 함께 적는다.
 
 ## Git Workflow Rules
 
@@ -275,12 +283,14 @@ If the requirement is a simple question or confirmation request, answer it direc
 * When the user requests a merge, increment the patch version by 1 before merging into `main`.
 * When the user requests a minor version bump, increment the minor version by 1 and reset the patch version to 0.
 * When the user requests a major version bump, increment the major version by 1 and reset the minor and patch versions to 0.
-* When the user requests a merge, squash all commits from the current task branch into `main`.
-* When merging into `main`, inspect the commit titles in the task branch and create a final commit title that best describes the complete change.
+* When the user requests a merge, open a GitHub pull request from the task branch and squash-merge it into `main`. After the merge, update local `main` to match the remote with `git pull`.
+* Name the issues the pull request resolves in its description, as in `Closes #6`.
+* For the squash merge's commit title, inspect the commit titles in the task branch and write one that best describes the complete change.
 * After merging into `main`, tag that merge commit with an annotated tag matching `VERSION`, in the form `vmajor.minor.patch`. For example, tag `v0.0.81` when `VERSION` reads `0.0.81`.
 * Put a one-line summary of the version's key change in the tag message.
 * Create tags locally only; the user pushes them to the remote.
 * Delete the task branch after the merge is complete.
+* Release notes (`docs/release-notes/v<version>.md`) record the resolved issue numbers together with their commit IDs.
 
 ---
 
