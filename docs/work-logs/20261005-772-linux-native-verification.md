@@ -145,6 +145,9 @@ GitHub 릴리스 v0.0.200의 `linux-x64`, `linux-i386` 아카이브를 풀어 �
 
 ### 6.1 결함: i386에서 vsync가 켜져 있으면 호스트 루프에 빠진다
 
+> **정정(#6):** 이 절이 말하는 느린 상태의 원인은 호스트 루프가 아니라 게임 창이 화면에 보이지 않는 것이었을 가능성이 높습니다.
+> [Task 773 로그의 "느린 상태의 정체"](20261005-773-glide-gate-relink-cost.md)를 보십시오. 아래 수치는 측정 그대로입니다.
+
 v0.0.200 i386 20초 실행 15회 중 5회가 느렸습니다(117·108·399·551·648프레임, 정상은 748~760). 117프레임 실행은 같은
 파일명으로 덮어써 지표가 남지 않았습니다. 지표가 남은 느린 실행 네 번은 모두 타이머 tick을 대량으로 버렸고(`dropped`
 725~3,017, 정상은 20~21) backlog가 상한 64에 닿았습니다.
@@ -394,6 +397,10 @@ This is the first run of the i386 archive on real hardware.
 * Exit codes were 0 or 3; Task 767's 139 (SIGSEGV) did not occur in these runs.
 
 ### 6.1 Defect: with vsync on, i386 falls into a host loop
+
+> **Correction (#6):** the slow state this section describes was very likely caused not by a host loop but by the game
+> window not being visible. See ["What the slow state is" in the Task 773 log](20261005-773-glide-gate-relink-cost.md). The
+> numbers below are as measured.
 
 Five of fifteen 20-second v0.0.200 i386 runs were slow (117, 108, 399, 551 and 648 frames against 748 to 760). The
 117-frame run's log was overwritten under the same file name, so it left no counters. The four slow runs with logs all

@@ -103,6 +103,41 @@ flowchart LR
 **따라서 머지 전에 이 느린 상태의 조사가 필요합니다.** 부하를 일부러 건 상태에서 켬·끔·v0.0.200을 교대로 충분히 재고,
 느린 실행의 tick 전달 경로(`deferred` 사유)를 봐야 합니다.
 
+## 느린 상태의 정체 (#6, 같은 날)
+
+Issue: [#6](https://github.com/nworkers/rePIU/issues/6)
+
+**느린 상태는 이 작업의 변경 때문이 아닙니다. 게임 창이 화면에 보이지 않을 때 생깁니다.** 컴포지터는 숨겨진 창의 vsync swap을
+약 1 fps로 늦추고, direct 모델(i386)은 swap이 끝날 때까지 게스트 스레드가 gate 안에서 기다리며 그동안 타이머 tick을 받지 못합니다.
+backlog 상한(64)을 넘은 tick은 버려지고 게임의 시간이 느려집니다.
+
+실험: pumpit1 34초, `SDL_VIDEO_DRIVER=x11`, 9초 뒤 Xlib `XIconifyWindow`로 창을 12초 동안 최소화했다가 복원.
+
+| 빌드 | 프레임 | tick due / injected / dropped |
+|---|---|---|
+| i386 수정 빌드, 최소화 없음 | 1,636 | dropped 21 |
+| i386 수정 빌드 (gate 직접 호출 켬) | 474 | 8,121 / 3,665 / 4,455 |
+| i386 수정 빌드, 직접 호출 끔 | 474 | 7,917 / 3,673 / 4,244 |
+| i386 v0.0.200 | 454 | 7,955 / 3,709 / 4,246 |
+| i386 수정 빌드, `REPIU_GLIDE_SWAP_INTERVAL=0` | 39,180 | 7,890 / 7,868 / 22 |
+| x64 v0.0.200 (x11) | 461 | 8,052 / 8,025 / 27 |
+
+* **확인됨:** vsync를 켠 i386은 세 빌드 모두 같은 양의 tick을 버립니다. vsync를 끄면 버리지 않습니다. x64는 프레임은 같이 줄지만
+  tick은 버리지 않습니다. cache 모델은 swap을 기다리는 동안 밀린 tick을 주입하기 때문입니다(Task 750,
+  `InjectsTicksDuringSwapWait()`; direct 모델에서는 false).
+* **확인됨:** 부하 없이도 직접 호출 끔(26프레임)과 v0.0.200(35프레임)이 느린 상태에 들어갔고, 12코어 CPU 부하로는 어느 빌드도
+  느린 상태에 들어가지 않았습니다(켬 974~1,020, 끔 952~998, v0.0.200 599~611프레임 / 22초).
+* **추정:** 앞선 측정들에서 느린 실행이 시간대에 몰린 것은, 사용자가 같은 모니터에서 다른 창으로 작업하는 동안 게임 창이 가려졌기
+  때문으로 보입니다. 최소화는 확인했고, 다른 창에 완전히 가려진 경우도 같은지는 프로그램으로 만들 수 없어 확인하지 못했습니다.
+* **이 로그와 Task 772 로그의 정정:** Task 772가 "호스트 루프에 빠져 느려진다"고 적은 느린 상태도 같은 현상이었을 가능성이 높습니다.
+  수정 전 빌드는 게스트 스레드가 시간의 88%를 Activate에서 썼으므로 샘플이 거기에 찍혔을 뿐입니다. Activate 비용과 gate 미연결은
+  실제 결함이었고 그 수정 효과(1,990 → 3,190프레임)는 그대로지만, **느린 상태의 원인은 아니었습니다.** 위 "9회 중 0회"와 "38회 중
+  11회"는 창이 보였는지의 차이입니다.
+
+남은 일(#6): direct 모델에서 swap이 막혀 있는 동안에도 tick이 전달되게 하는 것. 후보는 (1) Task 750의 swap 대기 tick 주입을 direct
+모델에서 동작하게 하기(Win32에서 첫 주입이 call로 돌아오지 못한 문제를 풀어야 함), (2) direct 모델에도 async present 적용,
+(3) 창이 숨겨진 동안 swap interval을 0으로 두기입니다. 설계에서 정합니다.
+
 ---
 
 # Task 773 Work Log: The Glide Gate Relink — Removing Its Cost, and Making It Link on Linux i386
@@ -221,3 +256,42 @@ pumpitea.
 
 **So this slow state needs investigating before a merge**: enough alternating runs of on, off and v0.0.200 under
 deliberate load, and the tick delivery path (the reasons behind `deferred`) of a slow run.
+
+## What the slow state is (#6, same day)
+
+Issue: [#6](https://github.com/nworkers/rePIU/issues/6)
+
+**The slow state does not come from this task's change. It happens when the game window is not visible.** The compositor
+slows a hidden window's vsync swaps to about 1 fps, and on the direct model (i386) the guest thread waits inside the gate
+until the swap finishes and receives no timer tick meanwhile. Ticks beyond the backlog cap (64) are dropped and the game's
+time slows.
+
+Experiment: pumpit1 for 34 s, `SDL_VIDEO_DRIVER=x11`; after 9 s the window is minimised with Xlib `XIconifyWindow` for 12 s
+and then restored.
+
+| Build | Frames | Ticks due / injected / dropped |
+|---|---|---|
+| i386 changed build, not minimised | 1,636 | dropped 21 |
+| i386 changed build (gate dispatch on) | 474 | 8,121 / 3,665 / 4,455 |
+| i386 changed build, dispatch off | 474 | 7,917 / 3,673 / 4,244 |
+| i386 v0.0.200 | 454 | 7,955 / 3,709 / 4,246 |
+| i386 changed build, `REPIU_GLIDE_SWAP_INTERVAL=0` | 39,180 | 7,890 / 7,868 / 22 |
+| x64 v0.0.200 (x11) | 461 | 8,052 / 8,025 / 27 |
+
+* **Confirmed:** with vsync on, all three i386 builds drop the same amount of ticks; with vsync off none are dropped. x64
+  loses the same frames but drops no ticks, because the cache model injects owed ticks while it waits for the swap (Task
+  750, `InjectsTicksDuringSwapWait()`; false on the direct model).
+* **Confirmed:** with no load, dispatch-off (26 frames) and v0.0.200 (35 frames) entered the slow state too, and a 12-core
+  CPU load put no build into it (on 974–1,020, off 952–998, v0.0.200 599–611 frames in 22 s).
+* **Inferred:** the slow runs of the earlier measurements cluster in time because the game window was covered while the
+  user worked in other windows on the same monitor. Minimising is confirmed; whether a window fully covered by another
+  behaves the same could not be produced by program and was not checked.
+* **Correction to this log and the Task 772 log:** the slow state Task 772 described as "falling into a host loop" was very
+  likely this same thing. Before the fix the guest thread spent 88% of its time in Activate, so that is simply where the
+  samples landed. The cost of Activate and the unlinked gates were real defects and the gain from fixing them (1,990 →
+  3,190 frames) stands, but **they were not the cause of the slow state.** The "0 of 9" and "11 of 38" above differ by
+  whether the window was visible.
+
+Left for #6: delivering ticks on the direct model while the swap is blocked. Candidates are (1) making Task 750's swap-wait
+tick injection work on the direct model (the first injection not returning to the call, seen on Win32, has to be solved),
+(2) async present on the direct model as well, and (3) a swap interval of 0 while the window is hidden. The design decides.

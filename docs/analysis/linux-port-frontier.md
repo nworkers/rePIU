@@ -19304,7 +19304,10 @@ Work log: [755](../work-logs/20260928-755-wsl-audio-rate-and-clock-tug-of-war.md
   캐시가 `0x0E…`라 범위 안이어서 첫 호출에 이어졌다. 32비트 명령 포인터는 2³²로 감기므로 direct 모델에서는 검사가 필요 없다.
 * **확인됨:** 감은 변위를 쓰게 하자 pumpit1(i386, 60초)이 약 1,990 → 3,190프레임, 게스트 스레드 CPU 99.4% → 16.3%, Activate
   호출이 2초에 1.1만 번 → 60초에 148번. 느린 상태는 처음 9회 중 0회였으나 이후 38회 중 11회 다시 나왔다(샘플은
-  `SpinForRendezvousHint`, tick 대량 drop; 같은 기간 v0.0.200은 12회 중 0회). 수정 탓인지 그때의 부하 탓인지는 **미확정**. vsync를 끄면 2,100 → 53,197프레임. pumpit8은 439 → 3,288프레임.
+  `SpinForRendezvousHint`, tick 대량 drop). **확인됨(#6):** 수정 탓이 아니다. 창이 숨겨지면 컴포지터가 vsync swap을 약 1 fps로
+  늦추고, direct 모델은 swap을 기다리는 동안 tick을 받지 못해 버린다(최소화 12초에 4,200개 이상; v0.0.200과 직접 호출 끔도 같음).
+  vsync를 끄면 생기지 않고, x64는 Task 750의 swap 대기 tick 주입 덕분에 tick을 버리지 않는다. Task 772가 본 느린 상태도 같은
+  현상이었을 가능성이 높다. vsync를 끄면 2,100 → 53,197프레임. pumpit8은 439 → 3,288프레임.
 * **확인됨:** inline cache site 탐색은 게스트 주소가 들어 있는 자리를 캐시 주소와 비교하므로 일치할 수 없었다(`content=0`의 이유).
 * **미확정:** pumpitea에 남은 다른 느린 상태(`SpinForRendezvousHint`에 머묾, breakpoint 43만 번). 엔진의 다른 rel32 범위 검사에
   같은 가정이 있는지.
@@ -19370,8 +19373,10 @@ Evidence: [773 log](../work-logs/20261005-773-glide-gate-relink-cost.md) · [des
 * **Confirmed:** with the wrapped displacement written, pumpit1 (i386, 60 s) goes from about 1,990 to 3,190 frames, the
   guest thread from 99.4% to 16.3% CPU, and Activate from 11,000 calls every 2 s to 148 in 60 s. The slow state was absent
   in the first 9 runs but returned in 11 of 38 later ones (samples in `SpinForRendezvousHint`, ticks dropped in bulk;
-  v0.0.200 showed 0 of 12 over the same period). Whether the change or the load of that moment causes it is
-  **unresolved**. With vsync off, 2,100 → 53,197 frames. pumpit8: 439 → 3,288 frames.
+  v0.0.200 showed 0 of 12 over the same period). **Confirmed (#6):** the change is not the cause. When the window is
+  hidden the compositor slows vsync swaps to about 1 fps, and the direct model receives no tick while it waits for the swap
+  and drops them (more than 4,200 in 12 s minimised; v0.0.200 and dispatch-off alike). It does not happen with vsync off,
+  and x64 drops no ticks thanks to Task 750's swap-wait injection. The slow state Task 772 saw was very likely the same. With vsync off, 2,100 → 53,197 frames. pumpit8: 439 → 3,288 frames.
 * **Confirmed:** the inline cache site scan compared a field holding a guest address with a cache address and could
   never match (the reason for `content=0`).
 * **Unresolved:** another slow state left in pumpitea (sitting in `SpinForRendezvousHint`, 430,000 breakpoints), and
