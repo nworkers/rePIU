@@ -187,7 +187,9 @@ endfunction()
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG v1.92.1
+    # #15: the revision re2DJ's OSD uses, for ProggyForever, the scalable
+    # default font (AddFontDefaultVector) the OSD and the launcher draw with.
+    GIT_TAG 01380c579715e62fb9a8d6ec0502c4ea83bfde6e  # v1.92.9
     GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(imgui)
@@ -314,6 +316,7 @@ target_sources(repiu_exe
         src/engine/aot_glide_gate_fixup_index.cpp
         src/engine/glide_gate_interrupt_exit.cpp
         src/engine/gl_renderer_identity.cpp
+        src/engine/session_identity.cpp
         src/engine/aot_inline_cache_site_index.cpp
         src/engine/aot_return_dispatch_site_index.cpp
         src/engine/aot_return_patch_policy.cpp
@@ -408,6 +411,7 @@ target_sources(repiu_exe
         src/engine/glide_opengl_backend.cpp
         src/engine/glide_opengl_shader.cpp
         src/engine/glide_osd.cpp
+        src/engine/imgui_ui_scale.cpp
         src/engine/glide_post_process.cpp
         src/engine/glide_letterbox.cpp
         src/engine/post_shader_source.cpp
@@ -789,6 +793,7 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/glide_gate_fixup_index_probe.cpp
     src/tools/aot_probe/glide_gate_interrupt_exit_probe.cpp
     src/tools/aot_probe/gl_renderer_identity_probe.cpp
+    src/tools/aot_probe/imgui_ui_scale_probe.cpp
     src/tools/aot_probe/build_identity_probe.cpp
     src/tools/aot_probe/code_cache_placement_probe.cpp
     src/tools/aot_probe/dos_console_device_probe.cpp
@@ -1019,6 +1024,7 @@ if(WIN32)
         src/tools/aot_probe/glide_gate_fixup_index_probe.cpp
         src/tools/aot_probe/glide_gate_interrupt_exit_probe.cpp
         src/tools/aot_probe/gl_renderer_identity_probe.cpp
+        src/tools/aot_probe/imgui_ui_scale_probe.cpp
         src/tools/aot_probe/build_identity_probe.cpp
         src/tools/aot_probe/glide_setter_state_census_probe.cpp
         src/tools/aot_probe/glide_async_present_probe.cpp

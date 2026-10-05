@@ -13,6 +13,7 @@
 #include "repiu/engine/eeprom_backing_path.h"
 #include "repiu/engine/execution_trampoline.h"
 #include "repiu/engine/final_execution_report.h"
+#include "repiu/engine/session_identity.h"
 #include "repiu/engine/aot_code_cache.h"
 #include "../../engine/aot/aot_dbt_glide_gate_dispatch.h"
 #include "../../engine/telemetry/aot_residency_sample.h"
@@ -5302,6 +5303,9 @@ int main(int argc, char** argv)
         profile = &mounted_profile.value();
     }
     logger->info("loader target: {}", profile->id);
+    // #15: shown in the in-game OSD. Written before any execution thread or
+    // window exists.
+    repiu::engine::SetSessionTargetProfile(profile->id);
     logger->info("loader executable: {}",
                  profile->executable_path.string());
     logger->info("PIU JAMMA board enabled: {}",

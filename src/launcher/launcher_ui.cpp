@@ -1,5 +1,6 @@
 #include "repiu/launcher/launcher_ui.h"
 
+#include "repiu/engine/imgui_ui_scale.h"
 #include "repiu/engine/post_shader_catalog.h"
 
 #include "imgui.h"
@@ -66,8 +67,10 @@ bool CreateSdlContext(SdlContext* context, std::string* message)
     context->video_initialized = true;
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+    // #15: resizable, with text and spacing that follow the window height.
     context->window = SDL_CreateWindow("rePIU", kWindowWidth, kWindowHeight,
-                                       SDL_WINDOW_OPENGL);
+                                       SDL_WINDOW_OPENGL |
+                                           SDL_WINDOW_RESIZABLE);
     if (context->window == nullptr)
     {
         *message = std::string("SDL window failed: ") + SDL_GetError();
@@ -133,21 +136,25 @@ bool SettingsDiffer(const LauncherSettings& left, const LauncherSettings& right)
 
 void DrawRomSetTable(const std::vector<RomSetEntry>& catalog,
                      std::size_t* selection, bool* start_requested,
-                     bool* focus_pending)
+                     bool* focus_pending, float footer_height)
 {
     constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_RowBg |
         ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY |
         ImGuiTableFlags_SizingStretchProp;
-    const ImVec2 size(0.0F, ImGui::GetContentRegionAvail().y - 132.0F);
+    // #15: the fixed sizes below were laid out at scale 1 and grow with it.
+    // The table leaves exactly the room the options and buttons took on the
+    // previous frame, so no scale makes the window scroll.
+    const float scale = ImGui::GetStyle().FontScaleMain;
+    const ImVec2 size(0.0F, ImGui::GetContentRegionAvail().y - footer_height);
     if (!ImGui::BeginTable("rom_sets", 3, kFlags, size))
     {
         return;
     }
     ImGui::TableSetupColumn("ROM set", ImGuiTableColumnFlags_WidthFixed,
-                            110.0F);
+                            110.0F * scale);
     ImGui::TableSetupColumn("Title");
     ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed,
-                            260.0F);
+                            260.0F * scale);
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableHeadersRow();
     for (std::size_t index = 0; index < catalog.size(); ++index)
@@ -329,10 +336,18 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
     // from the start.
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-    // The launcher owns no writable directory of its own, and window layout is
-    // fixed, so ImGui's own ini file is disabled.
+    // The launcher owns no writable directory of its own, and its layout is
+    // rebuilt from the window size every frame, so ImGui's own ini file is
+    // disabled.
     io.IniFilename = nullptr;
+    engine::AddImGuiUiFont();
     ImGui::StyleColorsDark();
+    // #15: every scale starts again from this.
+    const ImGuiStyle base_style = ImGui::GetStyle();
+    float applied_scale = 0.0F;
+    // #15: what the options and buttons below the table measured on the last
+    // frame; the first frame guesses with the size laid out at scale 1.
+    float footer_height = 132.0F;
     ImGui_ImplSDL3_InitForOpenGL(context.window, context.gl_context);
     ImGui_ImplOpenGL3_Init(kGlslVersion);
 
@@ -361,6 +376,15 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
+        // #15: text and spacing follow the window height, so a maximised
+        // launcher is as readable as the default one.
+        const float scale =
+            engine::UiScaleForHeight(io.DisplaySize.y, engine::kLauncherUiScale);
+        if (scale != applied_scale)
+        {
+            engine::ApplyImGuiUiScale(base_style, scale);
+            applied_scale = scale;
+        }
         ImGui::NewFrame();
 
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -378,21 +402,23 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
                 "- arrows move, Enter starts, Esc quits; discs are read from "
                 "roms/");
             DrawRomSetTable(catalog, &selection, &start_requested,
-                            &focus_pending);
+                            &focus_pending, footer_height);
             focus_pending = false;
+            const float footer_top = ImGui::GetCursorPosY();
             DrawOptions(&result.settings, shaders);
             ImGui::Separator();
 
             const bool has_selection = selection < catalog.size() &&
                 IsRomSetRunnable(catalog[selection]);
             ImGui::BeginDisabled(!has_selection);
-            if (ImGui::Button("Start", ImVec2(120.0F, 0.0F)))
+            const ImVec2 button_size(120.0F * scale, 0.0F);
+            if (ImGui::Button("Start", button_size))
             {
                 start_requested = true;
             }
             ImGui::EndDisabled();
             ImGui::SameLine();
-            if (ImGui::Button("Quit", ImVec2(120.0F, 0.0F)) ||
+            if (ImGui::Button("Quit", button_size) ||
                 ImGui::IsKeyPressed(ImGuiKey_Escape))
             {
                 running = false;
@@ -404,6 +430,7 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
                     "No runnable ROM set is selected. Place <id>.zip and "
                     "roms/<id>/<disc>.chd to enable one.");
             }
+            footer_height = ImGui::GetCursorPosY() - footer_top;
             if (start_requested && has_selection)
             {
                 result.launch = true;

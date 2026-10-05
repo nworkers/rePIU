@@ -39,6 +39,7 @@
 #include "glide_gate_fixup_index_probe.h"
 #include "glide_gate_interrupt_exit_probe.h"
 #include "gl_renderer_identity_probe.h"
+#include "imgui_ui_scale_probe.h"
 #include "timer_return_pad_probe.h"
 #include "build_identity_probe.h"
 #include "flat_stack_segment_fold_probe.h"
@@ -193,6 +194,8 @@ constexpr CoreProbe kCoreProbes[] = {
      &repiu::tools::RunGlideGateInterruptExitProbe},
     // #5. String matching, no GL context, so every host runs it.
     {"gl_renderer_identity", &repiu::tools::RunGlRendererIdentityProbe},
+    // #15. Arithmetic and a string, no ImGui context, so every host runs it.
+    {"imgui_ui_scale", &repiu::tools::RunImGuiUiScaleProbe},
     // Task 738. The window-title label, checked against this compiler.
     {"build_identity", &repiu::tools::RunBuildIdentityProbe},
 };
