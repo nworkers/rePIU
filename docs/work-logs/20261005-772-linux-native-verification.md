@@ -123,8 +123,9 @@ sequenceDiagram
 4절의 캡처 시도에서 포털 요청이 사용자 응답을 기다리는 동안, x64 게임은 창을 열기까지 76초가 걸렸습니다(Release·Debug
 모두, `busctl … portal.Settings ReadOne`도 타임아웃). SDL3가 초기화 때 포털 설정을 D-Bus로 읽으며 25초 타임아웃을
 세 번 기다린 것으로 보입니다(추정). 사용자가 창을 닫은 뒤 바로 정상(20초 제한에 20.4초)으로 돌아왔습니다. 같은 시간대의
-i386 실행은 늦지 않았으므로, i386 아카이브의 SDL은 D-Bus 지원 없이 만들어진 것으로 보입니다(추정). 이 구간의 측정값은
-버리고 다시 쟀습니다.
+i386 실행은 늦지 않았습니다. 처음에는 i386 SDL에 D-Bus 지원이 없기 때문이라고 적었지만, CI가 `libdbus-1-dev:i386`을
+설치하고 로컬 i386 구성도 `SDL_DBUS=ON`이므로 그 추정은 철회합니다. i386이 늦지 않은 이유는 미확정입니다. 이 구간의
+측정값은 버리고 다시 쟀습니다.
 
 ## 6. v0.0.200 릴리스 아카이브
 
@@ -183,6 +184,59 @@ WSL에서는 같은 줄이 +5.4%, 71초 중 71초 초과였습니다. Task 755�
 * 롬셋 없이 `repiu --post-shader crt`로 런처를 여는 경로(GUI 조작 필요).
 * 화면 캡처와 눈으로 하는 확인(4절).
 * Win32 빌드(이 머신은 Linux).
+
+## 8. 후속 조사: i386 결함의 원인 좁히기
+
+사용자가 32비트 개발 패키지(`g++-multilib`, CI와 같은 `:i386` 헤더들, `libdecor-0-plugin-1-cairo:i386`)를 설치했습니다.
+`CFLAGS=-g CXXFLAGS=-g scripts/build_linux_i386.sh --config Release --static-runtime --build-dir build/linux_i386_release_g`로
+빌드했습니다(1분 41초, 새 경고 없음). 스크립트가 `CMAKE_CXX_FLAGS=-m32`를 넘겨 `-g`는 들어가지 않았지만, strip하지 않아
+함수 심볼로 충분했습니다.
+
+### 재현 조건
+
+* 패키지를 설치한 뒤에는 CI v0.0.200 바이너리를 `SDL_VIDEO_DRIVER=x11`로 강제해도 60초 2회 모두 정상이었습니다. 처음 재현됐을
+  때는 SDL이 Wayland 초기화에 실패하고 x11로 넘어가던 상태였으므로, `WAYLAND_DISPLAY=repiu-none`으로 그 경로를 흉내 냈습니다.
+  그 조건에서 로컬 빌드(일부는 임시 계측 포함)는 60초 실행 21회 중 5회가 느린 상태에 들어갔고, 1회는 경계였습니다
+  (1,464프레임, dropped 42).
+* 이 조건이 직접 원인인지는 확인하지 않았습니다. 아래의 구조로 보면 조건보다 CPU 여유가 더 중요해 보입니다.
+
+### 확인됨
+
+* **루프는 [`ActivateGlideGateDirectTarget`](../../src/engine/aot/aot_dbt_glide_gate_dispatch.cpp)입니다.** 샘플 주소
+  `0x401A9171`이 이 함수의 indirect inline cache site 탐색 안쪽 루프이고, 코드 캐시에서 값을 읽는 load 바로 뒤입니다. CI
+  바이너리에서 본 루프와 모양이 같습니다(48바이트 site, 16바이트 entry, entry의 +4가 `target_immediate_offset`).
+* 이 함수는 AOT 코드 캐시 경계의 breakpoint에서 재진입할 때 목적지가 Glide gate이면 매번 불립니다
+  ([`HandleAotReentry`](../../src/engine/aot/aot_runtime_dispatch.cpp)). 한 번 부를 때마다 site 약 7,100개(읽기 약 2.8만 번)와
+  fixup 약 10만 개를 훑고, 코드 캐시 전체(16 MB)에 `mprotect`를 두 번 합니다.
+* 임시 계측(조사 뒤 되돌림)으로 잰 정상 상태 비용: **호출당 약 160 µs**(site 탐색 약 45 µs, 나머지 약 115 µs), 2초에
+  약 1.1만 번. 정상 상태에서 실제로 고칠 것은 없습니다(content 패치 0개, fixup 1~10개를 같은 값으로 다시 씀).
+* **정상 상태에서도 게스트 스레드는 CPU 99.4%로 포화되어 있습니다**(`/proc/<pid>/task` 1초 간격, 20~40초 평균). 메인
+  스레드는 16.7%, 오디오 등 나머지는 1% 미만입니다. 호출 수와 회당 비용으로 보면 그중 약 88%가 이 함수입니다.
+* 느린 상태(1 ms 기준으로 계측한 실행, dropped 922)에서는 같은 호출이 1~4 ms로 늘고, 탐색 도중 비자발적 문맥 전환이 4~7번 일어납니다(정상은 0). 페이지 폴트는
+  0입니다. 즉 게스트 스레드가 탐색 도중 CPU를 빼앗기고 있습니다. CPU affinity나 우선순위를 바꾸는 코드는 저장소에 없습니다.
+* 느린 구간의 Glide 호출은 오히려 정상의 6분의 1 수준이므로(예: `_GRDRAWTRIANGLE` 3,642 대 41,665), Glide 호출이 폭주하는
+  현상은 아닙니다.
+
+### 추정
+
+* 게스트 스레드가 여유 없이 포화된 상태에서는, 외부 부하로 잠깐 CPU를 빼앗기기만 해도 타이머 tick이 밀립니다. vsync가 켜져
+  있으면 [Task 750의 swap 대기](../../src/engine/boundary/linexe_glide_boundary.cpp)(`ContinueGlideSwapWait`)가 밀린 tick을
+  `call` 지점으로 되돌려 주입하고, 그때마다 gate 재진입과 Activate 비용이 더해져 다시 tick이 밀리는 되먹임이 생겨 느린 상태가
+  유지되는 것으로 보입니다. vsync를 끄면 이 대기 경로를 타지 않습니다.
+* x64는 async present를 쓰고 cache 모델이라 이 경로를 타지 않습니다.
+
+### 미확정
+
+* Linux i386에서는 왜 Glide 호출마다 같은 경계 breakpoint를 다시 밟는가(Task 517~527이 남긴 질문). Windows에서는 다시
+  밟지 않습니다.
+* 그 breakpoint가 어떤 경로(`direct-edge`, `address-map`, `block-fallthrough`)로 찾아지는가.
+
+### 고치는 방향 (별도 작업에서 설계)
+
+1. **비용을 없애기:** 같은 경계·gate 쌍은 한 번 적용한 뒤 다시 탐색하지 않게 하고, 실제로 바꿀 것이 없으면 `mprotect`와
+   flush를 건너뛰고, fixup을 gate 주소로 미리 색인합니다. 의미는 그대로이고 회당 160 µs를 크게 줄입니다.
+2. **원인을 없애기:** Glide 호출이 경계 breakpoint를 다시 밟지 않도록 Windows와 같은 상태로 만듭니다. 효과가 더 크지만
+   원인 조사가 먼저 필요합니다.
 
 ---
 
@@ -317,8 +371,10 @@ sequenceDiagram
 While section 4's capture request waited for the user's answer, the x64 game took 76 s to open its window (Release and
 Debug alike; `busctl … portal.Settings ReadOne` timed out too). SDL3 seems to read portal settings over D-Bus at
 initialisation and wait out a 25-second timeout three times (inferred). Once the user closed the dialog it was normal
-again (20.4 s for a 20-second limit). An i386 run in the same period was not delayed, so the i386 archive's SDL seems
-built without D-Bus support (inferred). Measurements from that period were discarded and taken again.
+again (20.4 s for a 20-second limit). An i386 run in the same period was not delayed. That was first put down to an
+i386 SDL without D-Bus support, but CI installs `libdbus-1-dev:i386` and the local i386 configuration reports
+`SDL_DBUS=ON`, so that inference is withdrawn; why i386 was not delayed is unresolved. Measurements from that period were
+discarded and taken again.
 
 ## 6. v0.0.200 release archives
 
@@ -379,3 +435,62 @@ has no clock drag. Whether the music sounds right by ear needs a person listenin
 * Opening the launcher with `repiu --post-shader crt` and no ROM set (needs GUI operation).
 * Screen captures and checks by eye (section 4).
 * A Win32 build (this machine is Linux).
+
+## 8. Follow-up: narrowing down the i386 defect
+
+The user installed the 32-bit development packages (`g++-multilib`, the same `:i386` headers as CI,
+`libdecor-0-plugin-1-cairo:i386`). The build was
+`CFLAGS=-g CXXFLAGS=-g scripts/build_linux_i386.sh --config Release --static-runtime --build-dir build/linux_i386_release_g`
+(1 min 41 s, no new warnings). The script passes `CMAKE_CXX_FLAGS=-m32`, so `-g` did not take, but the binary is not
+stripped and its function symbols were enough.
+
+### Reproduction
+
+* With the packages installed, the CI v0.0.200 binary forced to `SDL_VIDEO_DRIVER=x11` ran normally in two 60-second
+  runs. When the defect first reproduced, SDL was failing its Wayland initialisation and falling back to x11, so that
+  path was imitated with `WAYLAND_DISPLAY=repiu-none`. Under it the local build (some runs with temporary
+  instrumentation) entered the slow state in 5 of 21 60-second runs, with one borderline run (1,464 frames, dropped 42).
+* Whether that condition is a direct cause was not checked. By the structure below, CPU headroom matters more.
+
+### Confirmed
+
+* **The loop is [`ActivateGlideGateDirectTarget`](../../src/engine/aot/aot_dbt_glide_gate_dispatch.cpp).** The sample
+  address `0x401A9171` is the inner loop of its scan of indirect inline cache sites, right after the load that reads the
+  code cache. It has the same shape as the loop in the CI binary (48-byte site, 16-byte entry, `target_immediate_offset`
+  at entry +4).
+* It is called on every reentry from an AOT code cache boundary breakpoint whose target is a Glide gate
+  ([`HandleAotReentry`](../../src/engine/aot/aot_runtime_dispatch.cpp)). Each call walks about 7,100 sites (about
+  28,000 reads) and about 100,000 fixups and runs `mprotect` twice over the whole 16 MB code cache.
+* Measured with temporary instrumentation (reverted afterwards), in the normal state: **about 160 µs a call** (about
+  45 µs for the site scan, about 115 µs for the rest), about 11,000 calls every 2 s. In the normal state there is nothing
+  to fix (0 content patches; 1 to 10 fixups rewritten with the same value).
+* **Even in the normal state the guest thread is saturated at 99.4% CPU** (`/proc/<pid>/task` once a second, 20–40 s
+  average). The main thread uses 16.7% and the rest, audio included, under 1%. By call count and cost, about 88% of that
+  is this function.
+* In the slow state (the run instrumented at a 1 ms threshold, dropped 922) the same call grows to 1–4 ms with 4 to 7 involuntary context switches during the scan (0
+  normally) and no page faults: the guest thread is losing the CPU mid-scan. Nothing in the repository sets CPU
+  affinity or priority.
+* Glide calls in the slow stretch are about a sixth of normal (for example `_GRDRAWTRIANGLE` 3,642 against 41,665), so
+  this is not a storm of Glide calls.
+
+### Inferred
+
+* With the guest thread saturated and no headroom, losing the CPU briefly to outside load is enough for timer ticks to
+  fall behind. With vsync on, [Task 750's swap wait](../../src/engine/boundary/linexe_glide_boundary.cpp)
+  (`ContinueGlideSwapWait`) injects an owed tick by sending the guest back to the `call`, and each time adds a gate
+  reentry and an Activate call, so ticks fall further behind: a feedback that holds the slow state. With vsync off this
+  wait path is not taken.
+* x64 uses async present and the cache model, so it does not take this path.
+
+### Unresolved
+
+* Why Linux i386 hits the same boundary breakpoint again on every Glide call (the question Tasks 517 to 527 left);
+  Windows does not.
+* Which lookup (`direct-edge`, `address-map`, `block-fallthrough`) finds that breakpoint.
+
+### Directions for a fix (designed in a task of its own)
+
+1. **Remove the cost:** do not scan again for a boundary and gate pair already applied, skip `mprotect` and the flush
+   when nothing changes, and index the fixups by gate address. Same meaning, far less than 160 µs a call.
+2. **Remove the cause:** keep Glide calls from hitting the boundary breakpoint again, as on Windows. Larger effect, but
+   the cause has to be found first.

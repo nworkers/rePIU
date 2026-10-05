@@ -19275,14 +19275,26 @@ Work log: [755](../work-logs/20260928-755-wsl-audio-rate-and-clock-tug-of-war.md
 
 ### 추정
 
-* xdg-desktop-portal이 막히면 x64 SDL3의 초기화가 D-Bus 타임아웃(25초×3)으로 약 75초 늦어진다. i386 아카이브는
-  영향을 받지 않아 D-Bus 지원 없이 빌드된 것으로 보인다.
+* xdg-desktop-portal이 막히면 x64 SDL3의 초기화가 D-Bus 타임아웃(25초×3)으로 약 75초 늦어진다. i386 아카이브가 영향을
+  받지 않은 이유는 미확정이다(D-Bus 없는 빌드라는 처음 추정은 CI의 `libdbus-1-dev:i386` 설치로 철회).
 * i386 루프의 vsync 의존은 swap이 vblank를 기다리는 동안 쌓이는 tick과 관련 있어 보인다.
 
 ### 미확정
 
-* i386 루프가 어느 하위 시스템인지(16바이트 항목을 선형 탐색하며 `*(u32*)(base + entry[+4])`를 비교하는 코드,
-  v0.0.200 `0x40151140..0x40151156`), Win32(같은 direct 모델)에서도 생기는지. 심볼이 있는 i386 빌드가 필요하다.
+* ~~i386 루프가 어느 하위 시스템인지~~ → 같은 날 후속 조사에서 확인(아래 "후속").
+* Win32(같은 direct 모델)에서도 느린 상태가 생기는지.
+
+### 후속 (같은 날, 심볼 있는 i386 빌드)
+
+* **확인됨:** 루프는 `ActivateGlideGateDirectTarget`이다. Linux i386에서는 Glide 호출마다 AOT 경계 breakpoint를 거쳐 이 함수가
+  불리고(2초에 약 1.1만 번), 한 번에 site 약 7,100개·fixup 약 10만 개를 훑고 16 MB 코드 캐시 전체에 `mprotect`를 두 번 해
+  약 160 µs가 든다. 정상 상태에서도 게스트 스레드는 CPU 99.4%로 포화되어 있고 그중 약 88%가 이 함수다. 정상 상태에서는
+  바꿀 것이 없다(content 0, fixup 1~10개를 같은 값으로 다시 씀).
+* **확인됨:** 느린 상태의 호출은 1~4 ms이고 탐색 중 비자발적 문맥 전환이 4~7번(정상 0), 페이지 폴트 0.
+* **추정:** 여유가 없는 게스트 스레드가 외부 부하로 밀리면 tick이 밀리고, vsync의 swap 대기(Task 750)가 밀린 tick마다 gate
+  재진입과 Activate 비용을 더해 느린 상태를 유지한다.
+* **미확정:** Linux i386에서 Glide 호출마다 같은 경계 breakpoint를 다시 밟는 이유(Task 517~527의 질문).
+* 근거: [Task 772 로그 8절](../work-logs/20261005-772-linux-native-verification.md).
 * HiDPI: 게임 창이 고밀도 픽셀을 요청하지 않아 배율 2 화면에서 Wayland는 확대(2560×1440 논리), x11은 절반 크기 창이 된다.
   바꿀지는 정하지 않았다.
 
@@ -19308,14 +19320,29 @@ Work log: [772](../work-logs/20261005-772-linux-native-verification.md)
 
 ### Inferred
 
-* A blocked xdg-desktop-portal delays x64 SDL3's initialisation by about 75 s through D-Bus timeouts (25 s × 3). The
-  i386 archive is unaffected and seems built without D-Bus support.
+* A blocked xdg-desktop-portal delays x64 SDL3's initialisation by about 75 s through D-Bus timeouts (25 s × 3). Why
+  the i386 archive was unaffected is unresolved (the first guess, a build without D-Bus, is withdrawn: CI installs
+  `libdbus-1-dev:i386`).
 * The i386 loop's dependence on vsync seems related to ticks piling up while the swap waits for vblank.
 
 ### Unresolved
 
-* Which subsystem the i386 loop belongs to (code that linearly scans 16-byte entries comparing
-  `*(u32*)(base + entry[+4])`, v0.0.200 `0x40151140..0x40151156`), and whether Win32 (the same direct model) shows it.
-  A symbolised i386 build is needed.
+* ~~Which subsystem the i386 loop belongs to~~: confirmed by the same day's follow-up (below).
+* Whether Win32 (the same direct model) enters the slow state.
+
+### Follow-up (same day, a symbolised i386 build)
+
+* **Confirmed:** the loop is `ActivateGlideGateDirectTarget`. On Linux i386 every Glide call reaches it through an AOT
+  boundary breakpoint (about 11,000 calls every 2 s); each call walks about 7,100 sites and about 100,000 fixups and runs
+  `mprotect` twice over the whole 16 MB code cache, about 160 µs. Even in the normal state the guest thread is saturated
+  at 99.4% CPU, about 88% of it in this function, and there is nothing to change (0 content patches; 1 to 10 fixups
+  rewritten with the same value).
+* **Confirmed:** in the slow state a call takes 1–4 ms with 4 to 7 involuntary context switches during the scan (0
+  normally) and no page faults.
+* **Inferred:** a guest thread with no headroom falls behind on ticks when outside load takes the CPU, and vsync's swap
+  wait (Task 750) adds a gate reentry and an Activate call for every owed tick, holding the slow state.
+* **Unresolved:** why Linux i386 hits the same boundary breakpoint again on every Glide call (Tasks 517 to 527's
+  question).
+* Evidence: [Task 772 log, section 8](../work-logs/20261005-772-linux-native-verification.md).
 * HiDPI: the game window does not ask for high pixel density, so on a scale-2 screen Wayland upscales it (logical
   2560×1440) and x11 gives a half-size window. Whether to change that is not decided.
