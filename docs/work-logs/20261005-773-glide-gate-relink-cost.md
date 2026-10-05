@@ -69,8 +69,9 @@ flowchart LR
 * **i386 + Wayland(NVIDIA)에서 창을 열지 못합니다(기존, 이 작업과 무관).** 32비트 Wayland 패키지를 설치하자 SDL이 Wayland를
   고르고 `eglCreateWindowSurface`가 실패해 Glide가 dummy로 넘어갑니다(0프레임). 수정 전 빌드도 같습니다. 패키지가 없을 때는
   x11로 넘어가 동작했으므로, 지금은 `SDL_VIDEO_DRIVER=x11`이 필요합니다. 창 생성 실패 시 x11로 다시 시도하는 처리가 필요해 보입니다.
-* **Win32 확인.** 이 머신에서 빌드할 수 없습니다. Win32는 변위가 원래 범위 안이라 쓰는 값은 같고, 달라지는 것은 같은 값을 다시
-  쓰지 않는 것과 죽은 탐색 제거뿐입니다. 빌드와 `repiu_aot_probe --glide-gate-fixup-index`, pumpit1 실행 확인이 필요합니다.
+* **Win32 확인(2026-10-05, Windows 11에서 완료).** Win32 Release 빌드 exit 0(바뀐 파일에 새 경고 없음),
+  `repiu_aot_probe --glide-gate-fixup-index`와 core probe의 `glide_gate_fixup_index_all=true`. pumpit1·pumpit8·pumpitea 실행에서
+  예외·실패 0, 프레임은 창이 보일 때 60 fps입니다. 결과는 [#6 작업 로그의 Win32 절](20261005-i006-direct-model-swap-wait-ticks.md#win32-확인)에 있습니다.
 * 간접 호출로 gate에 가는 경우(`elsewhere` 6,699 / 60초)는 여전히 경계를 거칩니다. 전체의 1.5%입니다.
 * 엔진의 다른 rel32 범위 검사에 같은 가정이 있는지는 보지 않았습니다.
 
@@ -218,9 +219,10 @@ flowchart LR
   installed SDL picks Wayland, `eglCreateWindowSurface` fails and Glide falls back to the dummy (0 frames); the build
   before this change does the same. Without the packages it fell back to x11 and ran, so `SDL_VIDEO_DRIVER=x11` is
   needed for now. Retrying on x11 when the window cannot be created looks necessary.
-* **Win32.** It cannot be built on this machine. On Win32 the displacement was in range anyway, so the bytes written
-  are the same; what changes is not rewriting equal values and the removed dead scan. The build,
-  `repiu_aot_probe --glide-gate-fixup-index` and a pumpit1 run need checking.
+* **Win32 (checked 2026-10-05 on Windows 11).** The Win32 Release build exits 0 with no new warnings in the changed
+  files; `repiu_aot_probe --glide-gate-fixup-index` and the core probe report `glide_gate_fixup_index_all=true`. Runs of
+  pumpit1, pumpit8 and pumpitea show no exception or failure and 60 fps with the window visible. The results are in
+  [the Win32 section of the #6 log](20261005-i006-direct-model-swap-wait-ticks.md#win32-1).
 * Gates reached by indirect calls (`elsewhere`, 6,699 in 60 s) still cross the boundary: 1.5% of the total.
 * Whether the engine's other rel32 range checks carry the same assumption was not examined.
 
