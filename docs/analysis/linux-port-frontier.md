@@ -19256,3 +19256,66 @@ Work log: [755](../work-logs/20260928-755-wsl-audio-rate-and-clock-tug-of-war.md
 * **The user's check (2026-09-28)**: with the Windows clock synchronised MP3 playback was as slow as
   before. That run's clock report was not received, so whether the slew stopped is not known. **On
   hold** — a comparison on real hardware is needed to judge.
+
+## 2026-10-05 Task 772 — 실기(GNOME Wayland, NVIDIA)에서 본 v0.0.198~v0.0.201
+
+작업 로그: [772](../work-logs/20261005-772-linux-native-verification.md)
+
+### 확인됨
+
+* **Task 769의 두 WSL 의문은 WSL의 문제였다.** RTX 4090(GLX·EGL)에서 `glide_letterbox_gl=true`(WSL의 Mesa에서는 false:
+  Mesa는 다음 swap에서야 back buffer 크기를 바꾼다). GNOME(mutter) Wayland에서 전체화면 해제는 실제 커널 입력으로
+  3~67 ms 안에 끝나고, 여섯 번 모두 첫 시도에 전환된다(WSLg에서는 13~368번 swap이 걸리거나 풀리지 않았다).
+* **Task 755의 시계 끌림은 실기에 없다.** `host clock raw-against-steady`가 −18~−19 ppm, 0.5% 초과 0초.
+* **Linux i386 Release는 vsync가 켜져 있으면 실행 도중 한 호스트 루프에 빠진다.** 빠지면 끝까지 나오지 못하고 타이머
+  tick이 대량으로 버려져(backlog 상한 64) 게임이 느려진다. 60초 4/4, 20초 19회 중 6회. v0.0.198에도 있다.
+  `REPIU_GLIDE_SWAP_INTERVAL=0`이면 60초 0/4. x64(cache 모델)는 0/6.
+* i386 아카이브는 32비트 `libwayland-egl1`·`libwayland-cursor0`가 없으면 Wayland를 못 쓰고 x11로 넘어간다(릴리스 가이드의
+  패키지 목록대로 설치하면 해결되는 환경 조건).
+
+### 추정
+
+* xdg-desktop-portal이 막히면 x64 SDL3의 초기화가 D-Bus 타임아웃(25초×3)으로 약 75초 늦어진다. i386 아카이브는
+  영향을 받지 않아 D-Bus 지원 없이 빌드된 것으로 보인다.
+* i386 루프의 vsync 의존은 swap이 vblank를 기다리는 동안 쌓이는 tick과 관련 있어 보인다.
+
+### 미확정
+
+* i386 루프가 어느 하위 시스템인지(16바이트 항목을 선형 탐색하며 `*(u32*)(base + entry[+4])`를 비교하는 코드,
+  v0.0.200 `0x40151140..0x40151156`), Win32(같은 direct 모델)에서도 생기는지. 심볼이 있는 i386 빌드가 필요하다.
+* HiDPI: 게임 창이 고밀도 픽셀을 요청하지 않아 배율 2 화면에서 Wayland는 확대(2560×1440 논리), x11은 절반 크기 창이 된다.
+  바꿀지는 정하지 않았다.
+
+## English
+
+## 2026-10-05 Task 772 — v0.0.198 to v0.0.201 on real hardware (GNOME Wayland, NVIDIA)
+
+Work log: [772](../work-logs/20261005-772-linux-native-verification.md)
+
+### Confirmed
+
+* **Task 769's two WSL questions were WSL's.** On an RTX 4090 (GLX and EGL) `glide_letterbox_gl=true` (false on WSL's
+  Mesa, which resizes the back buffer only at the next swap). On GNOME (mutter) Wayland, leaving fullscreen through real
+  kernel input completes within 3 to 67 ms, all six transitions at the first attempt (on WSLg it took 13 to 368 swaps
+  or never happened).
+* **Task 755's clock drag is absent on real hardware.** `host clock raw-against-steady` reads −18 to −19 ppm with no
+  second over 0.5%.
+* **With vsync on, Linux i386 Release falls into one host loop mid-run.** Once in, it never leaves; timer ticks are
+  dropped in bulk (backlog at its cap of 64) and the game slows. 4 of 4 60-second runs, 6 of 19 20-second runs; present
+  in v0.0.198 too. With `REPIU_GLIDE_SWAP_INTERVAL=0`, 0 of 4 60-second runs. x64 (the cache model): 0 of 6.
+* Without 32-bit `libwayland-egl1` and `libwayland-cursor0`, the i386 archive cannot use Wayland and falls back to x11
+  (an environment condition that the release guide's package list resolves).
+
+### Inferred
+
+* A blocked xdg-desktop-portal delays x64 SDL3's initialisation by about 75 s through D-Bus timeouts (25 s × 3). The
+  i386 archive is unaffected and seems built without D-Bus support.
+* The i386 loop's dependence on vsync seems related to ticks piling up while the swap waits for vblank.
+
+### Unresolved
+
+* Which subsystem the i386 loop belongs to (code that linearly scans 16-byte entries comparing
+  `*(u32*)(base + entry[+4])`, v0.0.200 `0x40151140..0x40151156`), and whether Win32 (the same direct model) shows it.
+  A symbolised i386 build is needed.
+* HiDPI: the game window does not ask for high pixel density, so on a scale-2 screen Wayland upscales it (logical
+  2560×1440) and x11 gives a half-size window. Whether to change that is not decided.
