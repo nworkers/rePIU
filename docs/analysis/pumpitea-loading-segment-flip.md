@@ -169,7 +169,34 @@ guest position census(30초, host 표본 ~87%)의 사이트 상위:
   복원보다 ~2.5배 많으므로 FE2F0 헬퍼는 INT8 외의 인터럽트·콜백
   진입부에서도 쓰인다.
 
-## 추정
+### flip 트랩의 사전 상태 전수 확인 (확장 트레이스)
+
+`TraceGuestSegmentEvent`에 물리 Seg*와 **갱신 전** shadow 값을 더하고
+(`REPIU_DPMI_SEGMENT_TRACE`, 기록 시점을 모든 상태 기록 앞으로 이동),
+`cmd /c` 리디렉션으로 줄바꿈 없는 25초 전수 기록을 떴다. ES 로드
+트랩의 사전 상태:
+
+| EIP | 로드 값 | 물리 ES | shadow ES | 건수 | 판독 |
+|---|---|---|---|---|---|
+| 0xFE378 | 0x0024 | 0x002B | 0x002B | 4,421 | 물리≠새 값 → **구조적으로 항상 폴백** |
+| 0xFE38A | 0x002B | 0x002B | **0x0024** | 4,420 | 직전 HLE가 남긴 shadow 때문에 항상 폴백 |
+| 0xFCF6F 등 | 0x002B | 0x002B | 0x002B | 2,520 | 세 비교 전부 통과 상태인데 트랩 — 슬롯이 네이티브 가드 형태가 아님(닫힘/미번역 경로). 횟수가 런 간 고정(1,860/220×3) |
+
+따라서 현 설계에서 **memcpy 1회 = 최소 폴백 2회 + ES 재해석 2회 +
+전량 재패치 2회**가 하한이고, "guarded 성공" 카운터는 flip이 아니라
+같은 selector 재로드·pop 등 다른 지점에서 나온다.
+
+### 방향 3의 설계 씨앗 (이 데이터에서 직접 도출)
+
+* 복원 쪽(0xFE38A): `물리==새 값 && shadow만 불일치`인 경우, 슬롯이
+  **shadow 워드를 네이티브로 쓰고 통과**하면 폴백·재해석·재패치가
+  모두 사라진다. 정확성은 override 가드의 자기검증(접은 selector와
+  shadow 비교)이 지킨다. 단 `context->guest_es`가 낡게 되므로 HLE
+  경계가 세그먼트 상태를 shadow에서 읽도록 진실원을 옮겨야 한다.
+* 로드 쪽(0xFE378): 물리 비교는 Win32에서 게스트 selector에 대해
+  영원히 실패하므로(위 `--segment-restore` 확정), 레지스터별 "허용
+  대체 selector" 한 칸을 두고 `새 값==대체`면 같은 방식으로 shadow만
+  쓰게 하면 flip 전체가 트랩 없이 돈다.
 
 * 느린 모드의 본질은 memcpy flip이 **AOT 캐시 슬롯 경로**(가드 폴백
   INT3→HLE→재해석→재패치)로 도는 것이고, 빠른 모드에서는 같은
@@ -358,6 +385,24 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   `ds=0x0024` between such an entry and its restore. The mainline DS
   stays `0x002B`, which refutes the interim "mainline DS absorption"
   hypothesis.
+
+* **Pre-state of every flip trap** (extended trace: physical Seg* and
+  pre-update shadow words added to `TraceGuestSegmentEvent`, traced
+  before any state write; unwrapped 25 s capture): the `0x0024` load at
+  `0xFE378` always sees physical 0x002B ≠ new — structurally always a
+  fallback; the flat reload at `0xFE38A` always sees shadow 0x0024 left
+  by the preceding HLE — also always a fallback. So one guest memcpy
+  costs at least two fallbacks, two ES re-resolutions and two
+  whole-cache re-patches by construction, and the guarded-success
+  counters come from other sites (same-selector reloads such as the
+  0xFCF6x trio — which trapped 2,520 times with an all-match pre-state,
+  i.e. in a non-native slot form, at run-invariant counts). Design seed
+  for direction 3 that falls out directly: a slot that writes the
+  shadow word natively when only the shadow mismatches (flat reload),
+  plus one per-register accepted-alternate selector for the guest-
+  selector side, removes the flip's traps entirely; it requires moving
+  the segment state's source of truth to the shadow block so HLE
+  boundaries stop reading a stale `context->guest_*`.
 
 ## Inferred
 
