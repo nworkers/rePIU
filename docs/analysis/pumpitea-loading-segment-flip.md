@@ -147,6 +147,24 @@ guest position census(30초, host 표본 ~87%)의 사이트 상위:
   capacity→size)의 32~44초는 동시대 기준선이 40.2초라 **판정 불가**
   (드리프트 교란). 통제된 기계에서 재측정해야 한다.
 
+### flip은 인터럽트 문맥 코드에서 일어난다 (전수 트레이스)
+
+`REPIU_DPMI_SEGMENT_TRACE=1` 20초 전수 트레이스(세그먼트 로드
+14,151건)로 확인했다.
+
+* INT8 ISR(게스트 `0x2AAE4`)은 진입부에서 헬퍼 `0x0FE2F0`
+  (`mov ds, cs:[0x0FE2F9]`)로 **DS←0x0024**를 올리고, 말미
+  `0x2AB85`의 `pop ds`로 중단된 값 **0x002B**를 복원한다. 같은 모양의
+  쌍이 `0x101CC4→0x101DC6`, `0xFD81B→0xFD843`, `0xFCE13→0xFCE23`
+  (DS=0x0090) 등 여러 호출부에 있다.
+* **memcpy ES flip(`0xFE378/0xFE38A`)은 모두 `ds=0x0024` 상태에서,
+  `0xFE2F0` 직후~복원 전 구간에서 실행된다**(이 런의 flip 837건 전부
+  ds=0x0024). 즉 flip은 메인라인이 아니라 FE2F0 헬퍼로 진입한
+  인터럽트 문맥 코드의 memcpy다.
+* 메인라인 DS는 0x002B로 유지되고 복원 지점들은 항상 0x002B로
+  돌아간다. "메인라인 DS가 0x0024로 흡수되어 모드가 갈린다"는 중간
+  가설은 이 트레이스로 **기각**됐다.
+
 ## 추정
 
 * 느린 모드의 본질은 memcpy flip이 **AOT 캐시 슬롯 경로**(가드 폴백
@@ -155,6 +173,10 @@ guest position census(30초, host 표본 ~87%)의 사이트 상위:
   거의 생기지 않는 것이다. flip 슬롯 트랩 횟수가 모드와 1:1로
   움직인다. 모드 선택은 실행 초기의 타이밍(동적 번역 완료 시점,
   스레드 스케줄링, 스로틀)에 민감해 보인다.
+* flip이 인터럽트 문맥에서 일어나므로, 모드 간 flip 횟수 차이(30초에
+  ~3.1k 대 ~16.7k)는 이 인터럽트 문맥 경로가 틱마다 수행하는 작업량
+  또는 트랩 여부의 차이로 보인다. 느린 모드에서는 flip마다
+  INT3+HLE+재패치가 틱 처리 시간에 더해져 틱당 비용이 커진다.
 * 이전 판의 "전량 재패치의 prologue 복원이 리타이어로 닫힌 슬롯을
   되살려서 빠르다"는 추정은 **수정**한다: flip 지점의 INT3는
   리타이어 폐쇄가 아니라 슬롯 자체의 가드 폴백(설계된 경로)이며,
@@ -267,6 +289,15 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   **v3 (write-identical, `ProtectMemory` capacity→size) is
   inconclusive** — its 32–44 s matches the drifted 40.2 s baseline.
 
+* **The flips run in interrupt-context code** (full 20 s trace with
+  `REPIU_DPMI_SEGMENT_TRACE=1`, 14,151 segment loads): the INT8 ISR at
+  guest `0x2AAE4` raises DS to `0x0024` through the helper `0x0FE2F0`
+  (`mov ds, cs:[0x0FE2F9]`) and restores the interrupted `0x002B` at
+  `0x2AB85`; every one of the run's 837 memcpy ES flips executed with
+  `ds=0x0024` between such an entry and its restore. The mainline DS
+  stays `0x002B`, which refutes the interim "mainline DS absorption"
+  hypothesis.
+
 ## Inferred
 
 * Slow mode is the memcpy flip running through the AOT cache slot path
@@ -275,6 +306,10 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   fallbacks and re-patches mostly do not happen. Mode selection looks
   sensitive to early-run timing (dynamic translation completion, thread
   scheduling, throttle state).
+* Since the flips are interrupt-context work, the mode difference in
+  flip counts (~3.1k against ~16.7k per 30 s) reflects how much that
+  per-tick path does or whether it traps; in slow mode each flip adds
+  INT3+HLE+re-patch to every tick's cost.
 * The earlier inference — that the full re-patch's prologue restore
   resurrects retirement-closed slots and that this is what the masked
   builds lost — is **revised**: the flip-site INT3s are the slots' own
