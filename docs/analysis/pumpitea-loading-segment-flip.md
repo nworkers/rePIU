@@ -188,15 +188,41 @@ guest position census(30초, host 표본 ~87%)의 사이트 상위:
   부수효과 자체는 코드상 실재하므로(패처가 prologue를 다시 씀) 재패치
   축소 설계는 여전히 이를 고려해야 한다.
 
+### v3 재판정(저녁, 통제 프로토콜): 역시 기각
+
+같은 날 저녁, 기계가 안정적 빠른 영역(기준선 연속 15.7/17.6/19.6초)에
+들어온 뒤 v3을 재판정했다. 두 exe를 같은 디렉터리에 사본으로 두고
+워밍업 1회를 버린 뒤 교대 측정했다:
+
+| 순서 | 빌드 | 공백 | handled loads |
+|---|---|---|---|
+| 1 | v3 | 29.8초 | 55.7k |
+| 2 | 기준선 | 20.0초 | 45.4k |
+| 3 | v3 | 25.4초 | 51.8k |
+| 4 | 기준선 | 14.1초 | 43.6k |
+
+**쓰기 동작이 바이트 단위로 동일한 v3이 일관되게 ~10초 나쁘다.**
+재패치 경로를 빠르게 만드는 변경(마스크 v1·v2, 보호 범위 v3)이 모두
+공백을 악화시킨다는 규칙이 독립적으로 재확인됐다. v3도 폐기했다.
+
+### 모드 선택자에 대한 추가 배제
+
+* **EEPROM 내용이 아니다**: 느린 런 직후의 `nvram\pumpitea\eeprom.dat`
+  와 신선한 실행 한 번 뒤의 파일이 128바이트 전부 동일했다.
+* 5시간 유휴 뒤 첫 실행은 느렸고(45.6초) 직후 연속 실행들은
+  빨랐다(19.6/17.6/15.7초) — 유휴 후 첫 실행 효과는 존재하지만,
+  오전의 교대 측정(연속 실행에서 빌드별로 갈림)은 설명하지 못한다.
+
 ## 미확정
 
 * 모드(슬롯 경로 대 비슬롯 경로)를 가르는 정확한 분기. 실행 초기
   어떤 시점·조건에서 memcpy 블록이 캐시 상주가 되는지, 빠른 모드의
   flip이 정확히 어떤 경로로 처리되는지(privileged 0xC0000096 ~22만
   건/90초가 양 모드에 존재).
-* v3(ProtectMemory capacity→size)의 효과. 쓰기 동작이 기준선과
-  동일하므로 원리상 안전하지만, 측정일 오후의 드리프트로 판정하지
-  못했다. 식힌 기계에서 교대 측정으로 재판정한다.
+* **재패치를 빠르게 하면 느려지는 역설의 기전.** v1·v2·v3이 모두
+  같은 방향으로 재현했으므로 우연이 아니다. 재패치의 소요 시간이
+  틱 처리·동적 번역·스레드 스케줄과 상호작용하는 지점(예: 재패치
+  동안의 틱 병합, AOT worker에 양보되는 시간)을 계측해야 한다.
 * Win32에서 guarded load 네이티브 성공(빠른 모드에서 다수)의 정확한
   경위 — 슬롯은 물리 segment 레지스터와 비교하는데 물리 값이 게스트
   selector와 일치하는 경로가 무엇인지.
@@ -322,14 +348,30 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   reduction, but the measured differential tracks slot-path frequency,
   not restoration.
 
+* **v3 re-judged the same evening under a controlled protocol and
+  rejected too**: with the machine back in a stable fast regime
+  (baselines 15.7/17.6/19.6 s), side-by-side exe copies, one discarded
+  warm-up and alternation, v3 measured 29.8/25.4 s against contemporaneous
+  baselines of 20.0/14.1 s. A write-identical change that only narrows
+  `ProtectMemory` to `size` is consistently ~10 s worse, independently
+  reconfirming that speeding the re-patch path (masks v1/v2, protection
+  range v3) lengthens the gap.
+* **Mode-selector exclusions**: the EEPROM contents are not it (the
+  file after a slow run and after one fresh run are byte-identical);
+  a first-run-after-idle slowdown exists (45.6 s once, then
+  19.6/17.6/15.7 s) but cannot explain the morning's per-build
+  alternation.
+
 ## Unresolved
 
 * The exact bifurcation that picks the mode, and the fast-mode handling
   path of the flip instructions (privileged 0xC0000096 ≈220k per 90 s
   exists in both modes).
-* The effect of v3 (`ProtectMemory` capacity→size): principled and
-  write-identical, but unmeasurable under the afternoon drift; needs an
-  interleaved re-measurement on a cooled machine.
+* **The mechanism of the speed-up-makes-it-slower paradox.** v1, v2 and
+  v3 all reproduced it in the same direction, so it is not chance; the
+  interaction of re-patch duration with tick servicing, dynamic
+  translation and thread scheduling (tick coalescing during a long
+  re-patch, time yielded to the AOT worker) needs direct instrumentation.
 * How guarded loads succeed natively on Win32 in fast mode, given the
   slot compares the physical segment register.
 * One crash under the resolution trace on masked v1 (guest AV at
