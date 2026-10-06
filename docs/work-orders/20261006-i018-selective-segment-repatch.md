@@ -46,6 +46,25 @@
 
 Design: `docs/design/20261006-i018-selective-segment-repatch.md`
 
+## 추가 항목 (같은 날 저녁, 역설 판별 후)
+
+5. `repiu_aot_probe --segment-restore`: VEH 재개(NtContinue)가 재개
+   컨텍스트의 `SegEs`에 담긴 게스트 selector(0x0024 등)를 물리
+   레지스터에 실제로 어떻게 복원하는지 확정하는 probe. INT3 핸들러가
+   `SegEs`를 바꿔 재개하고, 재개 지점에서 물리 ES를 읽어 보고한다.
+   이것이 guarded 슬롯의 "가드 성공" 물리 경위와, 재패치 속도-가드
+   성공률 결합(역설)의 뿌리 판별이다.
+
+## Additional item (same evening, after the paradox discrimination)
+
+5. `repiu_aot_probe --segment-restore`: a probe that establishes what
+   the physical segment register actually holds after a VEH resume
+   (NtContinue) whose context carries a guest selector (0x0024 and
+   friends) in `SegEs`. The INT3 handler rewrites `SegEs` and resumes;
+   the resume point reads the physical ES and reports it. This settles
+   the physical path of a guarded-slot guard success and roots the
+   re-patch-speed/guard-success coupling.
+
 ## Items
 
 1. `include/repiu/runtime/aot_segment_patch.h`,

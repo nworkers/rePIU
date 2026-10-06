@@ -228,12 +228,32 @@ guest position census(30초, host 표본 ~87%)의 사이트 상위:
     load 43k~45k는 틱 20.3k × ISR의 DS 올림/복원 2회와 거의 일치하고,
     v3의 초과분이 memcpy flip의 가드 실패다. 즉 "재패치가 느릴수록
     flip 가드가 더 자주 성공"하는 결합이 있다.
-  - 남은 뿌리 질문: **가드 성공의 물리적 경위.** guarded 슬롯은 물리
-    segment 레지스터와 비교하는데, HLE가 재개 컨텍스트에 게스트
-    selector(0x24)를 넣은 뒤(`win32_context->SegEs = selector`) 물리
-    레지스터가 실제로 어떤 값으로 복원되는지 확인된 바 없다. VEH
-    재개(NtContinue)의 세그먼트 복원 동작을 전용 probe로 확정하는
-    것이 다음 작업 단위다.
+  - 뿌리 질문이었던 **가드 성공의 물리적 경위는 전용 probe로
+    확정했다**(아래).
+
+### VEH 재개는 컨텍스트의 세그먼트 쓰기를 무시한다 (`--segment-restore`)
+
+`repiu_aot_probe --segment-restore`: INT3 핸들러가 재개 컨텍스트의
+`SegEs`에 후보 selector를 넣고 재개한 뒤 물리 ES를 읽는다. 결과
+(Win32 x86, Windows 10):
+
+| 요청 | 관측된 물리 ES |
+|---|---|
+| 0x002B(대조) / 0x0000 / 0x0053 / 0x0090 / 0x002C / 0x0024 | **전부 0x002B** |
+
+즉 **물리 세그먼트 레지스터는 예외 이전 값을 유지하고, 재개
+컨텍스트의 `SegEs` 쓰기는 효과가 없다**(유효한 0x0053조차). 따라서:
+
+* HLE 세그먼트 로드의 `win32_context->SegEs = selector`
+  (`RecordGuestSegmentLoad`, `HandleDosGetInterruptVector`)는 물리
+  레지스터에 아무 영향도 주지 않는 죽은 기록이다.
+* guarded 슬롯의 `물리 == 새 값` 비교는 **flat(0x2B) 값 로드에서만
+  통과할 수 있고, 게스트 selector(0x24 등) 로드는 구조적으로 항상
+  폴백한다.** 이것이 flip의 제거 불가능한 트랩 비용의 정확한
+  정의이며, issue 방향 3(shadow 기반 처리)이 없애야 할 대상이다.
+* v3 역설의 폴백 증가는 0x2B 로드의 성공 조건인 `shadow == 0x2B`의
+  타이밍 — 재해석의 shadow 재기록(`BuildAotSegmentTable`)과 슬롯
+  실행 사이의 경주 — 와 결합된 것으로 좁혀진다.
 * Win32에서 guarded load 네이티브 성공(빠른 모드에서 다수)의 정확한
   경위 — 슬롯은 물리 segment 레지스터와 비교하는데 물리 값이 게스트
   selector와 일치하는 경로가 무엇인지.
@@ -385,12 +405,19 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   90 s, coalesced 0); the proximate cause is guarded-load fallbacks
   growing ~70% under v3 (10.9k–13.3k against 6.5k–7.7k), while the
   baseline's handled loads match ticks × the ISR's two DS loads almost
-  exactly. The root question left is the physical path of a guard
-  SUCCESS: the slot compares the physical segment register, the HLE
-  resumes with the guest selector in the context
-  (`win32_context->SegEs = selector`), and what the physical register
-  actually holds after NtContinue has never been established — a
-  dedicated probe is the next task unit.
+  exactly. The root question — the physical path of a guard success —
+  is settled by a dedicated probe (below).
+* **A VEH resume ignores segment writes in the context**
+  (`repiu_aot_probe --segment-restore`): resuming with 0x0000, 0x0053,
+  0x0090, 0x002C or 0x0024 in `SegEs` leaves the physical ES at its
+  pre-exception 0x002B in every case. Hence the HLE's
+  `win32_context->SegEs = selector` is a dead write; a guarded slot's
+  physical-against-new compare can only pass for flat-value loads, so
+  **guest-selector loads structurally always fall back** — the exact
+  trap cost issue direction 3 (shadow-based handling) must remove; and
+  the v3 fallback growth narrows to the timing of `shadow == 0x2B` at
+  the flat reload (a race between the re-resolve's shadow rewrite and
+  slot execution).
 * How guarded loads succeed natively on Win32 in fast mode, given the
   slot compares the physical segment register.
 * One crash under the resolution trace on masked v1 (guest AV at

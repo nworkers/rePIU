@@ -65,6 +65,7 @@
 #include "aot_worker_timing_probe.h"
 #include "aot_timer_source_profile_probe.h"
 #include "selector_guard_probe.h"
+#include "segment_restore_probe.h"
 #include "env_toggle_probe.h"
 #include "execution_backend_probe.h"
 #include "execution_timeout_probe.h"
@@ -758,6 +759,10 @@ int main(int argc, char** argv)
     if (argc == 2 && std::strcmp(argv[1], "--selector-guard") == 0)
     {
         return repiu::tools::RunSelectorGuardProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--segment-restore") == 0)
+    {
+        return repiu::tools::RunSegmentRestoreProbe() ? 0 : 1;
     }
 #endif
     const bool xref_mode = argc == 4 &&
