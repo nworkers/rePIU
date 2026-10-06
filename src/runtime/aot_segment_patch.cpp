@@ -201,6 +201,26 @@ std::uint32_t PatchAotGuardedSegmentPopSites(
             table.segments[site.segment_register].shadow_address;
         std::memcpy(bytes + site.shadow_address_offset, &shadow_address,
                     sizeof(shadow_address));
+        // Task i018. The accepted-pair pop slot takes the pair word addresses
+        // on the load patcher's rule: without a shadow block the pair compares
+        // point at the shadow word itself, so only no-op reloads pass.
+        if (site.pair0_address_offset != 0U)
+        {
+            const AotSegmentResolution& resolution =
+                table.segments[site.segment_register];
+            const std::uint32_t pair0_address =
+                resolution.pair0_address != 0U
+                    ? resolution.pair0_address : shadow_address;
+            const std::uint32_t pair1_address =
+                resolution.pair1_address != 0U
+                    ? resolution.pair1_address : shadow_address;
+            std::memcpy(bytes + site.pair0_address_offset, &pair0_address,
+                        sizeof(pair0_address));
+            std::memcpy(bytes + site.pair1_address_offset, &pair1_address,
+                        sizeof(pair1_address));
+            std::memcpy(bytes + site.shadow_store_offset, &shadow_address,
+                        sizeof(shadow_address));
+        }
         if (site.has_counter_operands)
         {
             std::memcpy(bytes + site.success_counter_address_offset,

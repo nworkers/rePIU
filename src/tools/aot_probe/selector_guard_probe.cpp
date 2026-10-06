@@ -7,6 +7,7 @@
 #include "aot/aot_dbt_dispatch.h"
 #include "aot/aot_dbt_glide_gate_dispatch.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -175,20 +176,48 @@ bool RunSelectorGuardProbe()
     {
         const runtime::AotGuardedSegmentPopSite& site =
             pop_image.guarded_segment_pop_sites[0];
-        const std::uint32_t first_branch_next = site.cache_offset + 11U;
-        const std::uint32_t second_branch_next = site.cache_offset + 20U;
+        // Task i018. The accepted-pair pop slot: the stack word against the
+        // shadow and the two pair words, a native shadow store on a pair
+        // match, the stack advance on the success path only, and both
+        // mismatch branches landing on the fallback counter.
+        const std::uint32_t shadow_branch_next = site.cache_offset + 16U;
+        const std::uint32_t pair0_branch_next = site.cache_offset + 25U;
+        const std::uint32_t pair1_branch_next = site.cache_offset + 34U;
+        const std::uint32_t success_counter =
+            site.success_counter_address_offset - 2U;
+        const std::uint32_t shadow_store = site.shadow_store_offset - 2U;
         const std::uint32_t fallback_counter =
             site.fallback_counter_address_offset - 2U;
         guarded_pop_layout =
-            site.cache_offset + 46U <= pop_image.bytes.size() &&
+            site.cache_offset + 66U <= pop_image.bytes.size() &&
+            site.shadow_address_offset == site.cache_offset + 10U &&
+            site.pair0_address_offset == site.cache_offset + 19U &&
+            site.pair1_address_offset == site.cache_offset + 28U &&
+            site.shadow_store_offset == site.cache_offset + 36U &&
+            site.fallback_offset == site.cache_offset + 65U &&
             pop_image.bytes[site.cache_offset] == 0x9CU &&
             pop_image.bytes[site.cache_offset + 1U] == 0x50U &&
-            pop_image.bytes[site.cache_offset + 2U] == 0x8CU &&
-            pop_image.bytes[site.cache_offset + 3U] == 0xC0U &&
-            first_branch_next + pop_image.bytes[site.cache_offset + 10U] ==
+            pop_image.bytes[site.cache_offset + 2U] == 0x66U &&
+            pop_image.bytes[site.cache_offset + 3U] == 0x8BU &&
+            pop_image.bytes[site.cache_offset + 4U] == 0x44U &&
+            pop_image.bytes[site.cache_offset + 5U] == 0x24U &&
+            pop_image.bytes[site.cache_offset + 6U] == 0x08U &&
+            pop_image.bytes[site.cache_offset + 14U] == 0x74U &&
+            shadow_branch_next + pop_image.bytes[site.cache_offset + 15U] ==
+                success_counter &&
+            pop_image.bytes[site.cache_offset + 23U] == 0x74U &&
+            pair0_branch_next + pop_image.bytes[site.cache_offset + 24U] ==
+                shadow_store &&
+            pop_image.bytes[site.cache_offset + 32U] == 0x75U &&
+            pair1_branch_next + pop_image.bytes[site.cache_offset + 33U] ==
                 fallback_counter &&
-            second_branch_next + pop_image.bytes[site.cache_offset + 19U] ==
-                fallback_counter &&
+            pop_image.bytes[site.cache_offset + 34U] == 0x66U &&
+            pop_image.bytes[site.cache_offset + 35U] == 0xA3U &&
+            pop_image.bytes[site.cache_offset + 48U] == 0x8DU &&
+            pop_image.bytes[site.cache_offset + 49U] == 0x64U &&
+            pop_image.bytes[site.cache_offset + 50U] == 0x24U &&
+            pop_image.bytes[site.cache_offset + 51U] == 0x04U &&
+            pop_image.bytes[site.cache_offset + 52U] == 0xE9U &&
             pop_image.bytes[site.fallback_offset] == 0xCCU;
         runtime::AotCodeCacheImage broken_guard = pop_image;
         broken_guard.bytes[site.cache_offset + 9U] = 0x90U;
@@ -473,10 +502,84 @@ bool RunSelectorGuardProbe()
             candidate.blocks[0].instructions[0].kind ==
                 runtime::AotInstructionKind::kHleBoundary;
     };
+    // Task i018. `mov ss, cx`, `mov es, sp`, and a memory source under 16-bit
+    // addressing stay HLE boundaries; 32-bit memory sources are guarded loads
+    // (below).
     const bool guarded_load_rejected_forms =
         remains_hle({0x8EU, 0xD1U, 0xC3U}) &&
         remains_hle({0x8EU, 0xC4U, 0xC3U}) &&
-        remains_hle({0x8EU, 0x00U, 0xC3U});
+        remains_hle({0x67U, 0x8EU, 0x06U, 0x00U, 0x10U, 0xC3U});
+    // Task i018. A memory-source load becomes a guarded load slot whose opening
+    // `mov ax, <source>` re-encodes the guest operand with AX as destination;
+    // an ESP-based operand gains +8 for the slot's own pushes, in disp32 form.
+    // The first case is pumpitea's INT8 entry helper, `mov ds, cs:[abs]` with
+    // an operand-size prefix.
+    const auto becomes_memory_load = [](
+        std::vector<std::uint8_t> bytes, std::uint8_t expected_segment,
+        const std::vector<std::uint8_t>& expected_source) {
+        bytes.push_back(0xC3U);
+        bytes.resize(bytes.size() + 15U, 0x90U);
+        runtime::RelocatedRuntimeImage runtime_image;
+        runtime_image.valid = true;
+        runtime_image.relocated_image_base = 0x00103800U;
+        runtime_image.relocated_entry_linear_address = 0x00103800U;
+        runtime::RelocatedRuntimeObject object;
+        object.relocated_base_address = 0x00103800U;
+        object.virtual_size = static_cast<std::uint32_t>(bytes.size());
+        object.memory = std::move(bytes);
+        runtime_image.objects.push_back(std::move(object));
+        runtime::AotTranslationPlan candidate;
+        runtime::AotCodeCacheImage candidate_image;
+        runtime::AotCodeCacheBuildOptions candidate_options;
+        candidate_options.enable_guarded_segment_load = true;
+        if (!runtime::BuildAotTranslationPlanFromEntry(
+                runtime_image, runtime_image.relocated_entry_linear_address,
+                &candidate) ||
+            candidate.blocks.empty() ||
+            candidate.blocks[0].instructions.empty() ||
+            candidate.blocks[0].instructions[0].kind !=
+                runtime::AotInstructionKind::kGuardedSegmentLoad ||
+            candidate.blocks[0].instructions[0].segment_register !=
+                expected_segment ||
+            candidate.blocks[0].instructions[0].gpr_register !=
+                runtime::kAotSegmentLoadMemorySource ||
+            !runtime::BuildAotCodeCacheImage(
+                candidate, candidate_options, &candidate_image) ||
+            candidate_image.guarded_segment_load_sites.size() != 1U ||
+            !runtime::ValidateAotCodeCacheHleCoverage(
+                candidate, candidate_image))
+        {
+            return false;
+        }
+        const runtime::AotGuardedSegmentLoadSite& site =
+            candidate_image.guarded_segment_load_sites[0];
+        const std::uint32_t source_offset = site.cache_offset + 2U;
+        const std::uint32_t source_end = source_offset +
+            static_cast<std::uint32_t>(expected_source.size());
+        return source_end <= candidate_image.bytes.size() &&
+            std::equal(expected_source.begin(), expected_source.end(),
+                       candidate_image.bytes.begin() + source_offset) &&
+            site.shadow_address_offset == source_end + 3U &&
+            site.shadow_store_offset == source_end + 29U &&
+            site.fallback_offset == source_end + 54U;
+    };
+    const bool guarded_load_memory_forms =
+        becomes_memory_load(
+            {0x66U, 0x2EU, 0x8EU, 0x1DU, 0x78U, 0x56U, 0x34U, 0x12U}, 3U,
+            {0x66U, 0x8BU, 0x05U, 0x78U, 0x56U, 0x34U, 0x12U}) &&
+        becomes_memory_load(
+            {0x8EU, 0x44U, 0x24U, 0x08U}, 0U,
+            {0x66U, 0x8BU, 0x84U, 0x24U, 0x10U, 0x00U, 0x00U, 0x00U}) &&
+        becomes_memory_load(
+            {0x8EU, 0x04U, 0x24U}, 0U,
+            {0x66U, 0x8BU, 0x84U, 0x24U, 0x08U, 0x00U, 0x00U, 0x00U}) &&
+        becomes_memory_load(
+            {0x8EU, 0x5DU, 0xFCU}, 3U, {0x66U, 0x8BU, 0x45U, 0xFCU}) &&
+        becomes_memory_load(
+            {0x8EU, 0x00U}, 0U, {0x66U, 0x8BU, 0x00U}) &&
+        becomes_memory_load(
+            {0x8EU, 0xA4U, 0xC8U, 0x10U, 0x00U, 0x00U, 0x00U}, 4U,
+            {0x66U, 0x8BU, 0x84U, 0xC8U, 0x10U, 0x00U, 0x00U, 0x00U});
     const bool guarded_pop_rejected_forms =
         remains_hle({0x17U, 0xC3U}) &&
         remains_hle({0x66U, 0x07U, 0xC3U});
@@ -894,7 +997,7 @@ bool RunSelectorGuardProbe()
         guarded_load_layout && guarded_load_coverage &&
         guarded_load_missing_fallback_rejected && guarded_load_patch &&
         guarded_load_disabled_falls_back && guarded_load_rejected_forms &&
-        guarded_read_ready &&
+        guarded_load_memory_forms && guarded_read_ready &&
         guarded_read_layout && guarded_read_patch &&
         guarded_read_disabled_falls_back && guarded_pop_rejected_forms &&
         guarded_pop_supported_forms && hle_dispatch_ready &&
@@ -940,6 +1043,8 @@ bool RunSelectorGuardProbe()
               << (guarded_load_disabled_falls_back ? "true" : "false")
               << "\nguarded_segment_load_rejected_forms="
               << (guarded_load_rejected_forms ? "true" : "false")
+              << "\nguarded_segment_load_memory_forms="
+              << (guarded_load_memory_forms ? "true" : "false")
               << "\nguarded_segment_read_ready="
               << (guarded_read_ready ? "true" : "false")
               << "\nguarded_segment_read_layout="

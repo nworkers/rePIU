@@ -299,11 +299,8 @@ bool ReadGuardedSegmentLoadRegisters(
         gpr_register == nullptr || instruction.mnemonic != ZYDIS_MNEMONIC_MOV ||
         instruction.operand_count_visible != 2U ||
         operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
-        operands[1].type != ZYDIS_OPERAND_TYPE_REGISTER ||
         ZydisRegisterGetClass(operands[0].reg.value) !=
-            ZYDIS_REGCLASS_SEGMENT ||
-        ZydisRegisterGetClass(operands[1].reg.value) !=
-            ZYDIS_REGCLASS_GPR16)
+            ZYDIS_REGCLASS_SEGMENT)
     {
         return false;
     }
@@ -314,6 +311,47 @@ bool ReadGuardedSegmentLoadRegisters(
         case ZYDIS_REGISTER_FS: *segment_register = 4U; break;
         case ZYDIS_REGISTER_GS: *segment_register = 5U; break;
         default: return false;
+    }
+    if (operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY)
+    {
+        // Task i018. A memory source the i386 slot can re-encode as
+        // `mov ax, [mem]`: 32-bit addressing, no prefix beyond the
+        // operand-size one (meaningless on this instruction) and CS, and a
+        // CS, DS or SS source segment -- all base 0 under the flat code and
+        // data model the native copy already assumes. An explicit ES/SS/DS/
+        // FS/GS override never reaches this reader: kSegmentOverrideMem is
+        // classified first. pumpitea's INT8 entry helper is the motivating
+        // form, `66 2E 8E 1D disp32` (mov ds, cs:[abs]).
+        if (instruction.address_width != 32U)
+        {
+            return false;
+        }
+        for (std::uint8_t index = 0; index < instruction.raw.prefix_count;
+             ++index)
+        {
+            const std::uint8_t value = instruction.raw.prefixes[index].value;
+            if (value != 0x66U && value != 0x2EU)
+            {
+                return false;
+            }
+        }
+        switch (operands[1].mem.segment)
+        {
+            case ZYDIS_REGISTER_CS:
+            case ZYDIS_REGISTER_DS:
+            case ZYDIS_REGISTER_SS:
+                break;
+            default:
+                return false;
+        }
+        *gpr_register = kAotSegmentLoadMemorySource;
+        return true;
+    }
+    if (operands[1].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        ZydisRegisterGetClass(operands[1].reg.value) !=
+            ZYDIS_REGCLASS_GPR16)
+    {
+        return false;
     }
     const std::int8_t gpr = ZydisRegisterGetId(operands[1].reg.value);
     if (gpr < 0 || gpr > 7 || gpr == 4)
@@ -1251,7 +1289,7 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     record.fallthrough_target = next;
                     block.instructions.push_back(std::move(record));
                     ++plan->hle_boundary_count;
-                    plan->estimated_emitted_bytes += 42U;
+                    plan->estimated_emitted_bytes += 65U;
                     pending.push_back(next);
                     break;
                 }
@@ -1277,7 +1315,7 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     record.fallthrough_target = next;
                     block.instructions.push_back(std::move(record));
                     ++plan->hle_boundary_count;
-                    plan->estimated_emitted_bytes += 48U;
+                    plan->estimated_emitted_bytes += 66U;
                     pending.push_back(next);
                     break;
                 }

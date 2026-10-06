@@ -103,8 +103,13 @@ bool FindAotGuardCompareFault(const AotCodeCachePlacement& placement,
     for (const runtime::AotGuardedSegmentPopSite& site :
          placement.guarded_segment_pop_sites)
     {
+        // Task i018. Same window rule as the load site above.
+        const std::uint32_t pop_window_end_offset =
+            site.shadow_store_offset != 0U
+                ? site.shadow_store_offset
+                : site.shadow_address_offset;
         if (InCompareWindow(offset, site.cache_offset,
-                            site.shadow_address_offset, 4U))
+                            pop_window_end_offset, 4U))
         {
             fault->kind = AotGuardSlotKind::kGuardedPop;
             fault->guest_source = site.guest_source;

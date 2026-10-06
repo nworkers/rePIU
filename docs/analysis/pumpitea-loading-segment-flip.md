@@ -18,17 +18,43 @@ C 런타임 memcpy의 세그먼트 저장·복원이다. `repiu_aot_probe --dump
 0xFE36E  89 D1         mov ecx, edx
 0xFE370  8B 75 00      mov esi, [ebp+0]
 0xFE373  8B 5C 24 08   mov ebx, [esp+8]
-0xFE376  06            push es          ; guarded 지점 (INT3 폴백)
-0xFE377  8C D8         mov ax, ds       ; 가상 DS = 0x0024
-0xFE379  8E C0         mov es, ax       ; ES ← 0x0024 (flip 절반)
-0xFE37B  57 89 C8 C1 E9 02 ...          ; rep movsd 준비
-0xFE38A  8E 06?        mov es, [...]    ; ES ← 0x002B 복원 (flip 나머지)
+0xFE375  06            push es          ; 네이티브 복사
+0xFE376  8C D8         mov ax, ds       ; 가상 DS = 0x0024
+0xFE378  8E C0         mov es, ax       ; ES ← 0x0024 (guarded load 지점)
+0xFE37A  57 89 C8 C1 E9 02 F2 A5        ; push edi; … ; rep movsd
+0xFE382  8A C8 80 E1 03 F2 A4           ; 나머지 바이트 rep movsb
+0xFE389  5F            pop edi
+0xFE38A  07            pop es           ; ES ← 0x002B 복원 (guarded pop 지점)
 ```
 
 `segment load trace`로 selector를 확인했다: `0xFE378`은 `0x0024`,
-`0xFE38A`는 `0x002B`(source `0x049E0744`, 스택의 저장값). attract 구간에는
-같은 모양의 **DS flip**(`0xFE2F0`: DS←0x0024 두 번, `0x2AB85`: DS←0x002B)이
-이어진다. flip은 memcpy 호출마다 일어나므로 로딩 중 초당 약 1,100~2,400회다.
+`0xFE38A`는 `0x002B`(source `0x049E0744`, 스택의 저장값). 2026-10-07에
+마운트된 실행 파일(`build/runtime_mounts/pumpitea/PIU/PIU.EXE`)을 다시
+떠서 `0xFE38A`가 **`pop es`**(guarded pop 슬롯)임을 확정했다 — 이전 기록의
+"`8E 06?` mov es, [...]" 추정은 오류였다. flip은 memcpy 호출마다
+일어나므로 로딩 중 초당 약 1,100~2,400회다.
+
+attract 구간과 틱 경로에는 같은 모양의 **DS flip**이 이어진다(같은 덤프로
+확정):
+
+```
+0xFE2F0  66 2E 8E 1D F9 E2 0F 01   mov ds, cs:[0x010FE2F9]  ; INT8 ISR 진입 헬퍼,
+                                                            ; 0x66 접두어 + CS 접두어,
+                                                            ; 메모리-소스 로드 (슬롯 없음 → HLE boundary)
+0xFE2F8  C3                        ret
+…
+0x2AB7E  FB FC                     sti; cld
+0x2AB80  0F A9                     pop gs     ; guarded pop
+0x2AB82  0F A1                     pop fs     ; guarded pop
+0x2AB84  07                        pop es     ; guarded pop
+0x2AB85  1F                        pop ds     ; guarded pop, DS ← 0x002B
+0x2AB86  61 CF                     popad; iretd
+```
+
+런 간 고정 2,520건의 `0xFCF6F` 그룹은 far 문자열 비교 관용구다:
+`8C D9 mov cx,ds; 8C EA mov dx,gs; 89 EE; 1E push ds; 06 push es; 91 xchg
+eax,ecx; 8E DA mov ds,dx; 8E C0 mov es,ax (0xFCF6F); 09 C9; F3 A6 repe
+cmpsb; …; 07 pop es; 1F pop ds`.
 
 ### 두 selector의 해석
 
@@ -312,16 +338,38 @@ AV(EBX=0, `cmp dword [ebx+0xC], 0x1000`, EAX=0xDE1)로 종료 — 오전
 트레이스 런, 기준선 런은 정상. 세그먼트 경로의 타이밍이 바뀔 때
 드러나는 기존 경합으로 추정하며 미확정에 남긴다.
 
+### 방향 3 2단계 (2026-10-07): pop·메모리-소스 로드도 shadow 진실원으로
+
+실행 파일 덤프로 남은 트랩을 확정한 뒤(위 "ES flip의 정체" 절), i386
+guarded pop 슬롯을 같은 shadow·수용 쌍 형태로 바꾸고 메모리-소스
+`mov Sreg, r/m16`을 guarded load 슬롯으로 받았다
+(`docs/design/20261007-i018-shadow-authoritative-pop-and-memory-load.md`).
+교대 측정(90초, 기준선 = 1단계 HEAD 빌드):
+
+| 빌드 | 로고 뒤 공백 | handled segment load | guarded pop 폴백 | 재패치 지점 기록 합 |
+|---|---|---|---|---|
+| 1단계 기준선 ×2 | 3.51 / 2.99초 | 94,388 / 71,821 | 68,462 / 45,891 | 35.7M |
+| 2단계 ×3 | **2.23 / 2.37 / 2.09초** | 25,888~25,996 | **3** | ~1만 |
+
+* 틱 경로(ISR 진입 로드 + 말미 pop ds)와 memcpy 복원 pop의 INT3·재해석·
+  전량 재패치가 소멸했다. handled segment load가 틱·memcpy 수에 비례하지
+  않고 런 간 ±0.4%로 고정된다.
+* 공백은 v0.0.180의 5.0초보다 짧다. 단, 오늘 기계는 어제 저녁(1단계 측정
+  6.8~7.6초)보다 빠른 영역에 있었다 — 모드 분기 미확정 항목은 그대로다.
+* 남은 guarded load 폴백 2,530은 `0xFCF6F` far 문자열 비교 관용구다.
+* 두 번째 정지(41~43초, 1.8~4.4초)가 양쪽 빌드에 모두 있다 — 이번 경로와
+  무관, 미확정에 추가.
+
 ## 다음 방향
 
 1. **모드 분기 규명이 최우선이다.** 빠른 모드를 안정적으로 선택하게
    만들면 코드 수정 없이도 공백이 15~19초로 수렴하고, 그 다음 축소
    작업의 기준도 생긴다. 시작점: flip 슬롯(게스트 `0xFE376~0xFE38A`)이
    언제 번역·상주되는지, 빠른 모드에서 같은 명령의 처리 경로 추적.
-2. **flip 자체 제거**(issue 방향 3)는 모드와 무관하게 유효한 구조
-   해결로 남는다: memcpy 관용구의 세그먼트 로드를 shadow 간 복사로
-   네이티브 처리(가상 세그먼트 상태의 단일 진실원 정리 필요) 또는
-   지점별 두 selector 기억(이미터 변경).
+2. **flip 자체 제거**(issue 방향 3)는 1단계(레지스터 로드)와 2단계(pop·
+   메모리-소스 로드)로 구현됐다. 남은 것은 `0xFCF6F` 그룹(2,530/90초,
+   앞 HLE 로드 뒤의 비슬롯 경로)과 41~43초의 두 번째 정지(양쪽 빌드
+   공통, 원인 미확정)다.
 3. 측정 규율: 이 공백의 A/B는 **식힌 기계에서 기준선을 교대로
    끼워서만** 판정한다. 장시간 연속 측정 후반의 수치는 버린다.
 4. 게임이 스스로 기다리는 시간(보드 설정 delay 100~500ms × 횟수 +
@@ -339,11 +387,19 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
 
 ## Confirmed
 
-* **The ES flip is the C runtime memcpy idiom** at guest `0xFE376..0xFE38A`:
-  `push es; mov ax, ds; mov es, ax; … rep movsd …; mov es, [saved]`.
-  The virtual DS is `0x0024` and the saved ES `0x002B`, so every memcpy
-  changes ES twice. The attract phase runs the same shape on DS
-  (`0xFE2F0`, `0x2AB85`).
+* **The ES flip is the C runtime memcpy idiom** at guest `0xFE375..0xFE38A`:
+  `push es; mov ax, ds; mov es, ax (0xFE378); … rep movsd; rep movsb;
+  pop edi; pop es (0xFE38A)`. The virtual DS is `0x0024` and the saved ES
+  `0x002B`, so every memcpy changes ES twice — through a guarded **load**
+  site and a guarded **pop** site. (Re-dumped from the mounted executable
+  on 2026-10-07; the earlier "`mov es, [saved]`" reading of `0xFE38A` was
+  a guess and is corrected.) The tick path runs the same shape on DS: the
+  INT8 ISR entry helper `0xFE2F0` is `66 2E 8E 1D disp32` (`mov ds,
+  cs:[abs]` with an operand-size prefix, a memory-source load no slot
+  accepted), and the ISR epilogue `0x2AB80..0x2AB87` is `pop gs; pop fs;
+  pop es; pop ds; popad; iretd` — four guarded pop sites per tick. The
+  run-invariant 2,520 group at `0xFCF6F` is a far-string compare idiom,
+  `mov ds, dx; mov es, ax (0xFCF6F); repe cmpsb; …; pop es; pop ds`.
 * **Both selectors fold base 0**: `0x002B` (host flat, native) and
   `0x0024` (limit `0xF76BB`, under the DOS low-memory bound, so override
   sites route to HLE). A re-patch changes only the guard immediates and
@@ -509,6 +565,18 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   `cmp dword [ebx+0xC], 0x1000`); three retries and a traced run were
   clean — left unresolved as a suspected pre-existing race exposed by
   segment-path timing changes.
+* **Direction 3 phase 2 (2026-10-07): pop and memory-source loads.** With
+  the remaining sites settled from the executable dump, the i386 guarded
+  pop slot took the same shadow/accepted-pair form and memory-source
+  `mov Sreg, r/m16` became a guarded load slot. Interleaved 90 s runs
+  against the phase-1 build: post-logo gap 3.51/2.99 s → **2.23/2.37/
+  2.09 s**, guarded-pop fallbacks 68,462/45,891 → **3**, handled segment
+  loads 94k/72k → 26k (run-invariant), whole-cache re-patch site writes
+  35.7M → ~10k. The tick path and the memcpy restore no longer trap. The
+  machine sat in a faster regime than during phase 1 (6.8–7.6 s), so the
+  mode question stays open; the gap is below v0.0.180's 5.0 s. Still
+  unresolved: the `0xFCF6F` group (2,530 per 90 s) and a second
+  1.8–4.4 s stall at 41–43 s present in both builds.
 
 ## Next directions
 
@@ -517,11 +585,11 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
    and gives later reductions a stable floor. Entry point: when the
    flip slots (guest `0xFE376..0xFE38A`) become cache-resident, and
    what path fast mode uses for the same instructions.
-2. Removing the flip itself (issue direction 3) remains the structural
-   fix independent of mode: native shadow-to-shadow segment copies for
-   the memcpy idiom (requires a single source of truth for virtual
-   segment state) or two remembered selectors per site (emitter
-   change).
+2. Removing the flip itself (issue direction 3) is implemented in two
+   phases (register loads; pops and memory-source loads). What remains
+   is the `0xFCF6F` group (2,530 per 90 s, the non-slot path after a
+   preceding HLE load) and the second stall at 41–43 s seen in both
+   builds, cause unknown.
 3. Measurement discipline: A/B on this gap is judged only with
    interleaved baselines on a cooled machine; late numbers from long
    continuous sessions are discarded.
