@@ -64,6 +64,41 @@ INT3로 닫은 슬롯의 prologue를 flip마다 되살리는 부수효과를 갖
 * pumpitea 90초 실행 3+3+2회, 30초 census 1회(로그는 세션 스크래치에 보관,
   수치는 위 표와 분석 문서에 기록).
 
+## 이어진 조사 (같은 날 오후)
+
+기각 뒤 원인 조사를 계속해 다음을 확인했다(상세·수치는 분석 문서).
+
+1. **뜨거운 breakpoint 지점의 정체**: 리타이어 재진입이 아니라 DOS
+   호출이었다. `calibrate()`(게스트 0x101277, AH=2Ch를 실제 1초 동안
+   세어 저장)와 `delay(ms)`(0x1012A9, 저장값×ms만큼 AH=2Ch 스핀),
+   lseek(AH=42h). delay 호출처는 초기화의 delay(5000)과 I/O 보드 포트
+   (0x2A4/0x2AC/0x2DA) 쓰기 뒤의 delay(100~500)들이다.
+2. **시간 예산**(`REPIU_EXECUTION_TIME_PROFILE=1`, 기준선 30초): VEH가
+   벽시계의 65.22%(283,208회), VEH 내부의 79.81%가 버킷 밖 잔여.
+   호스트 심볼 귀속으로 잔여의 주체가 재패치 경로임을 확인
+   (ProtectMemory 29.5% 등 합 ~62%).
+3. **v3 실험**: 쓰기 동작을 전혀 바꾸지 않고 `ProtectMemory` 범위만
+   capacity(16 MiB)→size로 줄여 측정했으나(32.1/44.1초), 직후 수정
+   없는 기준선이 40.2초로 측정되어 **판정 불가**로 폐기했다(코드
+   되돌림). 오전의 기준선은 15.0~19.6초였으므로 약 2시간 연속 부하
+   뒤의 기계 상태(열 스로틀 추정)가 측정을 교란한다.
+4. **실행의 양분(모드) 발견**: 같은 바이너리가 flip이 슬롯 폴백으로
+   전부 트랩되는 느린 모드(공백 32~61초)와 거의 트랩되지 않는 빠른
+   모드(15~19.6초)로 갈리고, 빌드와 기계 상태가 모드 선택에 함께
+   개입한다. 이전에 추정했던 "재패치의 prologue 복원(리타이어 복원)"
+   가설은 수정했다 — flip 지점의 INT3는 슬롯 자체의 가드 폴백이다.
+
+측정 규율을 문서화했다: 이 공백의 A/B는 식힌 기계에서 기준선을
+교대로 끼워서만 판정하고, 장시간 세션 후반의 수치는 버린다.
+
+## 남은 일 (갱신)
+
+1. 모드 분기 규명(최우선): flip 슬롯의 캐시 상주 시점과 빠른 모드의
+   처리 경로 추적.
+2. v3(ProtectMemory capacity→size)을 식힌 기계에서 교대 측정으로
+   재판정.
+3. flip 자체 제거(issue 방향 3)와, 게임 자체 대기 시간(하한) 계산.
+
 ---
 
 # Work log: selective segment re-patch attempt and rejection (issue #18)
@@ -90,13 +125,26 @@ site writes dropped to 1/5–1/12, yet the gap grew 2–3x.
 
 ## Conclusion
 
-The whole-cache re-patch is load-bearing beyond resolution updates: its
-prologue restore keeps resurrecting slots that guest-page retirement
-closed with INT3. The design premise (the re-patch is purely an
-optimization) is false, so directions 1 and 2 were rejected and the
-engine/runtime changes reverted; only the probe flag remains. Confirmed
-along the way: the flip is the guest memcpy idiom (virtual DS 0x0024 vs
-ES 0x002B), v0.0.180 was fast because it did not track a virtual DS, and
-the loading phase is exception-dispatch bound (~297k exceptions per
-30 s). Remaining work is listed above and in the analysis topic
-`docs/analysis/pumpitea-loading-segment-flip.md`.
+The whole-cache re-patch is load-bearing beyond resolution updates: the
+masked variants changed the run's behavior, not just its cost. The
+design premise (the re-patch is purely an optimization) is false, so
+directions 1 and 2 were rejected and the engine/runtime changes
+reverted; only the probe flag remains. Confirmed along the way: the
+flip is the guest memcpy idiom (virtual DS 0x0024 vs ES 0x002B),
+v0.0.180 was fast because it did not track a virtual DS, and the
+loading phase is exception-dispatch bound (~297k exceptions per 30 s).
+
+The same afternoon continued the investigation: the hot breakpoint
+sites are the game's `calibrate()`/`delay(ms)` loops on INT 21h AH=2Ch
+and the AH=42h lseek wrapper (the delays follow I/O-board port writes);
+the time profile puts VEH at 65.22% of wall with a 79.81% in-bucket
+residual that host-symbol attribution assigns to the re-patch path
+(~62% of sited samples); a write-identical v3 (`ProtectMemory`
+capacity→size) measured 32–44 s but an unmodified baseline measured
+40.2 s right after (morning baselines: 15.0–19.6 s), so v3 is
+inconclusive under machine drift and was dropped pending an interleaved
+re-measurement on a cooled machine; and runs are bimodal (flip
+slot-path traps against a fast path), with build and machine state both
+influencing the mode. The earlier retirement-resurrect inference was
+revised accordingly. Remaining work is listed above and in the analysis
+topic `docs/analysis/pumpitea-loading-segment-flip.md`.

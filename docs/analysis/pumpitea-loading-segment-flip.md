@@ -88,47 +88,110 @@ guards=1 entries=1466`(generation 227) 한 번으로 **주소 맵 엔트리
 1,466개가 INT3(0xCC)로 닫힌다**. `RetireAotGuestPage`는 엔트리의
 `cache_offset`에 0xCC를 쓰고 비활성으로 표시한다.
 
+### 뜨거운 breakpoint 지점은 DOS 시간·seek 호출이다
+
+30초 breakpoint site census 상위는 리타이어 재진입이 아니라 DOS
+호출이다(기준선/마스크 v1 비슷한 횟수):
+
+| 게스트 주소 | 정체 | 기준선 | v1 |
+|---|---|---|---|
+| `0x04101297` | `calibrate()`의 1초 계수 루프(INT 21h AH=2Ch) | 53,891 | 50,498 |
+| `0x041012D3` | `delay(ms)`의 스핀 루프(AH=2Ch) | 37,724 | 35,349 |
+| `0x04101BAE` | lseek(AH=42h) | 33,598 | 44,983 |
+| `0x04101287` | `calibrate()`의 초 경계 동기 루프 | 7,992 | 7,411 |
+| `0x040FE376/378/38A` | memcpy flip 슬롯의 가드 폴백 | **3,139씩** | **16,741씩** |
+
+디스어셈블로 확인: `calibrate()`(게스트 `0x101277`)는 AH=2Ch의 DH(초)가
+바뀔 때까지 동기한 뒤 **한 실제 초 동안** 호출 수를 세어
+`[0x047E04A8]`에 저장하고, `delay(ms)`(`0x1012A9`)는
+`ms×저장값/1000+0.5`회 AH=2Ch를 스핀한다. delay의 호출처 여섯 곳은
+초기화의 `delay(5000)` 하나와 **I/O 보드 포트(0x2A4/0x2AC/0x2DA) 쓰기
+뒤의 delay(100~500)** 들이다. 즉 로딩 중 보드 설정마다 게임이 스스로
+0.1~0.5초를 기다리고, AH=2Ch HLE는 실제 벽시계를 돌려준다
+(`HandleDosGetSystemTime`).
+
+### 시간 예산: VEH가 벽시계의 65%, 그 안의 80%는 미계측 잔여
+
+기준선 30초 `REPIU_EXECUTION_TIME_PROFILE=1`: `execution time share
+veh/glide-gate/port-io/dos = 65.22%/17.63%/0.17%/0.40%`(+미계상 17.15%).
+VEH 283,208회, 평균 ~19만 사이클. VEH 하위 버킷은 prologue 0.59% /
+aot-transfer 7.09% / hle-chain 12.35% / **잔여 79.81%**. DOS 서비스
+자체(hle-chain)가 아니라 VEH 경로의 버킷 밖 작업이 비용이다.
+
+### 호스트 심볼 귀속: 잔여의 주체는 재패치 경로
+
+guest position census(30초, host 표본 ~87%)의 사이트 상위:
+
+* 기준선: `ProtectMemory+0x5F` 29.5%, `PatchAotGuardedSegmentLoadSites`
+  17.6%, `ReResolveWin32AotSegmentOverrides` 8.9%, pop/override 패처
+  각 3% → **재패치 경로 합 ~62%**.
+* 마스크 v1: `ProtectMemory` 27.3%, `ReResolveWin32…+0x148`(범위 사전
+  패스) 15.2%, `PatchAotSegmentOverrideSites` 13.8% → 마스크로도 합
+  ~56%. 지점 기록을 1/12로 줄여도 flip 트랩 횟수가 ~5배로 늘어
+  재패치 호출 자체가 잦아졌기 때문이다.
+
+### 실행이 두 모드로 갈리고, 기계 상태가 모드를 고른다
+
+같은 바이너리의 90초 실행이 두 모드로 나뉜다. **빠른 모드**: flip
+슬롯 트랩이 드물고(30초에 ~3.1k) guarded 성공 우세, 공백 15~19.6초.
+**느린 모드**: flip이 전부 슬롯 폴백으로 트랩(30초에 ~16.7k), 공백
+32~61초. 오전의 교대 측정에서 기준선은 3회 모두 빠른 모드(15.0/18.7/
+19.6초), 마스크 v1은 3회 모두 느린 모드(35.1/45.5/45.2초)였다. 그러나
+**약 2시간 연속 부하 뒤에는 수정 없는 기준선도 느린 모드(40.2초)로
+측정**되어, 기계 상태(열 스로틀 추정)가 모드 선택에 개입함이
+확인됐다. 이 때문에:
+
+* v1의 회귀는 교대 측정으로 뒷받침된다(기준선이 중간에 15.0초).
+* v2(52.6/60.8초)는 직후 기준선 19.6초로 범위가 잡힌다.
+* **v3**(쓰기 동작은 기준선과 동일, `ProtectMemory` 범위만
+  capacity→size)의 32~44초는 동시대 기준선이 40.2초라 **판정 불가**
+  (드리프트 교란). 통제된 기계에서 재측정해야 한다.
+
 ## 추정
 
-* 전량 재패치의 지점 prologue 복원(`PatchAot*Sites`가 매번
-  `guard_prologue`를 다시 씀)이, 리타이어가 0xCC로 닫은 캐시 바이트를
-  지점 단위로 **되살리는** 부수효과를 갖는다. 기준선은 flip마다
-  (초당 ~1,000회+) 이 복원을 수행해 뜨거운 흐름이 네이티브로 돌고,
-  마스크 변형은 바뀌지 않은 레지스터의 지점을 건너뛰어 닫힌 슬롯이
-  영구 INT3 재진입으로 남는다. guarded 성공 붕괴(68k→12.5k)와 handled
-  load 2.5배 증가가 이 가설과 일치한다. 단 v1보다 v2가 더 나빴던
-  순서는 설명하지 못한다(측정 순서상 열 영향 가능).
-* 이 복원은 리타이어된(스테일일 수 있는) 번역을 되살리므로 설계상
-  건전하지 않다. 지금은 해당 페이지(0x04107000)의 코드가 실제로는
-  변하지 않아 우연히 옳게 동작한다.
+* 느린 모드의 본질은 memcpy flip이 **AOT 캐시 슬롯 경로**(가드 폴백
+  INT3→HLE→재해석→재패치)로 도는 것이고, 빠른 모드에서는 같은
+  명령이 다른 경로(직접 실행/다른 처리)로 돌아 슬롯 폴백과 재패치가
+  거의 생기지 않는 것이다. flip 슬롯 트랩 횟수가 모드와 1:1로
+  움직인다. 모드 선택은 실행 초기의 타이밍(동적 번역 완료 시점,
+  스레드 스케줄링, 스로틀)에 민감해 보인다.
+* 이전 판의 "전량 재패치의 prologue 복원이 리타이어로 닫힌 슬롯을
+  되살려서 빠르다"는 추정은 **수정**한다: flip 지점의 INT3는
+  리타이어 폐쇄가 아니라 슬롯 자체의 가드 폴백(설계된 경로)이며,
+  차이는 복원 여부가 아니라 슬롯 경로에 들어오는 빈도다. 복원
+  부수효과 자체는 코드상 실재하므로(패처가 prologue를 다시 씀) 재패치
+  축소 설계는 여전히 이를 고려해야 한다.
 
 ## 미확정
 
-* 뜨거운 재진입 지점(`0x0410129x`, `0x04101BAE`)이 정확히 어떤 게스트
-  루틴이고, 어떤 메커니즘(리타이어, HLE 라우팅, 안전점)으로 닫힌
-  바이트에 계속 들어가는지. breakpoint provenance는 hle가 지배적이다.
-* Win32에서 guarded load가 네이티브로 성공하려면 물리 segment
-  레지스터가 게스트 selector와 같아야 하는데(슬롯은 물리 값과 비교),
-  기준선에서 47k~68k가 성공하는 정확한 경위.
-* 같은 코드(v0.0.205)의 공백이 issue 측정일에는 ~29초, 이날은
-  15~19.6초로 달랐다. 일간 변동 요인(전원 계획, 드라이버, 백그라운드
-  부하)은 통제하지 못했다.
-* 마스크 v1 + `REPIU_AOT_SEGMENT_RESOLUTION_TRACE=1` 실행 한 번에서
-  로딩 중 텍스처 경로의 게스트 AV(EIP 게스트 `0x041E4ECF`,
-  `cmp dword [ebx+0xC], 0x1000`에서 EBX=0) 비정상 종료를 관측했다.
-  트레이스 없는 3회에서는 재현되지 않았다.
+* 모드(슬롯 경로 대 비슬롯 경로)를 가르는 정확한 분기. 실행 초기
+  어떤 시점·조건에서 memcpy 블록이 캐시 상주가 되는지, 빠른 모드의
+  flip이 정확히 어떤 경로로 처리되는지(privileged 0xC0000096 ~22만
+  건/90초가 양 모드에 존재).
+* v3(ProtectMemory capacity→size)의 효과. 쓰기 동작이 기준선과
+  동일하므로 원리상 안전하지만, 측정일 오후의 드리프트로 판정하지
+  못했다. 식힌 기계에서 교대 측정으로 재판정한다.
+* Win32에서 guarded load 네이티브 성공(빠른 모드에서 다수)의 정확한
+  경위 — 슬롯은 물리 segment 레지스터와 비교하는데 물리 값이 게스트
+  selector와 일치하는 경로가 무엇인지.
+* 마스크 v1 + 트레이스 1회에서 관측한 게스트 AV(EIP `0x041E4ECF`,
+  EBX=0) 종료. 재현 안 됨.
 
 ## 다음 방향
 
-1. **리타이어와 재패치의 결합을 명시적으로 풀기**: 전량 재패치의
-   우연한 복원 대신, 리타이어된 엔트리로의 스테일 유입을 건전하게
-   다시 잇는(재검증 후 재링크 또는 재번역 유도) 경로를 설계한다.
-   그 전까지 전량 재패치를 줄이는 어떤 시도도 공백을 악화시킨다.
-2. **flip 자체를 싸게**(issue 방향 3): memcpy 관용구의 세그먼트
-   로드를 shadow 간 복사로 네이티브 처리하거나, 지점이 두 selector를
-   기억하게 한다. flip HLE 11만 건(90초)과 그에 따른 재패치가 모두
-   사라져야 180 수준(5초)에 접근한다.
-3. 뜨거운 재진입 지점 3곳의 정체 규명이 1의 선행 작업이다.
+1. **모드 분기 규명이 최우선이다.** 빠른 모드를 안정적으로 선택하게
+   만들면 코드 수정 없이도 공백이 15~19초로 수렴하고, 그 다음 축소
+   작업의 기준도 생긴다. 시작점: flip 슬롯(게스트 `0xFE376~0xFE38A`)이
+   언제 번역·상주되는지, 빠른 모드에서 같은 명령의 처리 경로 추적.
+2. **flip 자체 제거**(issue 방향 3)는 모드와 무관하게 유효한 구조
+   해결로 남는다: memcpy 관용구의 세그먼트 로드를 shadow 간 복사로
+   네이티브 처리(가상 세그먼트 상태의 단일 진실원 정리 필요) 또는
+   지점별 두 selector 기억(이미터 변경).
+3. 측정 규율: 이 공백의 A/B는 **식힌 기계에서 기준선을 교대로
+   끼워서만** 판정한다. 장시간 연속 측정 후반의 수치는 버린다.
+4. 게임이 스스로 기다리는 시간(보드 설정 delay 100~500ms × 횟수 +
+   delay(5000) + calibrate의 실제 1초×N)은 실기에도 있는 하한이다.
+   공백 목표를 세울 때 이 하한을 먼저 계산에 넣는다.
 
 ---
 
@@ -173,40 +236,81 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
 * **Guest-page retirement closes 1,466 address-map entries with INT3**
   early in both builds (`retire guard reset #1 page=0x04107000
   entries=1466`, generation 227).
+* **The hot breakpoint sites are DOS calls, not re-entries**: the top
+  of the 30 s breakpoint census is `calibrate()`'s one-real-second
+  counting loop on INT 21h AH=2Ch (`0x04101297`), the `delay(ms)` spin
+  (`0x041012D3`), the lseek wrapper AH=42h (`0x04101BAE`) and the
+  calibrate's second-edge sync — the flip slots trail at 3,139 hits
+  (fast mode) against 16,741 (slow mode). Disassembly: `calibrate()` at
+  guest `0x101277` counts AH=2Ch calls for one real second into
+  `[0x047E04A8]`; `delay(ms)` at `0x1012A9` spins `ms×rate/1000` calls.
+  Its six callers are one `delay(5000)` in init and `delay(100..500)`
+  after I/O-board port writes (0x2A4/0x2AC/0x2DA) — the game waits on
+  itself after each board setup, and `HandleDosGetSystemTime` returns
+  the real wall clock.
+* **Time budget** (`REPIU_EXECUTION_TIME_PROFILE=1`, baseline 30 s):
+  VEH 65.22% of wall across 283,208 exceptions; inside the VEH bucket,
+  prologue 0.59% / aot-transfer 7.09% / hle-chain 12.35% /
+  **residual 79.81%**. The host-site symbol attribution puts the
+  residual mostly in the re-patch path: baseline `ProtectMemory` 29.5%
+  + guarded-load patcher 17.6% + `ReResolveWin32AotSegmentOverrides`
+  8.9% + pop/override patchers ≈ **62% of sited host samples**; masked
+  v1 still sums ≈56% because its flip-trap count grew ~5x.
+* **Runs are bimodal and the machine picks the mode.** Fast mode: few
+  flip-slot traps, guarded successes dominate, gap 15–19.6 s. Slow
+  mode: every flip falls back through the slot, gap 32–61 s. The
+  morning interleave put all three baselines in fast mode and all three
+  masked v1 runs in slow mode; after ~2 h of continuous load an
+  **unmodified baseline measured 40.2 s**, so machine state (thermal
+  throttling suspected) also selects the mode. Hence: v1's regression
+  stands (interleaved), v2 is bracketed by a 19.6 s baseline, and
+  **v3 (write-identical, `ProtectMemory` capacity→size) is
+  inconclusive** — its 32–44 s matches the drifted 40.2 s baseline.
 
 ## Inferred
 
-* The full re-patch's prologue restore resurrects, site by site, cache
-  bytes that retirement closed with INT3; the baseline performs this
-  about a thousand times a second, keeping the hot flows native, while
-  the masked variants skip unchanged registers' sites and leave the
-  closed slots in permanent INT3 re-entry. The guarded-success collapse
-  and the 2.5x handled-load growth match; the v2-worse-than-v1 ordering
-  remains unexplained (possibly thermal, by measurement order).
-* That restoration revives translations retirement had closed, so it is
-  unsound by design and only accidentally correct today (the code on
-  that page does not actually change).
+* Slow mode is the memcpy flip running through the AOT cache slot path
+  (guard fallback INT3 → HLE → re-resolution → whole-cache re-patch);
+  in fast mode the same instructions take another path and the slot
+  fallbacks and re-patches mostly do not happen. Mode selection looks
+  sensitive to early-run timing (dynamic translation completion, thread
+  scheduling, throttle state).
+* The earlier inference — that the full re-patch's prologue restore
+  resurrects retirement-closed slots and that this is what the masked
+  builds lost — is **revised**: the flip-site INT3s are the slots' own
+  designed guard fallbacks, not retirement closures. The restore side
+  effect does exist in the patchers and still constrains any re-patch
+  reduction, but the measured differential tracks slot-path frequency,
+  not restoration.
 
 ## Unresolved
 
-* The identity of the three hot re-entry sites and which mechanism's
-  closed bytes they keep entering (provenance is dominated by `hle`).
-* How guarded loads succeed natively on Win32 at all, given the slot
-  compares the physical segment register.
-* Day-to-day variance: the same v0.0.205 code measured ~29 s in the
-  issue and 15–19.6 s on this day.
-* One crash under `REPIU_AOT_SEGMENT_RESOLUTION_TRACE=1` on masked v1
-  (guest AV at `0x041E4ECF`, `cmp dword [ebx+0xC], 0x1000` with EBX=0,
-  during texture loading); not reproduced in three runs without the
-  trace.
+* The exact bifurcation that picks the mode, and the fast-mode handling
+  path of the flip instructions (privileged 0xC0000096 ≈220k per 90 s
+  exists in both modes).
+* The effect of v3 (`ProtectMemory` capacity→size): principled and
+  write-identical, but unmeasurable under the afternoon drift; needs an
+  interleaved re-measurement on a cooled machine.
+* How guarded loads succeed natively on Win32 in fast mode, given the
+  slot compares the physical segment register.
+* One crash under the resolution trace on masked v1 (guest AV at
+  `0x041E4ECF` with EBX=0); not reproduced.
 
 ## Next directions
 
-1. Decouple retirement from the re-patch explicitly: a sound re-link or
-   re-translation path for stale inflow into retired entries. Until
-   then, any reduction of the whole-cache re-patch worsens the gap.
-2. Make the flip itself cheap (issue direction 3): native shadow-to-
-   shadow handling of the memcpy idiom's segment loads, or two
-   remembered selectors per site. Only removing the ~110k flip HLEs per
-   90 s (and their re-patches) can approach 180's 5 s.
-3. Identifying the three hot re-entry sites is the prerequisite of 1.
+1. **Identify the mode bifurcation first.** Making fast mode the
+   reliable outcome converges the gap to 15–19 s with no code change
+   and gives later reductions a stable floor. Entry point: when the
+   flip slots (guest `0xFE376..0xFE38A`) become cache-resident, and
+   what path fast mode uses for the same instructions.
+2. Removing the flip itself (issue direction 3) remains the structural
+   fix independent of mode: native shadow-to-shadow segment copies for
+   the memcpy idiom (requires a single source of truth for virtual
+   segment state) or two remembered selectors per site (emitter
+   change).
+3. Measurement discipline: A/B on this gap is judged only with
+   interleaved baselines on a cooled machine; late numbers from long
+   continuous sessions are discarded.
+4. The game's own waits (delay(100..500) per board write, delay(5000),
+   calibrate's real second × N) are a floor that real hardware also
+   paid; compute that floor before setting a gap target.
