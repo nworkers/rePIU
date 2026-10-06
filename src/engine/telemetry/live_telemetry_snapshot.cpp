@@ -1695,6 +1695,12 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             context.aot_placement->timer_safe_point_injected_count;
         attempt->aot_timer_safe_point_deferred_count =
             context.aot_placement->timer_safe_point_deferred_count;
+        attempt->timer_handler_entry_cache_count =
+            context.timer_handler_entry_cache_count;
+        attempt->timer_handler_entry_translated_count =
+            context.timer_handler_entry_translated_count;
+        attempt->timer_handler_entry_native_count =
+            context.timer_handler_entry_native_count;
         attempt->aot_timer_source_profile =
             context.aot_placement->timer_source_profile;
     }

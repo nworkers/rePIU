@@ -2554,6 +2554,10 @@ void PrintExecutionAttempt(
                 attempt.aot_timer_safe_point_trap_count,
                 attempt.aot_timer_safe_point_injected_count,
                 attempt.aot_timer_safe_point_deferred_count);
+    logger.info("INT8 handler entry cache/translated/native: {}/{}/{}",
+                attempt.timer_handler_entry_cache_count,
+                attempt.timer_handler_entry_translated_count,
+                attempt.timer_handler_entry_native_count);
     logger.info(
         "AOT timer source profile enabled/entries/overflow/"
         "attributed-ticks: {}/{}/{}/{}",

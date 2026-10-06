@@ -2856,20 +2856,22 @@ bool EmitGuardedSegmentReadSlot(const AotInstructionRecord& instruction,
     site.segment_register = instruction.segment_register;
     site.gpr_register = instruction.gpr_register;
 
-    image->bytes.insert(image->bytes.end(), {0x9CU, 0x50U});
-    image->bytes.insert(image->bytes.end(), {0x66U, 0x8CU});
-    image->bytes.push_back(static_cast<std::uint8_t>(
-        0xC0U | (instruction.segment_register << 3U)));
-    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
-    site.shadow_address_offset =
-        static_cast<std::uint32_t>(image->bytes.size());
-    AppendImmediate32(&image->bytes, 0U);
-    image->bytes.insert(image->bytes.end(), {0x75U, 0x0EU, 0x58U, 0x9DU});
+    // Task i018. The shadow word is the virtual segment state and the HLE
+    // returns exactly it, so the slot loads it unconditionally. The physical
+    // compare it used to make could only pass while the virtual selector was
+    // flat (the --segment-restore probe) and trapped pumpitea's memcpy on
+    // every `mov ax, ds` under DS=0x0024. Both address fields name the one
+    // operand; fallback_offset is the slot start, where an unresolved site's
+    // INT3 goes.
+    //
+    //   66 8B 05|reg<<3 <shadow>   mov r16, [shadow]
+    //   E9 <rel32>                 jmp fallthrough
     image->bytes.insert(image->bytes.end(), {0x66U, 0x8BU});
     image->bytes.push_back(static_cast<std::uint8_t>(
         0x05U | (instruction.gpr_register << 3U)));
-    site.load_shadow_address_offset =
+    site.shadow_address_offset =
         static_cast<std::uint32_t>(image->bytes.size());
+    site.load_shadow_address_offset = site.shadow_address_offset;
     AppendImmediate32(&image->bytes, 0U);
     AppendRel32(&image->bytes, 0xE9U);
     image->fixups.push_back({AotFixupKind::kBlockFallthrough,
@@ -2877,8 +2879,7 @@ bool EmitGuardedSegmentReadSlot(const AotInstructionRecord& instruction,
                              instruction.fallthrough_target,
                              static_cast<std::uint32_t>(image->bytes.size() - 4U),
                              false});
-    site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
-    image->bytes.insert(image->bytes.end(), {0x58U, 0x9DU, 0xCCU});
+    site.fallback_offset = site.cache_offset;
     RecordGuardPrologue(*image, &site);
     image->guarded_segment_read_sites.push_back(site);
     return true;
@@ -4331,47 +4332,32 @@ bool ValidateAotCodeCacheHleCoverage(
                 const std::uint32_t slot = site !=
                     image.guarded_segment_read_sites.end()
                         ? site->cache_offset : 0U;
+                // Task i018. The i386 read slot: an unconditional 16-bit load
+                // from the shadow and the fallthrough jump; no guard, so no
+                // INT3 of its own (an unresolved site gets one at the start).
                 const auto fallthrough_fixup = std::find_if(
                     image.fixups.begin(), image.fixups.end(),
                     [&instruction, slot](const AotCodeCacheFixup& fixup) {
                         return fixup.kind == AotFixupKind::kBlockFallthrough &&
                             fixup.guest_source == instruction.guest_address &&
                             fixup.guest_target == instruction.fallthrough_target &&
-                            fixup.cache_patch_offset == slot + 24U &&
+                            fixup.cache_patch_offset == slot + 8U &&
                             fixup.resolved;
                     });
-                const std::uint8_t expected_physical_modrm =
-                    static_cast<std::uint8_t>(
-                        0xC0U | (instruction.segment_register << 3U));
                 const std::uint8_t expected_load_modrm =
                     static_cast<std::uint8_t>(
                         0x05U | (instruction.gpr_register << 3U));
                 if (site == image.guarded_segment_read_sites.end() ||
                     fallthrough_fixup == image.fixups.end() ||
-                    slot != map->cache_offset || map->emitted_length != 31U ||
-                    slot + 31U > image.bytes.size() ||
-                    site->shadow_address_offset != slot + 8U ||
-                    site->load_shadow_address_offset != slot + 19U ||
-                    site->fallback_offset != slot + 28U ||
-                    image.bytes[slot] != 0x9CU ||
-                    image.bytes[slot + 1U] != 0x50U ||
-                    image.bytes[slot + 2U] != 0x66U ||
-                    image.bytes[slot + 3U] != 0x8CU ||
-                    image.bytes[slot + 4U] != expected_physical_modrm ||
-                    image.bytes[slot + 5U] != 0x66U ||
-                    image.bytes[slot + 6U] != 0x3BU ||
-                    image.bytes[slot + 7U] != 0x05U ||
-                    image.bytes[slot + 12U] != 0x75U ||
-                    image.bytes[slot + 13U] != 0x0EU ||
-                    image.bytes[slot + 14U] != 0x58U ||
-                    image.bytes[slot + 15U] != 0x9DU ||
-                    image.bytes[slot + 16U] != 0x66U ||
-                    image.bytes[slot + 17U] != 0x8BU ||
-                    image.bytes[slot + 18U] != expected_load_modrm ||
-                    image.bytes[slot + 23U] != 0xE9U ||
-                    image.bytes[slot + 28U] != 0x58U ||
-                    image.bytes[slot + 29U] != 0x9DU ||
-                    image.bytes[slot + 30U] != 0xCCU)
+                    slot != map->cache_offset || map->emitted_length != 12U ||
+                    slot + 12U > image.bytes.size() ||
+                    site->shadow_address_offset != slot + 3U ||
+                    site->load_shadow_address_offset != slot + 3U ||
+                    site->fallback_offset != slot ||
+                    image.bytes[slot] != 0x66U ||
+                    image.bytes[slot + 1U] != 0x8BU ||
+                    image.bytes[slot + 2U] != expected_load_modrm ||
+                    image.bytes[slot + 7U] != 0xE9U)
                 {
                     return fail(instruction.guest_address);
                 }

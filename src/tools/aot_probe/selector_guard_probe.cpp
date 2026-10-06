@@ -280,28 +280,17 @@ bool RunSelectorGuardProbe()
     {
         const runtime::AotGuardedSegmentReadSite& site =
             read_image.guarded_segment_read_sites[0];
+        // Task i018. The i386 read slot: `mov ax, [shadow]` and the
+        // fallthrough jump, no guard, fallback_offset at the slot start.
         guarded_read_layout =
-            site.cache_offset + 31U <= read_image.bytes.size() &&
-            site.shadow_address_offset == site.cache_offset + 8U &&
-            site.load_shadow_address_offset == site.cache_offset + 19U &&
-            site.fallback_offset == site.cache_offset + 28U &&
-            read_image.bytes[site.cache_offset] == 0x9CU &&
-            read_image.bytes[site.cache_offset + 1U] == 0x50U &&
-            read_image.bytes[site.cache_offset + 2U] == 0x66U &&
-            read_image.bytes[site.cache_offset + 3U] == 0x8CU &&
-            read_image.bytes[site.cache_offset + 4U] == 0xD8U &&
-            read_image.bytes[site.cache_offset + 5U] == 0x66U &&
-            read_image.bytes[site.cache_offset + 6U] == 0x3BU &&
-            read_image.bytes[site.cache_offset + 7U] == 0x05U &&
-            read_image.bytes[site.cache_offset + 12U] == 0x75U &&
-            read_image.bytes[site.cache_offset + 13U] == 0x0EU &&
-            read_image.bytes[site.cache_offset + 16U] == 0x66U &&
-            read_image.bytes[site.cache_offset + 17U] == 0x8BU &&
-            read_image.bytes[site.cache_offset + 18U] == 0x05U &&
-            read_image.bytes[site.cache_offset + 23U] == 0xE9U &&
-            read_image.bytes[site.fallback_offset] == 0x58U &&
-            read_image.bytes[site.fallback_offset + 1U] == 0x9DU &&
-            read_image.bytes[site.fallback_offset + 2U] == 0xCCU;
+            site.cache_offset + 12U <= read_image.bytes.size() &&
+            site.shadow_address_offset == site.cache_offset + 3U &&
+            site.load_shadow_address_offset == site.cache_offset + 3U &&
+            site.fallback_offset == site.cache_offset &&
+            read_image.bytes[site.cache_offset] == 0x66U &&
+            read_image.bytes[site.cache_offset + 1U] == 0x8BU &&
+            read_image.bytes[site.cache_offset + 2U] == 0x05U &&
+            read_image.bytes[site.cache_offset + 7U] == 0xE9U;
         runtime::AotCodeCacheImage disabled_read_image;
         guarded_read_disabled_falls_back =
             runtime::BuildAotCodeCacheImage(
@@ -336,7 +325,7 @@ bool RunSelectorGuardProbe()
                         sizeof(patched_load_shadow));
             guarded_read_patch = shadow_pointer <= UINT32_MAX &&
                 processed == 1U && stats.guarded_read_site_count == 1U &&
-                cache[site.cache_offset] == 0x9CU &&
+                cache[site.cache_offset] == 0x66U &&
                 patched_shadow == static_cast<std::uint32_t>(shadow_pointer) &&
                 patched_load_shadow ==
                     static_cast<std::uint32_t>(shadow_pointer);

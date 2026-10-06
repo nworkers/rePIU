@@ -441,8 +441,14 @@ struct AotGuardedSegmentLoadSite
     bool has_counter_operands = false;
 };
 
-// A guarded MOV r16/r32,Sreg slot. It compares the physical selector with the
-// shadow before writing the destination and restores entry state at fallback.
+// A MOV r16/r32,Sreg slot.
+//
+// Task i018. The i386 slot loads the shadow selector unconditionally (16-bit,
+// so a 32-bit destination keeps its upper half as the HLE does): the HLE
+// returns the shadow too, and the physical compare the slot used to make
+// could only pass while the virtual selector was flat. Its two address fields
+// name the same operand and fallback_offset is the slot start, where an
+// unresolved site's INT3 goes. The long-mode slot keeps its own layout.
 struct AotGuardedSegmentReadSite
 {
     std::uint32_t guest_source = 0;

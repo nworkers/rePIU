@@ -360,16 +360,50 @@ guarded pop 슬롯을 같은 shadow·수용 쌍 형태로 바꾸고 메모리-�
 * 두 번째 정지(41~43초, 1.8~4.4초)가 양쪽 빌드에 모두 있다 — 이번 경로와
   무관, 미확정에 추가.
 
+### 2단계 뒤 남은 트랩의 정체 (2026-10-07 트레이스·census)
+
+30초 세그먼트 트레이스와 90초 exception census(breakpoint 396k,
+privileged 0xC0000096 236k, AV 46.9k)로 남은 세그먼트 트랩을 셌다.
+
+| 지점 | 30초 횟수 | 경로 |
+|---|---|---|
+| `0xFE376` `mov ax, ds` (memcpy) | 33,015 | guarded **read** 슬롯 폴백 — 물리 DS(0x002B)≠shadow(0x0024). 물리 레지스터는 게스트 selector를 담지 않으므로 가상 DS가 flat이 아닌 동안 항상 폴백 |
+| `0xFE2F0` `mov ds, cs:[abs]` (ISR 진입) | 6,354 | **캐시 밖 네이티브 폴트**. `InjectPendingInterrupts`가 `Eip = shadow.offset`(원 게스트 주소)로 ISR에 들어가므로 ISR 앞부분은 캐시 밖에서 돌고, 2단계의 메모리-소스 슬롯은 쓰이지 않는다. breakpoint census(INT3)에 이 지점이 없는 이유다. 로드 값은 전부 0x0024이고 shadow가 이미 0x0024인 no-op 재로드가 3,429건 |
+| `0xFCF6D`/`0xFCF6F` (far strcmp) | 1,860 | DS←0x0080(GS 값)이 수용 쌍 밖 → 폴백 → 쌍 `[1]`이 0x0024↔0x0080로 서로 밀어냄; 뒤의 `mov es, ax`는 HLE 재진입 경로(`hle reentry segment-write resumed` 2,533과 일치) |
+
+ISR 말미 `pop ds`(0x2AB85)는 2단계 슬롯으로 네이티브(guarded pop 폴백
+3건). 즉 ISR은 **진입은 네이티브, 말미는 캐시**로 갈려 있다 — 첫 폴트
+뒤 재진입이 캐시에 매핑된 주소를 찾기 때문이다.
+
+### 방향 3 3단계 (2026-10-07): ISR 캐시 진입과 가드 없는 read 슬롯
+
+주입이 벡터를 캐시에서 찾아(없으면 한 번 번역) 캐시 주소로 진입하고,
+i386 read 슬롯이 shadow를 무조건 로드하도록 바꿨다
+(`docs/design/20261007-i018-isr-cache-entry-and-shadow-read.md`). 교대
+측정(90초, 기준선 = 2단계 빌드):
+
+| 빌드 | 로고 뒤 공백 | handled segment load | privileged / AV / 총 예외 | INT8 진입 cache/translated/native |
+|---|---|---|---|---|
+| 2단계 ×2 | 2.13 / 2.07초 | 25.9k | 235k / 46.5k / 707k~925k | — |
+| 3단계 ×3 | **1.65 / 1.70 / 1.69초** | **5,056** | **41.5k / 12.5k / 521k~547k** | 20.7k / 1 / 0 |
+
+ISR 진입 헬퍼의 네이티브 폴트와 memcpy `mov ax, ds`의 read 폴백이
+사라졌고, ISR 앞부분이 캐시에서 돌면서 privileged 예외(네이티브 포트
+I/O)가 1/5.7로 줄었다. 남은 세그먼트 트랩은 far strcmp 그룹(2,530/90초)
+뿐이다.
+
 ## 다음 방향
 
 1. **모드 분기 규명이 최우선이다.** 빠른 모드를 안정적으로 선택하게
    만들면 코드 수정 없이도 공백이 15~19초로 수렴하고, 그 다음 축소
    작업의 기준도 생긴다. 시작점: flip 슬롯(게스트 `0xFE376~0xFE38A`)이
    언제 번역·상주되는지, 빠른 모드에서 같은 명령의 처리 경로 추적.
-2. **flip 자체 제거**(issue 방향 3)는 1단계(레지스터 로드)와 2단계(pop·
-   메모리-소스 로드)로 구현됐다. 남은 것은 `0xFCF6F` 그룹(2,530/90초,
-   앞 HLE 로드 뒤의 비슬롯 경로)과 41~43초의 두 번째 정지(양쪽 빌드
-   공통, 원인 미확정)다.
+2. **flip 자체 제거**(issue 방향 3)는 1단계(레지스터 로드), 2단계(pop·
+   메모리-소스 로드), 3단계(ISR 캐시 진입·가드 없는 read)로 구현됐다.
+   남은 것은 `0xFCF6D/6F` far strcmp 그룹(2,530/90초; DS가
+   0x0024/0x0080/0x002B를 돌아 수용 쌍 한 칸을 밀어냄 → 쌍을 집합으로
+   늘리는 것이 후보)과 41~43초의 두 번째 정지(양쪽 빌드 공통, 원인
+   미확정)다.
 3. 측정 규율: 이 공백의 A/B는 **식힌 기계에서 기준선을 교대로
    끼워서만** 판정한다. 장시간 연속 측정 후반의 수치는 버린다.
 4. 게임이 스스로 기다리는 시간(보드 설정 delay 100~500ms × 횟수 +
@@ -577,6 +611,34 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   mode question stays open; the gap is below v0.0.180's 5.0 s. Still
   unresolved: the `0xFCF6F` group (2,530 per 90 s) and a second
   1.8–4.4 s stall at 41–43 s present in both builds.
+* **What still traps after phase 2** (30 s segment trace, 90 s exception
+  census: 396k breakpoints, 236k privileged 0xC0000096, 46.9k AVs).
+  memcpy's `mov ax, ds` at `0xFE376` (33,015 per 30 s) falls back in the
+  guarded **read** slot, whose physical-vs-shadow compare must fail
+  whenever the virtual DS is not flat. The ISR entry helper `0xFE2F0`
+  (6,354 per 30 s) faults **natively outside the cache**:
+  `InjectPendingInterrupts` enters the handler at `Eip = shadow.offset`,
+  the raw guest address, so phase 2's memory-source slot is never
+  reached — which is why the site is absent from the INT3 census; 3,429
+  of those loads were no-op reloads of 0x0024. The far-strcmp pair
+  (1,860 per 30 s) loads DS from GS (0x0080), outside the accepted pair,
+  so `pair[1]` thrashes between 0x0024 and 0x0080 and the following
+  `mov es, ax` runs on the HLE re-entry path (matching `hle reentry
+  segment-write resumed` 2,533). The ISR epilogue's `pop ds` is native
+  through the phase-2 slot (3 pop fallbacks): the handler enters
+  natively and ends in the cache, because re-entry after the first
+  fault finds a mapped address.
+* **Direction 3 phase 3 (2026-10-07): ISR cache entry and the unguarded
+  read slot.** The injection now enters the handler's cache block
+  (translating it once on first use) and the i386 read slot loads the
+  shadow unconditionally. Interleaved 90 s runs against the phase-2
+  build: post-logo gap 2.13/2.07 s → **1.65/1.70/1.69 s**; handled
+  segment loads 25.9k → **5,056**; privileged exceptions 235k → 41.5k,
+  AVs 46.5k → 12.5k, total 707k–925k → 521k–547k; INT8 entries 20.7k
+  cache / 1 translated / 0 native. The ISR helper's native faults and
+  memcpy's read fallbacks are gone, and the ISR's native port I/O no
+  longer raises privileged exceptions. The far-strcmp group (2,530 per
+  90 s) is the only segment trap left.
 
 ## Next directions
 
@@ -585,11 +647,13 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
    and gives later reductions a stable floor. Entry point: when the
    flip slots (guest `0xFE376..0xFE38A`) become cache-resident, and
    what path fast mode uses for the same instructions.
-2. Removing the flip itself (issue direction 3) is implemented in two
-   phases (register loads; pops and memory-source loads). What remains
-   is the `0xFCF6F` group (2,530 per 90 s, the non-slot path after a
-   preceding HLE load) and the second stall at 41–43 s seen in both
-   builds, cause unknown.
+2. Removing the flip itself (issue direction 3) is implemented in three
+   phases (register loads; pops and memory-source loads; ISR cache entry
+   and the unguarded read). What remains is the `0xFCF6D/6F` far-strcmp
+   group (2,530 per 90 s; DS cycles 0x0024/0x0080/0x002B and thrashes
+   the single accepted alternate — growing the pair into a set is the
+   candidate) and the second stall at 41–43 s seen in both builds,
+   cause unknown.
 3. Measurement discipline: A/B on this gap is judged only with
    interleaved baselines on a cooled machine; late numbers from long
    continuous sessions are discarded.

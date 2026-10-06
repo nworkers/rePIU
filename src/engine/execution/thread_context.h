@@ -1261,6 +1261,12 @@ struct ThreadContext
     // Task 351: expired PIT ticks not yet attributed to the safe-point source
     // that successfully delivers them. Deferred traps leave this untouched.
     std::atomic<std::uint32_t> timer_interrupt_due_ticks{0};
+    // Task i018. Where INT8 injections entered the handler on the direct
+    // model: at its cache address, at a cache entry translated on demand, or
+    // at the raw guest address (native execution until the first fault).
+    std::uint32_t timer_handler_entry_cache_count = 0;
+    std::uint32_t timer_handler_entry_translated_count = 0;
+    std::uint32_t timer_handler_entry_native_count = 0;
     std::uint32_t timer_interrupt_chain_hle_count = 0;
     std::uint32_t timer_interrupt_chain_hle_source = 0;
     std::uint32_t timer_interrupt_chain_hle_pointer = 0;

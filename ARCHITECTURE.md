@@ -2557,6 +2557,14 @@ Win32 VEH 재개는 컨텍스트의 segment 쓰기를 무시한다는 것을 확
 * 엔진은 shadow→`guest_*` 방향으로 동기합니다(`BuildAotSegmentTable`,
   `SyncGuestSegmentsFromShadow`, `SetGuestSegmentSelector`). 전량 재패치는 네이티브
   flip마다가 아니라 다음 HLE 재해석이 바뀐 shadow를 볼 때 한 번 일어납니다.
+* i386 **read** 슬롯(`mov r16/r32, Sreg`)은 가드 없이 `[shadow]`를 16-bit로
+  로드하고 fallthrough로 뜁니다(12바이트). HLE도 shadow를 돌려주므로 물리 비교는
+  결과를 바꾸지 않고 트랩만 더했습니다.
+* INT8 주입(`InjectPendingInterrupts`)은 direct 모델에서 벡터 주소를
+  `FindAotCacheAddress`로 찾아 캐시 블록으로 진입하고, 없으면
+  `RequestAotDynamicTranslation`을 한 번 호출합니다. 이전에는 원 게스트 주소로
+  들어가 ISR 앞부분이 캐시 밖에서 네이티브로 돌며 폴트(세그먼트 로드, 포트 I/O)로
+  HLE에 들어왔습니다. `REPIU_TIMER_HANDLER_CACHE_ENTRY=0|off|false`로 끕니다.
 * long-mode(x64 cache 모델) 슬롯은 그대로이며, 메모리-소스 로드는 x64에서 INT3
   boundary로 남습니다.
 
@@ -2592,8 +2600,17 @@ Memory-source loads (`mov Sreg, r/m16`) classify as `kGuardedSegmentLoad` with
 ISR entry `66 2E 8E 1D disp32` motivated it. The engine syncs shadow →
 `guest_*` (`BuildAotSegmentTable`, `SyncGuestSegmentsFromShadow`,
 `SetGuestSegmentSelector`), and the whole-cache re-patch fires once at the next
-HLE re-resolution that sees a changed shadow rather than per flip. Long-mode
-slots are unchanged; memory-source loads stay INT3 boundaries on x64.
+HLE re-resolution that sees a changed shadow rather than per flip. The i386
+**read** slot (`mov r16/r32, Sreg`) loads `[shadow]` unguarded as a 16-bit
+value and jumps on (12 bytes): the HLE returns the shadow too, so the former
+physical compare only added traps. INT8 injection (`InjectPendingInterrupts`)
+on the direct model enters the handler's cache block found by
+`FindAotCacheAddress`, requesting one `RequestAotDynamicTranslation` when
+unmapped; it used to enter the raw guest vector, so the handler's first
+instructions ran natively outside the cache and reached the HLE through faults
+(segment loads, port I/O). `REPIU_TIMER_HANDLER_CACHE_ENTRY=0|off|false`
+disables it. Long-mode slots are unchanged; memory-source loads stay INT3
+boundaries on x64.
 
 ## 네이티브 span 음성 캐시 / Native-span negative cache
 
