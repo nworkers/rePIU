@@ -220,9 +220,20 @@ guest position census(30초, host 표본 ~87%)의 사이트 상위:
   flip이 정확히 어떤 경로로 처리되는지(privileged 0xC0000096 ~22만
   건/90초가 양 모드에 존재).
 * **재패치를 빠르게 하면 느려지는 역설의 기전.** v1·v2·v3이 모두
-  같은 방향으로 재현했으므로 우연이 아니다. 재패치의 소요 시간이
-  틱 처리·동적 번역·스레드 스케줄과 상호작용하는 지점(예: 재패치
-  동안의 틱 병합, AOT worker에 양보되는 시간)을 계측해야 한다.
+  같은 방향으로 재현했으므로 우연이 아니다. 판별된 것:
+  - **틱 병합 가설은 기각** — v3 재판정 4회의 틱 전달 카운터가
+    빌드와 무관하게 동일했다(due 20.1k~20.6k/90초, coalesced 0).
+  - **근접 원인은 guarded 폴백 증가** — v3은 guarded load 폴백이
+    10.9k~13.3k로 기준선(6.5k~7.7k)보다 ~70% 많다. 기준선의 handled
+    load 43k~45k는 틱 20.3k × ISR의 DS 올림/복원 2회와 거의 일치하고,
+    v3의 초과분이 memcpy flip의 가드 실패다. 즉 "재패치가 느릴수록
+    flip 가드가 더 자주 성공"하는 결합이 있다.
+  - 남은 뿌리 질문: **가드 성공의 물리적 경위.** guarded 슬롯은 물리
+    segment 레지스터와 비교하는데, HLE가 재개 컨텍스트에 게스트
+    selector(0x24)를 넣은 뒤(`win32_context->SegEs = selector`) 물리
+    레지스터가 실제로 어떤 값으로 복원되는지 확인된 바 없다. VEH
+    재개(NtContinue)의 세그먼트 복원 동작을 전용 probe로 확정하는
+    것이 다음 작업 단위다.
 * Win32에서 guarded load 네이티브 성공(빠른 모드에서 다수)의 정확한
   경위 — 슬롯은 물리 segment 레지스터와 비교하는데 물리 값이 게스트
   selector와 일치하는 경로가 무엇인지.
@@ -368,10 +379,18 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   path of the flip instructions (privileged 0xC0000096 ≈220k per 90 s
   exists in both modes).
 * **The mechanism of the speed-up-makes-it-slower paradox.** v1, v2 and
-  v3 all reproduced it in the same direction, so it is not chance; the
-  interaction of re-patch duration with tick servicing, dynamic
-  translation and thread scheduling (tick coalescing during a long
-  re-patch, time yielded to the AOT worker) needs direct instrumentation.
+  v3 all reproduced it in the same direction, so it is not chance.
+  Discriminated so far: tick coalescing is excluded (tick delivery was
+  identical across the four re-judgment runs — due 20.1k–20.6k per
+  90 s, coalesced 0); the proximate cause is guarded-load fallbacks
+  growing ~70% under v3 (10.9k–13.3k against 6.5k–7.7k), while the
+  baseline's handled loads match ticks × the ISR's two DS loads almost
+  exactly. The root question left is the physical path of a guard
+  SUCCESS: the slot compares the physical segment register, the HLE
+  resumes with the guest selector in the context
+  (`win32_context->SegEs = selector`), and what the physical register
+  actually holds after NtContinue has never been established — a
+  dedicated probe is the next task unit.
 * How guarded loads succeed natively on Win32 in fast mode, given the
   slot compares the physical segment register.
 * One crash under the resolution trace on masked v1 (guest AV at
