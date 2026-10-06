@@ -1890,6 +1890,20 @@ bool AppendDynamicAotTranslation(
     {
         site.cache_offset += append_offset;
         site.shadow_address_offset += append_offset;
+        // Task i018. Zero means the slot was emitted without the accepted-
+        // pair form (long mode) and must stay zero for the patcher.
+        if (site.pair0_address_offset != 0U)
+        {
+            site.pair0_address_offset += append_offset;
+        }
+        if (site.pair1_address_offset != 0U)
+        {
+            site.pair1_address_offset += append_offset;
+        }
+        if (site.shadow_store_offset != 0U)
+        {
+            site.shadow_store_offset += append_offset;
+        }
         site.success_counter_address_offset += append_offset;
         site.fallback_counter_address_offset += append_offset;
         site.fallback_offset += append_offset;

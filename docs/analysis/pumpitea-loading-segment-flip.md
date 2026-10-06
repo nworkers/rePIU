@@ -287,6 +287,31 @@ guest position census(30초, host 표본 ~87%)의 사이트 상위:
 * 마스크 v1 + 트레이스 1회에서 관측한 게스트 AV(EIP `0x041E4ECF`,
   EBX=0) 종료. 재현 안 됨.
 
+### 방향 3 구현 결과 (같은 날 저녁): 공백 절반 이하
+
+설계 씨앗을 구현했다(`docs/design/20261006-i018-shadow-authoritative-
+segment-load.md`): i386 guarded load 슬롯에서 물리 비교를 버리고
+shadow를 진실원으로 삼아, `[shadow]`/레지스터별 수용 쌍
+`[pair0]`/`[pair1]`과 비교해 쌍 일치 시 shadow를 네이티브로 쓴다.
+교대 측정(90초):
+
+| 빌드 | 공백 | guarded load 폴백 |
+|---|---|---|
+| 기준선 ×2 | 14.71 / 15.64초 | 6,873 / 7,394 |
+| 방향 3 ×3 | **7.59 / 7.08 / 6.77초** | 2,525 (결정적) |
+
+memcpy flip의 트랩·재해석·전량 재패치가 소멸했고, v1~v3의 "재패치를
+싸게 하면 느려지는" 역설은 나타나지 않았다 — 트랩 자체가 사라져
+되먹임 고리의 모양이 바뀌었기 때문으로 본다. 남은 트랩은 ISR의
+메모리-소스 DS 로드(`mov ds, cs:[abs]`)와 guarded pop(폴백
+48.7k/90초)이며, 이 둘이 5.0초(v0.0.180)와의 남은 간격의 후보다.
+
+간헐 크래시 1건: pumpit3a 30초 스모크 4회 중 1회가 로딩 중 게스트
+AV(EBX=0, `cmp dword [ebx+0xC], 0x1000`, EAX=0xDE1)로 종료 — 오전
+마스크 v1 트레이스 런에서 1회 본 것과 동일 시그니처. 재시도 3회와
+트레이스 런, 기준선 런은 정상. 세그먼트 경로의 타이밍이 바뀔 때
+드러나는 기존 경합으로 추정하며 미확정에 남긴다.
+
 ## 다음 방향
 
 1. **모드 분기 규명이 최우선이다.** 빠른 모드를 안정적으로 선택하게
@@ -467,6 +492,23 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   slot compares the physical segment register.
 * One crash under the resolution trace on masked v1 (guest AV at
   `0x041E4ECF` with EBX=0); not reproduced.
+
+* **Direction 3 implemented the same evening — the gap halves.** The
+  i386 guarded load slot drops the physical compare and treats the
+  shadow as the source of truth, comparing against the shadow and the
+  per-register accepted pair and writing the shadow natively on a pair
+  match. Interleaved 90 s runs: baselines 14.71/15.64 s against
+  **7.59/7.08/6.77 s**, guarded-load fallbacks deterministic at 2,525.
+  The flip's traps, re-resolutions and whole-cache re-patches are gone
+  and the v1–v3 paradox did not reappear (the trap itself is removed,
+  which changes the feedback loop's shape). Remaining traps: the ISR's
+  memory-source DS load and the guarded pop (48.7k fallbacks per
+  90 s) — the candidates for the rest of the distance to v0.0.180's
+  5.0 s. One intermittent crash: pumpit3a ended one of four 30 s smokes
+  with the same guest-AV signature seen once this morning (EBX=0 at
+  `cmp dword [ebx+0xC], 0x1000`); three retries and a traced run were
+  clean — left unresolved as a suspected pre-existing race exposed by
+  segment-path timing changes.
 
 ## Next directions
 

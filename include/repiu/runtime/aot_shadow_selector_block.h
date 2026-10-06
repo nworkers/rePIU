@@ -27,9 +27,19 @@ namespace repiu::runtime
 // 6 segment registers: 0=ES, 1=CS, 2=SS, 3=DS, 4=FS, 5=GS. CS has no shadow and
 // its slot is left zero, so the index matches `AotSegmentTable::segments`
 // rather than being compacted.
+//
+// Task i018. `accepted_pair` holds, per register, the two selectors a guarded
+// load slot may switch between natively by writing the shadow word, with no
+// INT3: [0] is the host's flat selector, written once when the block is
+// seeded, and [1] is the one non-flat selector the HLE load last accepted
+// whose descriptor base is 0 (pumpitea's 0x0024). Zero matches no load value,
+// so a cleared entry simply sends every switch back to the HLE. The slot
+// compares against these words rather than against patched immediates, so
+// changing a pair member never requires a cache re-patch.
 struct AotShadowSelectorBlock
 {
     std::uint16_t selectors[6] = {};
+    std::uint16_t accepted_pair[6][2] = {};
 };
 
 struct AotShadowSelectorReservation
@@ -63,5 +73,12 @@ inline constexpr std::uintptr_t kAotShadowSelectorCandidateBases[] = {
 // reason the caller can print is more useful than failing twice.
 [[nodiscard]] AotShadowSelectorReservation ReserveAotShadowSelectorBlock();
 void ReleaseAotShadowSelectorBlock(const AotShadowSelectorReservation& reservation);
+
+// Task i018. Seed every register's accepted flat member. ES/DS/FS/GS take the
+// loader's flat data selector and SS its flat stack selector; zero selectors
+// seed nothing. Call once, after the block is reserved.
+void SeedAotShadowAcceptedPairs(AotShadowSelectorBlock* block,
+                                std::uint16_t flat_data_selector,
+                                std::uint16_t flat_stack_selector);
 
 }  // namespace repiu::runtime

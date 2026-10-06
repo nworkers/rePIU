@@ -391,13 +391,28 @@ struct AotGuardedSegmentPopSite
     bool has_counter_operands = false;
 };
 
-// A guarded register-source MOV Sreg,r16 slot. Success is a semantic no-op
-// when source, physical, and shadow selectors already match.
+// A guarded register-source MOV Sreg,r16 slot.
+//
+// Task i018. The i386 slot no longer reads the physical segment register --
+// the --segment-restore probe established that a VEH resume never installs a
+// guest selector there, so the physical compare could only ever pass for flat
+// reloads. The slot now treats the shadow word as the virtual state: a load
+// equal to the shadow passes as a no-op, a load equal to either word of the
+// register's accepted pair (see AotShadowSelectorBlock) writes the shadow
+// natively and passes, and anything else restores entry state and reaches the
+// INT3 at fallback_offset for the HLE load. The long-mode slot keeps its
+// shadow-equality-only form; its sites leave the pair offsets zero.
 struct AotGuardedSegmentLoadSite
 {
     std::uint32_t guest_source = 0;
     std::uint32_t cache_offset = 0;
     std::uint32_t shadow_address_offset = 0;
+    // Task i018. abs32 operands of the two accepted-pair compares and of the
+    // native shadow store. Zero on slots emitted without them (long mode),
+    // which the patcher reads as "patch the old layout".
+    std::uint32_t pair0_address_offset = 0;
+    std::uint32_t pair1_address_offset = 0;
+    std::uint32_t shadow_store_offset = 0;
     std::uint32_t success_counter_address_offset = 0;
     std::uint32_t fallback_counter_address_offset = 0;
     std::uint32_t fallback_offset = 0;

@@ -2607,6 +2607,28 @@ bool EmitGuardedSegmentPopSlot(const AotInstructionRecord& instruction,
     return true;
 }
 
+// Task i018. The slot's shape: the physical segment register is gone from the
+// guard. The --segment-restore probe measured that a Win32 VEH resume never
+// installs a guest selector into a physical segment register, so comparing
+// against it could only ever pass for flat reloads and made pumpitea's memcpy
+// ES flip (0x0024<->0x002B, both base-0 selectors) trap twice per call. The
+// slot now asks the virtual state: a load equal to the shadow is a no-op; a
+// load equal to either accepted-pair word writes the shadow natively and
+// continues; anything else restores entry state and falls back to the HLE.
+//
+//   9C 50               pushfd; push eax
+//   66 8B ..            mov ax, <new value>       (gpr, or [esp] for eax)
+//   66 3B 05 <shadow>   cmp ax, [shadow]
+//   74 18               je success
+//   66 3B 05 <pair0>    cmp ax, [accepted_pair0]
+//   74 09               je write
+//   66 3B 05 <pair1>    cmp ax, [accepted_pair1]
+//   75 13               jne fallback
+//   66 A3 <shadow>      write: mov [shadow], ax
+//   FF 05 <success>     success: inc dword [counter]
+//   58 9D E9 <rel32>    pop eax; popfd; jmp fallthrough
+//   FF 05 <fallback>    fallback: inc dword [counter]
+//   58 9D CC            pop eax; popfd; int3
 bool EmitGuardedSegmentLoadSlot(const AotInstructionRecord& instruction,
                                 AotCodeCacheImage* image)
 {
@@ -2626,13 +2648,10 @@ bool EmitGuardedSegmentLoadSlot(const AotInstructionRecord& instruction,
     site.gpr_register = instruction.gpr_register;
     image->bytes.push_back(0x9CU);  // pushfd
     image->bytes.push_back(0x50U);  // push eax
-    image->bytes.push_back(0x66U);  // mov ax,Sreg
-    image->bytes.push_back(0x8CU);
-    image->bytes.push_back(static_cast<std::uint8_t>(
-        0xC0U | (instruction.segment_register << 3U)));
-    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x8BU});
     if (instruction.gpr_register == 0U)
     {
+        // The loaded value was in EAX, which now sits at [esp].
         image->bytes.insert(image->bytes.end(), {0x04U, 0x24U});
     }
     else
@@ -2641,12 +2660,26 @@ bool EmitGuardedSegmentLoadSlot(const AotInstructionRecord& instruction,
             0xC0U | instruction.gpr_register));
         image->bytes.push_back(0x90U);
     }
-    image->bytes.insert(image->bytes.end(), {0x75U, 0x16U});
     image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
     site.shadow_address_offset =
         static_cast<std::uint32_t>(image->bytes.size());
     AppendImmediate32(&image->bytes, 0U);
-    image->bytes.insert(image->bytes.end(), {0x75U, 0x0DU, 0xFFU, 0x05U});
+    image->bytes.insert(image->bytes.end(), {0x74U, 0x18U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
+    site.pair0_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x74U, 0x09U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
+    site.pair1_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x75U, 0x13U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0xA3U});
+    site.shadow_store_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0xFFU, 0x05U});
     site.success_counter_address_offset =
         static_cast<std::uint32_t>(image->bytes.size());
     AppendImmediate32(&image->bytes, 0U);
@@ -3977,6 +4010,9 @@ bool ValidateAotCodeCacheHleCoverage(
                     }
                     continue;
                 }
+                // Task i018. The accepted-pair slot: no physical segment
+                // read, the loaded value against the shadow and the two pair
+                // words, and a native shadow store on a pair match.
                 const auto fallthrough_fixup = std::find_if(
                     image.fixups.begin(), image.fixups.end(),
                     [&instruction, slot](const AotCodeCacheFixup& fixup) {
@@ -3984,12 +4020,9 @@ bool ValidateAotCodeCacheHleCoverage(
                             fixup.guest_source == instruction.guest_address &&
                             fixup.guest_target ==
                                 instruction.fallthrough_target &&
-                            fixup.cache_patch_offset == slot + 29U &&
+                            fixup.cache_patch_offset == slot + 48U &&
                             fixup.resolved;
                     });
-                const std::uint8_t expected_physical_modrm =
-                    static_cast<std::uint8_t>(
-                        0xC0U | (instruction.segment_register << 3U));
                 const std::uint8_t expected_source_modrm =
                     instruction.gpr_register == 0U
                         ? 0x04U
@@ -3999,38 +4032,48 @@ bool ValidateAotCodeCacheHleCoverage(
                     instruction.gpr_register == 0U ? 0x24U : 0x90U;
                 if (site == image.guarded_segment_load_sites.end() ||
                     fallthrough_fixup == image.fixups.end() ||
-                    slot != map->cache_offset || map->emitted_length != 42U ||
-                    slot + 42U > image.bytes.size() ||
-                    site->shadow_address_offset != slot + 14U ||
-                    site->success_counter_address_offset != slot + 22U ||
-                    site->fallback_counter_address_offset != slot + 35U ||
-                    site->fallback_offset != slot + 41U ||
+                    slot != map->cache_offset || map->emitted_length != 61U ||
+                    slot + 61U > image.bytes.size() ||
+                    site->shadow_address_offset != slot + 9U ||
+                    site->pair0_address_offset != slot + 18U ||
+                    site->pair1_address_offset != slot + 27U ||
+                    site->shadow_store_offset != slot + 35U ||
+                    site->success_counter_address_offset != slot + 41U ||
+                    site->fallback_counter_address_offset != slot + 54U ||
+                    site->fallback_offset != slot + 60U ||
                     image.bytes[slot] != 0x9CU ||
                     image.bytes[slot + 1U] != 0x50U ||
                     image.bytes[slot + 2U] != 0x66U ||
-                    image.bytes[slot + 3U] != 0x8CU ||
-                    image.bytes[slot + 4U] != expected_physical_modrm ||
-                    image.bytes[slot + 5U] != 0x66U ||
-                    image.bytes[slot + 6U] != 0x3BU ||
-                    image.bytes[slot + 7U] != expected_source_modrm ||
-                    image.bytes[slot + 8U] != expected_source_tail ||
-                    image.bytes[slot + 9U] != 0x75U ||
-                    image.bytes[slot + 10U] != 0x16U ||
-                    image.bytes[slot + 11U] != 0x66U ||
-                    image.bytes[slot + 12U] != 0x3BU ||
-                    image.bytes[slot + 13U] != 0x05U ||
-                    image.bytes[slot + 18U] != 0x75U ||
-                    image.bytes[slot + 19U] != 0x0DU ||
-                    image.bytes[slot + 20U] != 0xFFU ||
-                    image.bytes[slot + 21U] != 0x05U ||
-                    image.bytes[slot + 26U] != 0x58U ||
-                    image.bytes[slot + 27U] != 0x9DU ||
-                    image.bytes[slot + 28U] != 0xE9U ||
-                    image.bytes[slot + 33U] != 0xFFU ||
-                    image.bytes[slot + 34U] != 0x05U ||
-                    image.bytes[slot + 39U] != 0x58U ||
-                    image.bytes[slot + 40U] != 0x9DU ||
-                    image.bytes[slot + 41U] != 0xCCU)
+                    image.bytes[slot + 3U] != 0x8BU ||
+                    image.bytes[slot + 4U] != expected_source_modrm ||
+                    image.bytes[slot + 5U] != expected_source_tail ||
+                    image.bytes[slot + 6U] != 0x66U ||
+                    image.bytes[slot + 7U] != 0x3BU ||
+                    image.bytes[slot + 8U] != 0x05U ||
+                    image.bytes[slot + 13U] != 0x74U ||
+                    image.bytes[slot + 14U] != 0x18U ||
+                    image.bytes[slot + 15U] != 0x66U ||
+                    image.bytes[slot + 16U] != 0x3BU ||
+                    image.bytes[slot + 17U] != 0x05U ||
+                    image.bytes[slot + 22U] != 0x74U ||
+                    image.bytes[slot + 23U] != 0x09U ||
+                    image.bytes[slot + 24U] != 0x66U ||
+                    image.bytes[slot + 25U] != 0x3BU ||
+                    image.bytes[slot + 26U] != 0x05U ||
+                    image.bytes[slot + 31U] != 0x75U ||
+                    image.bytes[slot + 32U] != 0x13U ||
+                    image.bytes[slot + 33U] != 0x66U ||
+                    image.bytes[slot + 34U] != 0xA3U ||
+                    image.bytes[slot + 39U] != 0xFFU ||
+                    image.bytes[slot + 40U] != 0x05U ||
+                    image.bytes[slot + 45U] != 0x58U ||
+                    image.bytes[slot + 46U] != 0x9DU ||
+                    image.bytes[slot + 47U] != 0xE9U ||
+                    image.bytes[slot + 52U] != 0xFFU ||
+                    image.bytes[slot + 53U] != 0x05U ||
+                    image.bytes[slot + 58U] != 0x58U ||
+                    image.bytes[slot + 59U] != 0x9DU ||
+                    image.bytes[slot + 60U] != 0xCCU)
                 {
                     return fail(instruction.guest_address);
                 }

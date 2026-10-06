@@ -357,6 +357,27 @@ void RecordGuestSegmentLoad(repiu::platform::GuestCpuContext* win32_context,
     if (context->shadow_selectors != nullptr && segment_register < 6U)
     {
         context->shadow_selectors->selectors[segment_register] = selector;
+        // Task i018. A base-0, descriptor-backed selector the HLE just
+        // accepted becomes the register's accepted alternate: the guarded
+        // load slot may thereafter switch to it natively by writing the
+        // shadow word, which is the same acceptance this path just granted.
+        // The flat member of the pair is seeded once at block creation.
+        if ((segment_register == 0U || segment_register == 3U ||
+             segment_register == 4U || segment_register == 5U) &&
+            selector != 0U &&
+            selector !=
+                context->shadow_selectors->accepted_pair[segment_register][0])
+        {
+            const repiu::runtime::GuestDescriptor* descriptor =
+                repiu::runtime::FindDescriptor(
+                    context->selector_table, selector);
+            if (descriptor != nullptr && descriptor->present &&
+                descriptor->base == 0U)
+            {
+                context->shadow_selectors
+                    ->accepted_pair[segment_register][1] = selector;
+            }
+        }
     }
     // Task 264 Phase 3a: the guest just (re)configured a segment register, so
     // re-fold selectors and bases into the natively-translated segment-override

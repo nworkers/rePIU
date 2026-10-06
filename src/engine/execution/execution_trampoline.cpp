@@ -3914,25 +3914,35 @@ std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
     }
 
     std::uint16_t shadow = 0;
-    switch (segment_register)
+    if (context.shadow_selectors != nullptr && segment_register < 6U)
     {
-        case 0:
-            shadow = context.guest_es;
-            break;
-        case 2:
-            shadow = context.guest_ss;
-            break;
-        case 3:
-            shadow = context.guest_ds;
-            break;
-        case 4:
-            shadow = context.guest_fs;
-            break;
-        case 5:
-            shadow = context.guest_gs;
-            break;
-        default:
-            return 0;
+        // Task i018. The shadow block is the virtual segment state: the
+        // guarded load slot writes it natively for accepted selector
+        // switches, so the context mirror may be one switch behind.
+        shadow = context.shadow_selectors->selectors[segment_register];
+    }
+    else
+    {
+        switch (segment_register)
+        {
+            case 0:
+                shadow = context.guest_es;
+                break;
+            case 2:
+                shadow = context.guest_ss;
+                break;
+            case 3:
+                shadow = context.guest_ds;
+                break;
+            case 4:
+                shadow = context.guest_fs;
+                break;
+            case 5:
+                shadow = context.guest_gs;
+                break;
+            default:
+                return 0;
+        }
     }
     if (win32_context == nullptr)
     {
@@ -7020,8 +7030,19 @@ bool RunExecutionThread(
     context.shadow_selectors = context.shadow_selector_reservation.block;
     if (context.shadow_selectors != nullptr)
     {
+        // Task i018. The block is authoritative from here on, so it inherits
+        // every selector the context holds, and the accepted pairs get their
+        // flat members. ES/FS/GS are usually still zero at this point, which
+        // the resolution builder reads as unresolved, exactly as before.
+        context.shadow_selectors->selectors[0] = context.guest_es;
         context.shadow_selectors->selectors[2] = context.guest_ss;
         context.shadow_selectors->selectors[3] = context.guest_ds;
+        context.shadow_selectors->selectors[4] = context.guest_fs;
+        context.shadow_selectors->selectors[5] = context.guest_gs;
+        repiu::runtime::SeedAotShadowAcceptedPairs(
+            context.shadow_selectors,
+            context.flat_data_selector,
+            context.flat_stack_selector);
     }
     if (std::getenv("REPIU_LINEXE_INIT_TRACE") != nullptr)
     {

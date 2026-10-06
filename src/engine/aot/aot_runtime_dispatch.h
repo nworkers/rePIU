@@ -73,8 +73,23 @@ int AotTranslationWorkerProc(void* parameter);
 
 // Task 264 Phase 3a: build the per-segment resolution table (shadow addresses,
 // current selectors, descriptor bases) from the live guest context.
+// Task i018: when a shadow selector block exists it is authoritative; this
+// pulls guest_* from it (through SyncGuestSegmentsFromShadow) rather than
+// pushing into it, and fills each resolution's accepted-pair word addresses.
 void BuildAotSegmentTable(ThreadContext* context,
                                AotSegmentTable* table);
+
+// Task i018. Pull guest_es/ss/ds/fs/gs from the shadow selector block, which
+// the guarded load slot writes natively for accepted selector switches. A
+// no-op without a block. Call before consuming guest_* in an HLE service.
+void SyncGuestSegmentsFromShadow(ThreadContext* context);
+
+// Task i018. Set one guest segment selector in both places that hold it (the
+// context mirror and the shadow block). For HLE paths that assign a selector
+// outside RecordGuestSegmentLoad; CS (1) and out-of-range indices are ignored.
+void SetGuestSegmentSelector(ThreadContext* context,
+                             std::uint8_t segment_register,
+                             std::uint16_t selector);
 
 // Re-apply the guard selectors and folded bases to every segment-override site,
 // using the current segment state. Called after the guest reloads a segment

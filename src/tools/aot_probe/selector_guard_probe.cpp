@@ -352,29 +352,41 @@ bool RunSelectorGuardProbe()
     {
         const runtime::AotGuardedSegmentLoadSite& site =
             load_image.guarded_segment_load_sites[0];
+        // Task i018. The accepted-pair slot: no physical segment read, the
+        // loaded value against the shadow and the two pair words, and a
+        // native shadow store on a pair match.
         guarded_load_layout =
-            site.cache_offset + 42U <= load_image.bytes.size() &&
-            site.shadow_address_offset == site.cache_offset + 14U &&
-            site.success_counter_address_offset == site.cache_offset + 22U &&
-            site.fallback_counter_address_offset == site.cache_offset + 35U &&
-            site.fallback_offset == site.cache_offset + 41U &&
+            site.cache_offset + 61U <= load_image.bytes.size() &&
+            site.shadow_address_offset == site.cache_offset + 9U &&
+            site.pair0_address_offset == site.cache_offset + 18U &&
+            site.pair1_address_offset == site.cache_offset + 27U &&
+            site.shadow_store_offset == site.cache_offset + 35U &&
+            site.success_counter_address_offset == site.cache_offset + 41U &&
+            site.fallback_counter_address_offset == site.cache_offset + 54U &&
+            site.fallback_offset == site.cache_offset + 60U &&
             load_image.bytes[site.cache_offset] == 0x9CU &&
             load_image.bytes[site.cache_offset + 1U] == 0x50U &&
             load_image.bytes[site.cache_offset + 2U] == 0x66U &&
-            load_image.bytes[site.cache_offset + 3U] == 0x8CU &&
-            load_image.bytes[site.cache_offset + 4U] == 0xC0U &&
-            load_image.bytes[site.cache_offset + 5U] == 0x66U &&
-            load_image.bytes[site.cache_offset + 6U] == 0x3BU &&
-            load_image.bytes[site.cache_offset + 7U] == 0xC1U &&
-            load_image.bytes[site.cache_offset + 8U] == 0x90U &&
-            load_image.bytes[site.cache_offset + 9U] == 0x75U &&
-            load_image.bytes[site.cache_offset + 10U] == 0x16U &&
-            load_image.bytes[site.cache_offset + 18U] == 0x75U &&
-            load_image.bytes[site.cache_offset + 19U] == 0x0DU &&
-            load_image.bytes[site.cache_offset + 28U] == 0xE9U &&
+            load_image.bytes[site.cache_offset + 3U] == 0x8BU &&
+            load_image.bytes[site.cache_offset + 4U] == 0xC1U &&
+            load_image.bytes[site.cache_offset + 5U] == 0x90U &&
+            load_image.bytes[site.cache_offset + 6U] == 0x66U &&
+            load_image.bytes[site.cache_offset + 7U] == 0x3BU &&
+            load_image.bytes[site.cache_offset + 8U] == 0x05U &&
+            load_image.bytes[site.cache_offset + 13U] == 0x74U &&
+            load_image.bytes[site.cache_offset + 14U] == 0x18U &&
+            load_image.bytes[site.cache_offset + 22U] == 0x74U &&
+            load_image.bytes[site.cache_offset + 23U] == 0x09U &&
+            load_image.bytes[site.cache_offset + 31U] == 0x75U &&
+            load_image.bytes[site.cache_offset + 32U] == 0x13U &&
+            load_image.bytes[site.cache_offset + 33U] == 0x66U &&
+            load_image.bytes[site.cache_offset + 34U] == 0xA3U &&
+            load_image.bytes[site.cache_offset + 39U] == 0xFFU &&
+            load_image.bytes[site.cache_offset + 40U] == 0x05U &&
+            load_image.bytes[site.cache_offset + 47U] == 0xE9U &&
             load_image.bytes[site.fallback_offset] == 0xCCU;
         runtime::AotCodeCacheImage broken_load_guard = load_image;
-        broken_load_guard.bytes[site.cache_offset + 9U] = 0x90U;
+        broken_load_guard.bytes[site.cache_offset + 31U] = 0x90U;
         std::uint32_t broken_load_guest = 0U;
         guarded_load_coverage =
             runtime::ValidateAotCodeCacheHleCoverage(load_plan, load_image) &&
@@ -413,13 +425,31 @@ bool RunSelectorGuardProbe()
             const auto* cache = reinterpret_cast<const std::uint8_t*>(
                 static_cast<std::uintptr_t>(load_placement.base_address));
             std::uint32_t patched_shadow = 0U;
+            std::uint32_t patched_pair0 = 0U;
+            std::uint32_t patched_pair1 = 0U;
+            std::uint32_t patched_store = 0U;
             std::memcpy(&patched_shadow,
                         cache + site.shadow_address_offset,
                         sizeof(patched_shadow));
+            std::memcpy(&patched_pair0,
+                        cache + site.pair0_address_offset,
+                        sizeof(patched_pair0));
+            std::memcpy(&patched_pair1,
+                        cache + site.pair1_address_offset,
+                        sizeof(patched_pair1));
+            std::memcpy(&patched_store,
+                        cache + site.shadow_store_offset,
+                        sizeof(patched_store));
+            // The hand-built resolution has no pair addresses, so the pair
+            // compares must point at the shadow word itself -- the old
+            // shadow-equality-only acceptance.
             guarded_load_patch = shadow_pointer <= UINT32_MAX &&
                 processed == 1U && stats.guarded_load_site_count == 1U &&
                 cache[site.cache_offset] == 0x9CU &&
-                patched_shadow == static_cast<std::uint32_t>(shadow_pointer);
+                patched_shadow == static_cast<std::uint32_t>(shadow_pointer) &&
+                patched_pair0 == static_cast<std::uint32_t>(shadow_pointer) &&
+                patched_pair1 == static_cast<std::uint32_t>(shadow_pointer) &&
+                patched_store == static_cast<std::uint32_t>(shadow_pointer);
         }
         engine::ReleaseAotCodeCache(&load_placement);
     }

@@ -82,8 +82,14 @@ bool FindAotGuardCompareFault(const AotCodeCachePlacement& placement,
     for (const runtime::AotGuardedSegmentLoadSite& site :
          placement.guarded_segment_load_sites)
     {
+        // Task i018. The accepted-pair slot compares and stores past the
+        // shadow operand; the window ends at the last patched operand.
+        const std::uint32_t load_window_end_offset =
+            site.shadow_store_offset != 0U
+                ? site.shadow_store_offset
+                : site.shadow_address_offset;
         if (InCompareWindow(offset, site.cache_offset,
-                            site.shadow_address_offset, 4U))
+                            load_window_end_offset, 4U))
         {
             fault->kind = AotGuardSlotKind::kGuardedLoad;
             fault->guest_source = site.guest_source;

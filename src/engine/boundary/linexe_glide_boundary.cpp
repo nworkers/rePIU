@@ -1285,8 +1285,10 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
                      glide_export->name.c_str(),
                      sizeof(context->linexe_get_proc_name) - 1U);
         win32_context->Eax = 1U;
-        context->guest_es = static_cast<std::uint16_t>(
-            context->linexe_bridge_stack[5] & 0xFFFFU);
+        SetGuestSegmentSelector(
+            context, 0U,
+            static_cast<std::uint16_t>(
+                context->linexe_bridge_stack[5] & 0xFFFFU));
         ReResolveAotSegmentOverrides(context);
         win32_context->Ebx = context->linexe_bridge_stack[6];
         win32_context->Esi = context->linexe_bridge_stack[7];
@@ -1323,8 +1325,10 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
     ++context->linexe_virtual_module_load_count;
     context->linexe_virtual_module_handle = kVirtualGlideModuleHandle;
     win32_context->Eax = kVirtualGlideModuleHandle;
-    context->guest_es = static_cast<std::uint16_t>(
-        context->linexe_bridge_stack[3] & 0xFFFFU);
+    SetGuestSegmentSelector(
+        context, 0U,
+        static_cast<std::uint16_t>(
+            context->linexe_bridge_stack[3] & 0xFFFFU));
     ReResolveAotSegmentOverrides(context);
     win32_context->Ebx = context->linexe_bridge_stack[4];
     win32_context->Esi = context->linexe_bridge_stack[5];
