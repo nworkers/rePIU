@@ -406,8 +406,18 @@ I/O)가 1/5.7로 줄었다. 남은 세그먼트 트랩은 far strcmp 그룹(2,53
 * `INT 0x21` + AH ∈ {0x2C, 0x3F, 0x42} 허용 예외를 넣은 뒤(90초 교대
   2쌍): 1차 공백 4.26~6.24 → **2.53~2.68초**, 2차 정지 4.38~6.53 →
   **1.37~2.14초**, 디스패치 성공 767k~900k, `veh-required` 9.6천,
-  예외 0. 1차 공백은 이슈 접수 시점(29초)의 1/11이다. 기능은
-  옵트인 뒤에 있고 승격은 별도 판단이다.
+  예외 0.
+* **AH=3Fh(read)는 제외해야 한다**: 16개 롬셋 매트릭스에서 8개
+  타이틀이 깨졌고, 화이트리스트 없는 게이트로는 정상이므로 read가
+  범인이다 — 게스트 메모리를 바꾼 뒤 디스패처의 직접 캐시 점프가
+  재진입 funnel의 리타이어·격리 검사를 건너뛴다. {2Ch, 42h}로 좁히면
+  9종 전부 정상이고 pumpitea 이득은 유지된다(on 1.50/1.94초 대 off
+  6.27/3.11초; read는 30초에 ~1천 건이라 VEH로 남아도 무해).
+* **승격(2026-10-07)**: `REPIU_AOT_DBT_SUPERBLOCK`는 기본 켜짐이
+  되었다(`ResolvePromotedToggle`, `=0`으로 끔). 승격 빌드로 16개
+  롬셋 스모크 전부 정상(pumpit8 1회 프레임 0 플레이크는 재검 2회
+  정상), probe 통과. 1차 공백은 이슈 접수 시점(29초)의 약 1/19~1/11
+  (1.5~2.7초)이다.
 
 ## 다음 방향
 
@@ -667,9 +677,17 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   double dispatch). With an `INT 0x21` allowlist for AH 0x2C/0x3F/0x42:
   first gap 4.26–6.24 → **2.53–2.68 s**, second stall 4.38–6.53 →
   **1.37–2.14 s**, dispatch successes 767k–900k, `veh-required` ~9.6k,
-  zero exceptions — the first gap is one-eleventh of the issue's
-  original 29 s. The feature stays opt-in; promotion is a separate
-  decision.
+  zero exceptions. **AH=3Fh (read) must stay out of the allowlist**: a
+  16-romset matrix broke eight titles with it and ran clean without the
+  allowlist, naming read — guest memory changes followed by the
+  dispatcher's direct cache jump skip the reentry funnel's retirement
+  and quarantine checks. Narrowed to {2Ch, 42h} all nine failing titles
+  run clean and pumpitea keeps the win (on 1.50/1.94 s against off
+  6.27/3.11 s). **Promoted on 2026-10-07**: `REPIU_AOT_DBT_SUPERBLOCK`
+  is default-on (`ResolvePromotedToggle`; `=0` restores INT3-only
+  boundaries), the 16-romset smoke passes default-on, and the post-logo
+  gap sits at 1.5–2.7 s — roughly one-nineteenth to one-eleventh of the
+  issue's original 29 s.
 
 ## Next directions
 

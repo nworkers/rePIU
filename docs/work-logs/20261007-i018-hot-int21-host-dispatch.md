@@ -40,9 +40,27 @@
 * `repiu_aot_probe --selector-guard` 통과.
 * 토글 on 30초 스모크: pumpit1·pumpit2a·pumpit3a 모두 예외 0, 프레임
   정상.
-* 기능은 기존대로 `REPIU_AOT_DBT_SUPERBLOCK` 옵트인 뒤에 있다.
-  **기본 켜기(승격)**는 Task 386(Port-I/O) 선례대로 별도 판단으로
-  남긴다 — pumpitea 중심의 증거이므로 더 넓은 게임 확인 후가 적절하다.
+* 기능은 처음에는 `REPIU_AOT_DBT_SUPERBLOCK` 옵트인 뒤에 있었고,
+  아래 후속으로 같은 날 승격했다.
+
+## 후속 (같은 날): 3Fh 제외와 승격
+
+1. **16개 롬셋 토글 on/off 매트릭스**에서 on이 8개 타이틀(pumpitc,
+   pumpitp3, pumpitpr, pumpitpru, pumpitpx, pumpipx2, pumpipx2p,
+   pumpipx3)을 깨뜨렸다. 화이트리스트 없는 게이트(직전 커밋)로
+   재빌드하면 pumpitc가 정상이므로 **범인은 화이트리스트**, 그중
+   게스트 메모리를 쓰는 유일한 서비스 **AH=3Fh(read)**였다: 읽기가
+   게스트 메모리를 바꾼 뒤 디스패처의 직접 캐시 점프가 재진입
+   funnel의 리타이어·격리 검사를 건너뛴다.
+2. 화이트리스트를 **{AH=2Ch, AH=42h}**로 좁혔다. 실패했던 9종(위 8종
+   +pumpitp2)이 전부 정상이 되었고(일부는 off보다 개선), pumpitea의
+   이득은 유지되었다: on 1차 공백 **1.50초**/2차 **1.94초** 대 off
+   6.27/3.11초, 디스패치 성공 745,781, 예외 0. read는 30초에 ~1천
+   건이라 VEH로 남아도 영향이 없다.
+3. **승격**: loader의 `REPIU_AOT_DBT_SUPERBLOCK`를
+   `ResolveOptInToggle`에서 `ResolvePromotedToggle`로 바꿨다(기본
+   켜짐, `=0`으로 끔). 승격 빌드로 나머지 7종 기본 상태 스모크 전부
+   정상(pumpit8은 1회 프레임 0 플레이크 → 재검 2회 정상), probe 통과.
 
 ---
 
@@ -61,7 +79,18 @@ stall 4.38–6.53 s → **1.37–2.14 s**, dispatch successes 767k–900k,
 `veh-required` collapsing to ~9.6k, zero exceptions; the first gap is
 now one-eleventh of the issue's original 29 s. One measurement round
 was voided by a missed relink (multi-target script run stopped at the
-libs; caught by output timestamps). The probe passes and all three
-smoke games run clean with the toggle on. The feature stays behind the
-opt-in; default-on promotion is left as a separate decision following
-the Port-I/O precedent, pending broader game coverage.
+libs; caught by output timestamps).
+
+Follow-up the same day: a 16-romset on/off matrix showed the toggle
+breaking eight titles; rebuilding with the pre-allowlist gate cleared
+pumpitc, naming the allowlist — specifically **AH=3Fh (read)**, the one
+service that writes guest memory, whose direct cache-jump resume skips
+the reentry funnel's retirement and quarantine checks. Narrowed to
+{AH=2Ch, AH=42h}: all nine failing titles run clean (some better than
+off) and pumpitea keeps the win (on 1.50 s/1.94 s against off
+6.27/3.11 s; reads are ~1k per 30 s and stay on the VEH path
+harmlessly). **Promoted**: the loader resolves
+`REPIU_AOT_DBT_SUPERBLOCK` with `ResolvePromotedToggle` (default on,
+`=0` restores INT3-only boundaries); the remaining seven titles smoke
+clean default-on (one pumpit8 zero-frame flake passed twice on retry)
+and the probe passes.

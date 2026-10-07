@@ -78,21 +78,27 @@ bool RequiresVehMediatedHle(ThreadContext* context, std::uint32_t guest_eip,
         case ZYDIS_MNEMONIC_INT:
         {
             // Task i018. INT 21h services that only read and write general
-            // registers, flags and guest memory run through the host
-            // dispatch: AH=2Ch (get time -- pumpitea's calibrate/delay loops,
-            // ~100k calls per 30 s of loading), AH=42h (lseek -- the second
-            // stall's ~45k-call burst) and AH=3Fh (read). All three leave
-            // ESP and the segment registers untouched and advance EIP by
-            // two, which the dispatcher resolves as the block's own
-            // continuation; the ESP state-mismatch guard below the call
-            // still applies. Every other vector keeps its VEH mediation.
+            // registers and flags run through the host dispatch: AH=2Ch
+            // (get time -- pumpitea's calibrate/delay loops, ~100k calls per
+            // 30 s of loading) and AH=42h (lseek -- the second stall's
+            // ~45k-call burst). Both leave ESP, the segment registers and
+            // guest memory untouched and advance EIP by two, which the
+            // dispatcher resolves as the block's own continuation; the ESP
+            // state-mismatch guard below the call still applies.
+            //
+            // AH=3Fh (read) was in this list and broke pumpitc and seven
+            // other titles whose loaders it served: a read lands in guest
+            // memory, and resuming through the dispatcher's direct cache
+            // jump skips the reentry funnel's retirement and quarantine
+            // checks that the VEH path applies after guest memory changes.
+            // Every memory-writing service and every other vector keeps its
+            // VEH mediation.
             const std::uint8_t ah =
                 static_cast<std::uint8_t>((eax >> 8) & 0xFFU);
             const bool int21 = instruction.operand_count > 0 &&
                 operands[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE &&
                 operands[0].imm.value.u == 0x21U;
-            if (int21 &&
-                (ah == 0x2CU || ah == 0x3FU || ah == 0x42U))
+            if (int21 && (ah == 0x2CU || ah == 0x42U))
             {
                 return false;
             }
