@@ -44,11 +44,6 @@ struct GlideSetterStateCache
 struct GlideSetterStateCacheSnapshot
 {
     bool enabled = false;
-    // Task 437: which batch the counters below were produced under, so an A/B log
-    // says for itself which configuration it is.
-    bool texture_state = false;
-    bool batch_three = false;
-    bool batch_four = false;
     std::uint32_t active_entry_count = 0;
     std::uint32_t texture_generation = 0;
     std::uint32_t elided_count = 0;
@@ -58,11 +53,8 @@ struct GlideSetterStateCacheSnapshot
     std::uint32_t ordinal_overflow_count = 0;
 };
 
-// On by default, following the Task 335 precedent: `REPIU_GLIDE_SETTER_ELIDE=0`
-// (or `off`/`false`) restores the unconditional rendezvous for an A/B.
-bool ResolveGlideSetterElisionEnabled(std::string_view setting);
-bool GlideSetterElisionEnabled();
-
+// Elision is always on and covers all four gate lists below.
+//
 // Task 437, batch two: the texture-state setters batch one deferred. They are the
 // largest remaining group -- `grTexClampMode`, `grTexFilterMode` and
 // `grTexMipMapMode` are called exactly as often as `grTexSource`, once per bind --
@@ -70,15 +62,12 @@ bool GlideSetterElisionEnabled();
 // `SetTextureSource` re-applies all four sampler parameters from the TMU state on
 // every bind, so a skipped repeat can never leave a texture object stale.
 //
-// Task 439: on by default after the paired A/B measured the three gates as
-// 99.76% redundant with no visual difference. `REPIU_GLIDE_SETTER_ELIDE=0`
-// still wins: it disables the cache entirely, and this switch only widens
-// what the cache covers.
+// Task 439 promoted it after the paired A/B measured the three gates as 99.76%
+// redundant with no visual difference.
 //
 // `grTexSource` is not in *this* list -- it moved to batch three below, once
 // Task 442 established that the argument this backend actually reads is only
 // `startAddress`.
-bool GlideSetterTextureStateElisionEnabled();
 bool IsGlideSetterTextureStateElisionGate(repiu::hle::GlideGateId gate_id);
 
 // Task 442, batch three. `grTexSource` is here despite Task 437 excluding it,
@@ -95,8 +84,7 @@ bool IsGlideSetterTextureStateElisionGate(repiu::hle::GlideGateId gate_id);
 // Task 443 promoted this: six gameplay runs showed the census `same` total
 // equal to the cache's `elided` count exactly, zero voided entries, zero
 // implementation gaps and no visual difference, with `grTexSource` costing 20.9%
-// less per call. An explicit `0|off|false` opts out.
-bool GlideSetterBatchThreeElisionEnabled();
+// less per call.
 bool IsGlideSetterBatchThreeElisionGate(repiu::hle::GlideGateId gate_id);
 
 // Task 443, batch four: two setters the game re-issues with a value it never
@@ -110,11 +98,10 @@ bool IsGlideSetterBatchThreeElisionGate(repiu::hle::GlideGateId gate_id);
 // identical pointer does not prove identical contents. That one needs the
 // contents in the key, which is a separate piece of work.
 //
-// Task 444: on by default. The A/B exercised `grDitherMode` only -- the sections
+// Task 444 promoted it. The A/B exercised `grDitherMode` only -- the sections
 // played never called fog -- but a setter with **one** distinct value across
 // 179,717 calls cannot render differently when a repeat is skipped, which is the
 // strongest ceiling of any batch so far.
-bool GlideSetterBatchFourElisionEnabled();
 bool IsGlideSetterBatchFourElisionGate(repiu::hle::GlideGateId gate_id);
 
 // Batch one: the setters Task 364 measured at 99.9% or better repetition with one

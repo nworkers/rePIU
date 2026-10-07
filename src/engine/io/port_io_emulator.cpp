@@ -747,7 +747,7 @@ bool HandlePortIoInstruction(repiu::platform::GuestCpuContext *win32_context, Th
       // advance its counter so the guest runs only its final iteration.
       // Attempted only here, on the side-effect-free input path, and only
       // when the whole window the matcher decodes is readable.
-      if (PortIoDelayLoopEnabled()) {
+      {
         const std::uint32_t window_start = decode_eip > kMaxLoopBodyBytes
                                                ? decode_eip - kMaxLoopBodyBytes
                                                : decode_eip;

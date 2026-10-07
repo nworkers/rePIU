@@ -55,8 +55,8 @@ struct AotWorkerTimingProfile
     // zero and are counted rather than silently distorting the totals.
     std::uint32_t clamped_sample_count = 0;
 
-    // kPatchInlineCache and kRetireGuestPage share the same event pair. A large
-    // value means rendezvous cost exists outside translation too.
+    // kRetireGuestPage shares the translation event pair. A large value means
+    // rendezvous cost exists outside translation too.
     std::uint32_t other_operation_count = 0;
 
     // Task 328: phases inside AppendDynamicAotTranslation, which Task 327

@@ -1398,8 +1398,8 @@ optimization rather than a subject of A/B measurement. The procedure is in the
 ## Megamorphic direct-return table / Megamorphic direct-return table
 
 Task 499부터 return inline cache의 miss 경로 **앞**에 probe를 emit합니다
-(`REPIU_AOT_DIRECT_RETURN_TABLE`, A/B 통과 후 **기본 ON**, `0`으로 끄면 도입 전과 같은
-바이트를 냅니다). probe는 게스트 return target을 공용
+(A/B 통과 후 승격되어 `dynamic` backend에서 **항상 켜짐** — 끄기 스위치
+`REPIU_AOT_DIRECT_RETURN_TABLE`은 #20에서 제거). probe는 게스트 return target을 공용
 direct-mapped memo table에서 찾아, 적중하면 게스트 return 슬롯을 cache target으로 덮어쓰고
 **원본 RET과 같은 스택 효과로** 돌아갑니다. host 전환도, PIC 재패치도 없습니다. 실패하면
 기존 miss 시퀀스로 그대로 떨어집니다.
@@ -1419,8 +1419,8 @@ guard를 되돌리는 자리에서 table 전체를 지웁니다. 그 지점은 w
 store와 jump 사이에 끼어들 창을 없애기 위해서입니다.
 
 Since Task 499 a probe is emitted **ahead of** the return inline cache's miss path
-(`REPIU_AOT_DIRECT_RETURN_TABLE`, **on by default** after its A/B; `0` restores the pre-feature
-bytes exactly). It looks the guest return target up in a shared
+(promoted after its A/B and **always on** for the `dynamic` backend — the
+`REPIU_AOT_DIRECT_RETURN_TABLE` kill switch was removed in #20). It looks the guest return target up in a shared
 direct-mapped memo table and, on a hit, overwrites the guest return slot with the cache target and
 returns with **the original RET's own stack effect** — no host transition and no PIC repatch. A
 miss falls straight through into the existing sequence.
@@ -1822,6 +1822,11 @@ Task 424는 backend 값만으로 결정되던 세 build option에 각각 toggle�
 | `REPIU_AOT_DBT_DIRECT_EDGE_DISPATCH` | `enable_dbt_direct_edge_dispatch` |
 | `REPIU_AOT_DBT_TIMER_SAFE_POINTS` | `enable_timer_safe_points` |
 
+**#20 이후:** 이 세 toggle과 `REPIU_AOT_DIRECT_RETURN_TABLE`,
+`REPIU_AOT_DBT_PORT_IO_DISPATCH`는 제거되어, 해당 build option은 `dynamic` backend
+여부만으로 정해집니다. build option 자체는 legacy backend와 probe 대조군이 꺼진 값으로
+쓰므로 남아 있습니다.
+
 **확인됨 (Task 424):** direct-edge dispatch는 이미지에 따라 필수입니다. pumpit3의
 `PIU.EXE`에는 cache 밖을 가리키는 direct edge가 10개 있어, 이 기능을 끄면 emitter가
 그 edge를 표현하지 못해 `direct control-flow target is outside the cache`로 이미지
@@ -1837,7 +1842,10 @@ opt-out; `ResolveOptInToggle` reads them as OFF for features that are not yet de
 
 The three options that were previously decided by the backend value alone now each carry a
 promoted-style toggle: `REPIU_AOT_DBT_RETURN_MISS_DISPATCH`,
-`REPIU_AOT_DBT_DIRECT_EDGE_DISPATCH`, and `REPIU_AOT_DBT_TIMER_SAFE_POINTS`.
+`REPIU_AOT_DBT_DIRECT_EDGE_DISPATCH`, and `REPIU_AOT_DBT_TIMER_SAFE_POINTS`. **Since #20**
+these three, `REPIU_AOT_DIRECT_RETURN_TABLE` and `REPIU_AOT_DBT_PORT_IO_DISPATCH` are gone and
+the options follow the `dynamic` backend alone; the options themselves remain because the
+legacy backend and the probes' control images build with them off.
 
 **Confirmed (Task 424):** direct-edge dispatch is mandatory for some images. pumpit3's
 `PIU.EXE` contains ten direct edges whose targets fall outside the cache, so disabling the
@@ -2624,8 +2632,8 @@ Task 304는 기본 native linear-span scan이 0~1개 일반 명령 뒤 정적 �
 write/jump 실험 mode는 register·page·target 상태에 의존하므로 캐시를 우회하고, 항목
 수는 65,536개로 제한합니다. 세 번의 60초 A/B에서 거절 hit율은 99.68~99.69%였고
 texture milestone 중앙값은 1,031ms(약 4.9%) 빨라졌습니다. fatal/legacy fallback은 0,
-EEPROM hash는 일치했습니다. 따라서 `dynamic` 기본 ON이며 다른 backend는 기본 OFF입니다.
-`REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE=0|off|false` 또는 알 수 없는 값은 비활성화합니다.
+EEPROM hash는 일치했습니다. 따라서 `dynamic`에서 켜지고 다른 backend에서는 꺼집니다.
+설정 변수 `REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE`는 #20에서 제거되었습니다.
 
 Task 304 caches default native linear-span scans that reject at a static boundary after zero
 or one ordinary instruction. Each entry holds up to 30 guest bytes. Only an exact byte match
@@ -2831,8 +2839,8 @@ flowchart LR
   이상, 디코드 범위가 읽기 가능할 것. 하나라도 어긋나면 **아무 상태도 바꾸지 않습니다.**
 * **부수 효과 없는 입력 경로에서만** 시도합니다(JAMMA 입력). EEPROM·YMZ280B 창은 앞선
   분기에서 처리되므로 대상이 아닙니다.
-* `REPIU_PORT_IO_DELAY_LOOP=0`이면 예전 동작이며, 통계(시도·batch·건너뛴 반복·불일치
-  사유)를 로그로 냅니다.
+* 항상 켜져 있으며(끄기 스위치 `REPIU_PORT_IO_DELAY_LOOP`는 #20에서 제거), 통계(시도·
+  batch·건너뛴 반복·불일치 사유)를 로그로 냅니다.
 
 Task 414 recognises a **port polling loop whose result is never used** and skips its
 iterations. pumpit3's timer ISR runs `inc r; sub eax,eax; in ax,dx; cmp r,imm; jl` 200 times
@@ -2844,9 +2852,9 @@ after the `IN`, a body of only `inc`, `dec`, or self-zeroing `sub`/`xor`, that b
 EAX before the `IN` (**the proof that skipped reads are dead**), a counter that is neither
 EAX nor EDX, at least two iterations remaining, and readable bytes; any mismatch changes
 nothing. It is attempted **only on the side-effect-free JAMMA input path**, since the EEPROM
-and YMZ280B windows are handled by earlier branches. `REPIU_PORT_IO_DELAY_LOOP=0` restores
-the old behaviour, and the attempt, batch, skipped-iteration, and refusal-reason counts are
-logged.
+and YMZ280B windows are handled by earlier branches. It is always on (the
+`REPIU_PORT_IO_DELAY_LOOP` kill switch was removed in #20), and the attempt, batch,
+skipped-iteration, and refusal-reason counts are logged.
 
 Task 737은 같은 루프의 **조건을 뒤집은 형식**을 받아들입니다. pumpitea의 입력 스캔은
 `cmp ebx,200; jge exit; jmp back`이라 Task 414의 `jl back` 모양과 어긋났고, Win32에서는 IN 한 번의
@@ -3386,7 +3394,9 @@ point armed.
 Task 365는 반복률 99.9% 이상인 7종 setter(`grColorMask`, `grAlphaBlendFunction`,
 `grClipWindow`, `grAlphaTestFunction`, `grFogMode`, `grCullMode`,
 `grDepthBufferFunction`)에서 **정확한 동일 상태의 host rendezvous만** 생략합니다.
-기본 ON이며 `REPIU_GLIDE_SETTER_ELIDE=0`으로 기존 경로를 복원합니다.
+이후 Task 439·443·444가 대상을 텍스처 상태와 batch 3·4로 넓혔고, 모두 항상 켜져
+있습니다(끄기 스위치 `REPIU_GLIDE_SETTER_ELIDE`와 `_TEXTURE`·`_BATCH3`·`_BATCH4`는 #20에서
+제거).
 
 `glide_setter_state_cache`는 "요청됨"이 아니라 **host에서 성공적으로 적용됨**을
 기록합니다. 규칙은 `glide_setter_state_model`에만 있고 census(관측자)와
@@ -3423,8 +3433,9 @@ cache `elided`** 로, 동작을 바꾸지 않는 관측자가 센 중복과 실�
 
 Task 365 elides only the host rendezvous, and only for an exact repeat of state
 already applied successfully, across the seven setters Task 364 measured at 99.9%
-or better repetition. It is on by default with `REPIU_GLIDE_SETTER_ELIDE=0`
-restoring the original path. The cache records successful host application rather
+or better repetition. Tasks 439, 443 and 444 later widened it to the texture state and
+batches three and four, and all of it is always on (the `REPIU_GLIDE_SETTER_ELIDE` kill switch
+and its `_TEXTURE`, `_BATCH3` and `_BATCH4` companions were removed in #20). The cache records successful host application rather
 than a request, and its rules live solely in `glide_setter_state_model` so the
 observing census and the acting cache cannot diverge.
 

@@ -23,18 +23,6 @@ namespace repiu::engine
 namespace
 {
 
-// Task 333. The command-aware wait replaces an unconditional Sleep(1) on the
-// host poll loop, and this switch exists so the two can be compared in one
-// binary: `REPIU_GLIDE_HOST_WAIT=0` restores the sleep. Default on.
-bool GlideHostCommandWaitEnabled()
-{
-    static const bool enabled = []() {
-        const char* value = std::getenv("REPIU_GLIDE_HOST_WAIT");
-        return value == nullptr || std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
-
 void SaturatingAtomicAdd(std::atomic<std::uint32_t>* value,
                          std::uint64_t increment)
 {
@@ -971,7 +959,7 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                  std::memory_order_acquire) ||
              next_timer_wait_nanoseconds <=
                  kTimerDeadlineSpinWindowNanoseconds);
-        if (host_context != nullptr && GlideHostCommandWaitEnabled())
+        if (host_context != nullptr)
         {
             host_context->glide_backend.WaitAndPumpHostCommands(
                 timer_deadline_near ? 0U : 1U);
@@ -1533,8 +1521,6 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         std::memory_order_relaxed);
     attempt->aot_inline_cache_direct_patch_count =
         context.aot_inline_cache_direct_patch_count;
-    attempt->aot_inline_cache_worker_patch_count =
-        context.aot_inline_cache_worker_patch_count;
     attempt->aot_boundary_count = context.aot_boundary_count.load(
         std::memory_order_relaxed);
     attempt->aot_boundary_return_count =

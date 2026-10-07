@@ -321,21 +321,6 @@ WrappedLoopResult TryBatchWrappedCallLoop(ThreadContext* context,
 
 }  // namespace
 
-bool ResolvePortIoDelayLoopEnabled(std::string_view setting)
-{
-    return !(setting == "0" || setting == "off" || setting == "false");
-}
-
-bool PortIoDelayLoopEnabled()
-{
-    static const bool enabled = [] {
-        const char* value = std::getenv("REPIU_PORT_IO_DELAY_LOOP");
-        return value == nullptr ||
-            ResolvePortIoDelayLoopEnabled(std::string_view(value));
-    }();
-    return enabled;
-}
-
 const PortIoDelayLoopStats& GetPortIoDelayLoopStats()
 {
     return MutableStats();
@@ -348,7 +333,7 @@ bool TryBatchPortIoDelayLoop(ThreadContext* context,
                              std::uint32_t* registers,
                              bool guest_bytes_readable)
 {
-    if (!PortIoDelayLoopEnabled() || registers == nullptr)
+    if (registers == nullptr)
     {
         return false;
     }

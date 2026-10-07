@@ -65,10 +65,6 @@ constexpr std::uint32_t kMaxLoopBodyBytes = 64U;
 // Bytes after the IN the matcher reads: `cmp r32, imm32` plus a short branch.
 constexpr std::uint32_t kMaxLoopTailBytes = 16U;
 
-// `REPIU_PORT_IO_DELAY_LOOP`: "0"/"off"/"false" disables batching. Default on.
-bool ResolvePortIoDelayLoopEnabled(std::string_view setting);
-bool PortIoDelayLoopEnabled();
-
 // Guest-thread-only statistics. Kept here rather than in ThreadContext because
 // that header is included nearly everywhere and adding a field to it forces a
 // full rebuild.

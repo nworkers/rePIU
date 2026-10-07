@@ -168,17 +168,6 @@ bool EqualsIgnoringCase(const char* left, const char* right)
     return *left == *right;
 }
 
-// Task 335. Off by default: the host poll loop is the only pump caller now.
-// Resolved once because the gate is a hot path.
-bool GlideGatePumpEventsEnabled()
-{
-    static const bool enabled = []() {
-        const char* value = std::getenv("REPIU_GLIDE_GATE_PUMP");
-        return value != nullptr && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
-
 class GlideOrdinalTimingScope
 {
   public:
@@ -336,12 +325,9 @@ class GlideSetterStateScope
         elision_candidate_ =
             cache_ != nullptr &&
             (IsGlideSetterElisionGate(gate_id) ||
-             (GlideSetterTextureStateElisionEnabled() &&
-              IsGlideSetterTextureStateElisionGate(gate_id)) ||
-             (GlideSetterBatchThreeElisionEnabled() &&
-              IsGlideSetterBatchThreeElisionGate(gate_id)) ||
-             (GlideSetterBatchFourElisionEnabled() &&
-              IsGlideSetterBatchFourElisionGate(gate_id)));
+             IsGlideSetterTextureStateElisionGate(gate_id) ||
+             IsGlideSetterBatchThreeElisionGate(gate_id) ||
+             IsGlideSetterBatchFourElisionGate(gate_id));
         handled_before_ = context_->glide_gate_handled_count;
         issues_before_ = TotalIssues();
         backend_failures_before_ = context_->glide_implementation_issues.total(
@@ -1591,16 +1577,14 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             : nullptr,
         &context->glide_backend,
         &ordinal_gate_cycles);
-    // Task 438: null when batching is off, which keeps the draw cases on exactly
-    // the path they took before -- one rendezvous per primitive.
-    GlideDrawBatch* const draw_batch =
-        GlideDrawBatchEnabled() ? &context->glide_draw_batch : nullptr;
+    // Task 438: draw primitives are queued and handed over once per ordering
+    // boundary rather than one rendezvous each.
+    GlideDrawBatch* const draw_batch = &context->glide_draw_batch;
     // Tasks 364/365: declared here so its destructor observes the dispatch outcome
     // on every return path, and begun below once the argument mirror is filled.
     GlideSetterStateScope setter_state_scope(
         GlideSetterCensusEnabled() ? &context->glide_setter_census : nullptr,
-        GlideSetterElisionEnabled() ? &context->glide_setter_state_cache
-                                    : nullptr,
+        &context->glide_setter_state_cache,
         context);
     const ExecutionTimeScope gate_time_scope(
         context->execution_time_profile.get(),
@@ -1621,16 +1605,10 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
     ordinal_timing_scope.Begin(glide_export->ordinal);
 
     ++context->glide_gate_entry_count;
-    // Task 335: pumping here costs a full host-thread rendezvous — measured at
-    // 1.92 rendezvous per gate entry, the second one being this call — while
-    // the host poll loop already pumps every iteration, roughly every 0.68ms
-    // since Task 333 and immediately whenever a command is posted. Events are
-    // still processed only on the host thread; only the redundant caller goes.
-    // `REPIU_GLIDE_GATE_PUMP=1` restores it for A/B.
-    if (GlideGatePumpEventsEnabled())
-    {
-        context->glide_backend.PumpEvents();
-    }
+    // Task 335: no event pump here. Pumping at gate entry cost a full host-thread
+    // rendezvous -- 1.92 rendezvous per gate entry, the second one being the
+    // pump -- while the host poll loop already pumps every iteration, roughly
+    // every 0.68ms since Task 333 and immediately whenever a command is posted.
     context->glide_gate_ordinal = glide_export->ordinal;
     context->glide_gate_argument_bytes = glide_export->argument_byte_count;
     std::memset(context->glide_gate_name,
@@ -2002,7 +1980,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
         NoteGlideLfbLockIntervalGate(&context->glide_lfb_lock_interval_census,
                                      glide_export->gate_id);
     }
-    if (draw_batch != nullptr && !IsGlideDrawBatchGate(glide_export->gate_id))
+    if (!IsGlideDrawBatchGate(glide_export->gate_id))
     {
         FlushGlideDrawBatchToBackend(
             context, GlideDrawBatchFlushReason::kNonDrawGate);

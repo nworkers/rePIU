@@ -825,9 +825,8 @@ struct MinimalExecutionAttempt
     bool aot_backend_active = false;
     std::uint32_t aot_cache_entry_count = 0;
     std::uint32_t aot_boundary_count = 0;
-    // Task 445: which path serviced each inline-cache patch.
+    // Task 445: inline-cache patches, all serviced on the guest thread.
     std::uint64_t aot_inline_cache_direct_patch_count = 0;
-    std::uint64_t aot_inline_cache_worker_patch_count = 0;
     // Per-reason breakdown of aot_boundary_count (Task 262); the five sum to it.
     std::uint32_t aot_boundary_return_count = 0;
     std::uint32_t aot_boundary_indirect_count = 0;

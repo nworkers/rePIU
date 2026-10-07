@@ -79,8 +79,9 @@ Select-String -Path gameplay-capture.log -Pattern "Glide ordinal timing: ordinal
    자동 장면에서는 gate 본체가 호출당 약 235,000 cycle로 최대 덩어리였고 `grLfbLock`이
    유력했습니다. LFB가 없는 장면에서는 다른 답이 나올 것입니다.
 2. **Task 365 setter 생략이 여기서는 프레임을 늘리는가?**
-   기본 ON이므로 이미 켜져 있습니다. `REPIU_GLIDE_SETTER_ELIDE=0`과 비교하면
-   판정됩니다. 절차는 [생략 검증 가이드](glide-setter-elision-testing.md)에 있습니다.
+   항상 켜져 있어 이제 같은 빌드 안에서 끈 대조군을 만들 수 없습니다(#20에서 스위치
+   제거). 판정이 필요하면 생략 도입 전 빌드와 비교합니다. 과거 절차는
+   [생략 검증 가이드](glide-setter-elision-testing.md)에 기록으로 남아 있습니다.
 3. **프레임당 예외와 그 구성이 자동 장면과 같은가?**
    자동 장면은 프레임당 325개, 그중 Glide gate trap이 55.21%였습니다.
 4. **timer tick 전달률이 여기서도 88% 수준인가?**
@@ -127,7 +128,8 @@ the per-ordinal Glide timing lines, which are what identify the dominant cost.
 
 The capture answers four questions: what share the Glide gate holds and which
 ordinal dominates it here; whether Task 365's setter elision moves frames in this
-scene (compare against `REPIU_GLIDE_SETTER_ELIDE=0`, procedure in the
+scene (it is always on since #20 removed its switch, so the comparison is now against a
+build from before the elision; the old procedure remains in the
 [elision testing guide](glide-setter-elision-testing.md)); whether exceptions per
 frame and their composition match the automated scene's 325 per frame with the Glide
 gate trap at 55.21%; and whether tick delivery is also near 88% here.

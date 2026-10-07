@@ -111,11 +111,10 @@ bool HandleAotGuestCodeWriteCompletion(
 bool HandleAotGuestCodeWriteFault(const repiu::platform::FaultEvent& fault,
                                   ThreadContext* context);
 
-// Task 445: opt-in. When on, the inline-cache patch runs on the guest thread
-// instead of costing a worker event round trip -- measured at 34.1% of the
-// guest thread's position samples on pumpit2, 385 patches per frame.
-bool AotInlineCachePatchOnGuestThreadEnabled();
-
+// Task 445: the inline-cache patch runs on the guest thread rather than costing
+// a worker event round trip -- measured at 34.1% of the guest thread's position
+// samples on pumpit2, 385 patches per frame. Still requires a live translation
+// worker, as the caller's translation path does.
 bool RequestAotInlineCachePatch(ThreadContext* context,
                                 std::uint32_t cache_miss_address,
                                 std::uint32_t guest_target,

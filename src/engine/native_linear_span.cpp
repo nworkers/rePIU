@@ -78,21 +78,6 @@ bool ReadNativeLinearSpanCacheSetting()
         setting.value == "true";
 }
 
-NativeLinearSpanSetting ReadNativeLinearSpanRejectCacheSetting()
-{
-    const auto setting = repiu::platform::ReadEnvironmentSetting(
-        "REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE", kSettingCapacity);
-    if (!setting.present)
-    {
-        return NativeLinearSpanSetting::kBackendDefault;
-    }
-    if (setting.too_long)
-    {
-        return NativeLinearSpanSetting::kDisabled;
-    }
-    return ParseNativeLinearSpanSetting(setting.value);
-}
-
 NativeLinearSpanSetting ReadRetiredTrapNativeSpanSetting()
 {
     const auto setting = repiu::platform::ReadEnvironmentSetting(
@@ -165,9 +150,7 @@ bool NativeLinearSpanCacheEnabled()
 bool NativeLinearSpanRejectCacheEnabled(
     runtime::ExecutionBackend execution_backend)
 {
-    static const NativeLinearSpanSetting setting =
-        ReadNativeLinearSpanRejectCacheSetting();
-    return ResolveNativeLinearSpanSetting(execution_backend, setting);
+    return ResolveNativeLinearSpanRejectCacheEnabled(execution_backend);
 }
 
 bool RetiredTrapNativeSpanPolicyEnabled(
@@ -346,12 +329,13 @@ bool ResolveNativeLinearSpanCacheEnabled(std::string_view setting)
     return setting == "1" || setting == "on" || setting == "true";
 }
 
+// The negative cache (Task 304) is on wherever spans are on by default: the
+// dynamic backend on a host with hardware debug registers. It has no setting.
 bool ResolveNativeLinearSpanRejectCacheEnabled(
-    runtime::ExecutionBackend execution_backend,
-    std::string_view setting)
+    runtime::ExecutionBackend execution_backend)
 {
     return ResolveNativeLinearSpanSetting(
-        execution_backend, ParseNativeLinearSpanSetting(setting));
+        execution_backend, NativeLinearSpanSetting::kBackendDefault);
 }
 
 bool ResolveRetiredTrapNativeSpanEnabled(

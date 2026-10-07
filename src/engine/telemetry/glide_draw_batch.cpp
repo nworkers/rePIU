@@ -13,23 +13,6 @@ using go = repiu::hle::GlideGateId;
 
 }  // namespace
 
-bool ResolveGlideDrawBatchEnabled(const char* setting)
-{
-    // Task 439 promoted this on a paired gameplay A/B: batches averaged 16.02
-    // primitives (peak 332), the Glide gate fell from 10.35% to 8.40% of
-    // guest-run, per-crossing cost fell 23.7%, and failures, voided setters and
-    // implementation gaps were all zero with no visual difference. An explicit
-    // `0|off|false` keeps the per-primitive path as the regression control.
-    return repiu::runtime::ResolvePromotedToggle(setting);
-}
-
-bool GlideDrawBatchEnabled()
-{
-    static const bool enabled =
-        ResolveGlideDrawBatchEnabled(std::getenv("REPIU_GLIDE_DRAW_BATCH"));
-    return enabled;
-}
-
 bool IsGlideDrawBatchGate(repiu::hle::GlideGateId gate_id)
 {
     switch (gate_id)

@@ -764,6 +764,22 @@ int main(int argc, char** argv)
     {
         return repiu::tools::RunSegmentRestoreProbe() ? 0 : 1;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--inline-cache") == 0)
+    {
+        return repiu::tools::RunAotIndirectInlineCacheProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--native-linear-span") == 0)
+    {
+        return repiu::tools::RunNativeLinearSpanProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--glide-draw-batch") == 0)
+    {
+        return repiu::tools::RunGlideDrawBatchProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--glide-setter-state-cache") == 0)
+    {
+        return repiu::tools::RunGlideSetterStateCacheProbe() ? 0 : 1;
+    }
 #endif
     const bool xref_mode = argc == 4 &&
         std::strcmp(argv[2], "--xref") == 0;

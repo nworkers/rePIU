@@ -11,14 +11,6 @@ namespace
 
 using go = repiu::hle::GlideGateId;
 
-bool ReadGlideSetterElisionSetting()
-{
-    const char* value = std::getenv("REPIU_GLIDE_SETTER_ELIDE");
-    // Absent means on: this is a default-enabled optimization with a kill switch,
-    // not an opt-in experiment.
-    return value == nullptr || ResolveGlideSetterElisionEnabled(value);
-}
-
 GlideSetterStateCacheEntry* FindEntry(
     GlideSetterStateCache* cache,
     std::uint16_t ordinal)
@@ -37,51 +29,6 @@ GlideSetterStateCacheEntry* FindEntry(
 }
 
 }  // namespace
-
-bool ResolveGlideSetterElisionEnabled(std::string_view setting)
-{
-    return setting != "0" && setting != "off" && setting != "false";
-}
-
-bool GlideSetterElisionEnabled()
-{
-    static const bool enabled = ReadGlideSetterElisionSetting();
-    return enabled;
-}
-
-bool GlideSetterTextureStateElisionEnabled()
-{
-    // Task 439 promoted this. A four-run A/B showed the three texture setters
-    // are 99.76% redundant -- 385,197 newly covered calls produced 933
-    // applications -- with zero voided entries and no visual difference. It also
-    // enables Task 438's batching: an elided setter never reaches the gate
-    // handler and so never forces a flush, which is what let batches reach 16
-    // primitives. An explicit `0|off|false` opts out; the
-    // `REPIU_GLIDE_SETTER_ELIDE=0` kill switch still wins over both, because the
-    // boundary only consults this list when the cache exists.
-    static const bool enabled = repiu::runtime::ResolvePromotedToggle(
-        std::getenv("REPIU_GLIDE_SETTER_ELIDE_TEXTURE"));
-    return enabled;
-}
-
-bool GlideSetterBatchThreeElisionEnabled()
-{
-    static const bool enabled = repiu::runtime::ResolvePromotedToggle(
-        std::getenv("REPIU_GLIDE_SETTER_ELIDE_BATCH3"));
-    return enabled;
-}
-
-bool GlideSetterBatchFourElisionEnabled()
-{
-    // Task 444 promoted this. Six gameplay runs kept the census `same` total
-    // equal to the cache's `elided` count exactly, with zero voided entries,
-    // zero implementation gaps and no visual difference, and `grDitherMode`
-    // costing 95% less per call on non-overlapping distributions. `grFogTable`
-    // is still excluded, for the pointer reason in the header.
-    static const bool enabled = repiu::runtime::ResolvePromotedToggle(
-        std::getenv("REPIU_GLIDE_SETTER_ELIDE_BATCH4"));
-    return enabled;
-}
 
 bool IsGlideSetterBatchFourElisionGate(repiu::hle::GlideGateId gate_id)
 {
@@ -240,12 +187,6 @@ GlideSetterStateCacheSnapshot SnapshotGlideSetterStateCache(
 {
     GlideSetterStateCacheSnapshot snapshot;
     snapshot.enabled = cache.enabled;
-    // Read from the policy rather than the cache: the counters below were
-    // produced under whichever batch this process is running, and a log that
-    // does not say which one cannot be compared against its A/B partner.
-    snapshot.texture_state = GlideSetterTextureStateElisionEnabled();
-    snapshot.batch_three = GlideSetterBatchThreeElisionEnabled();
-    snapshot.batch_four = GlideSetterBatchFourElisionEnabled();
     snapshot.texture_generation = cache.texture_generation;
     snapshot.elided_count = cache.elided_count;
     snapshot.applied_count = cache.applied_count;

@@ -1,3 +1,7 @@
+# Historical (issue #20): REPIU_GLIDE_SETTER_ELIDE and its _TEXTURE/_BATCH3/_BATCH4
+# companions were removed, so the elision is always on and both arms of this A/B run
+# the same configuration. The summary line it parses also lost its batch flags.
+
 param(
     [ValidateRange(1, 20)]
     [int]$Runs = 3,

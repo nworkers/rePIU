@@ -12,10 +12,11 @@
 
 | 되살릴 원인 | 스위치 | 되돌아오는 증상 |
 |---|---|---|
-| 포화 (Task 414) | `REPIU_PORT_IO_DELAY_LOOP=0` | 14회 중 0회 정상, 프레임 0~1 |
+| 포화 (Task 414) | ~~`REPIU_PORT_IO_DELAY_LOOP=0`~~ — #20에서 제거, 되살릴 수 없음 | 14회 중 0회 정상, 프레임 0~1 |
 | arena 낙하 (Task 417) | `REPIU_AOT_STRICT_SPANNING_ENTRY=1` | 5회 중 2회 멈춤, single-step 1.6~1.7M |
 
-두 스위치를 끄고(기본값) 돌린 실행이 멈추면 **새 원인**이므로 §2·§3 절차로 좁힙니다.
+포화 원인의 delay loop 일괄 처리는 #20 이후 항상 켜져 있어, 그 원인은 Task 414 이전
+빌드로만 재현됩니다. 기본값으로 돌린 실행이 멈추면 **새 원인**이므로 §2·§3 절차로 좁힙니다.
 
 ## 1. 재현
 
@@ -114,10 +115,12 @@ what is specific to the pumpit3 stall.
 
 The default build **no longer reproduces it** (eight healthy runs of eight at 60 seconds),
 so this page is now a regression check and an A/B reproduction procedure. Each cause can be
-brought back with its switch: `REPIU_PORT_IO_DELAY_LOOP=0` restores the saturation (zero
-healthy runs in fourteen, 0-1 frames), and `REPIU_AOT_STRICT_SPANNING_ENTRY=1` restores the
-arena fall-through (two stalls in five, 1.6-1.7 M single steps). **A stall with both switches
-off is a new cause**, to be narrowed with the sections below.
+brought back with a switch, except that the saturation's switch is gone:
+`REPIU_PORT_IO_DELAY_LOOP=0` (zero healthy runs in fourteen, 0-1 frames) was removed in #20,
+so the delay-loop batching is always on and the saturation reproduces only on a build from
+before Task 414. `REPIU_AOT_STRICT_SPANNING_ENTRY=1` still restores the arena fall-through
+(two stalls in five, 1.6-1.7 M single steps). **A stall with default settings is a new
+cause**, to be narrowed with the sections below.
 
 ## 1. Reproduce
 
