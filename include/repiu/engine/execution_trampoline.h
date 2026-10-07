@@ -890,6 +890,10 @@ struct MinimalExecutionAttempt
     std::uint32_t aot_timer_safe_point_trap_count = 0;
     std::uint32_t aot_timer_safe_point_injected_count = 0;
     std::uint32_t aot_timer_safe_point_deferred_count = 0;
+    // Task i018. INT8 handler entries by kind (see ThreadContext).
+    std::uint32_t timer_handler_entry_cache_count = 0;
+    std::uint32_t timer_handler_entry_translated_count = 0;
+    std::uint32_t timer_handler_entry_native_count = 0;
     AotTimerSourceProfile aot_timer_source_profile;
     // `entry` counts C++ resolver entries; `attempt` is derived as
     // success + fallback so the accounting invariant also holds for a sample

@@ -367,6 +367,9 @@ bool HandleMscdexIoctlOutput(ThreadContext* context, std::uint8_t* request)
 
 bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
+    // Task i018. The guarded load slot updates the shadow block natively, so
+    // services below that consume guest_* must see the block's state.
+    SyncGuestSegmentsFromShadow(context);
     const std::uint16_t ax = static_cast<std::uint16_t>(
         win32_context->Eax & 0xFFFF);
     if (ax == 0x0000)
@@ -556,6 +559,21 @@ bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, Thre
                     &context->selector_table, updated))
             {
                 return false;
+            }
+            // Task i018. A selector whose base just moved may no longer be
+            // switched to natively: drop it from every accepted pair. The
+            // next HLE load re-accepts it if the base is 0 again.
+            if (context->shadow_selectors != nullptr)
+            {
+                for (std::uint8_t seg = 0; seg < 6U; ++seg)
+                {
+                    if (context->shadow_selectors
+                            ->accepted_pair[seg][1] == selector)
+                    {
+                        context->shadow_selectors
+                            ->accepted_pair[seg][1] = 0U;
+                    }
+                }
             }
             ReResolveAotSegmentOverrides(context);
             win32_context->EFlags &= ~1U;

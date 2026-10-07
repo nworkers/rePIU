@@ -350,6 +350,47 @@ void DumpZeroReturnEvidence(const repiu::platform::GuestCpuContext* win32_contex
     }
 }
 
+void SyncGuestSegmentsFromShadow(ThreadContext* context)
+{
+    if (context == nullptr || context->shadow_selectors == nullptr)
+    {
+        return;
+    }
+    // Task i018. The shadow block is the virtual segment state: the guarded
+    // load slot writes it natively for accepted selector switches, so any
+    // consumer of guest_* has to pull from it first or it reads the state as
+    // of the last HLE segment load.
+    context->guest_es = context->shadow_selectors->selectors[0];
+    context->guest_ss = context->shadow_selectors->selectors[2];
+    context->guest_ds = context->shadow_selectors->selectors[3];
+    context->guest_fs = context->shadow_selectors->selectors[4];
+    context->guest_gs = context->shadow_selectors->selectors[5];
+}
+
+void SetGuestSegmentSelector(ThreadContext* context,
+                             std::uint8_t segment_register,
+                             std::uint16_t selector)
+{
+    if (context == nullptr || segment_register >= 6U ||
+        segment_register == 1U)
+    {
+        return;
+    }
+    switch (segment_register)
+    {
+        case 0: context->guest_es = selector; break;
+        case 2: context->guest_ss = selector; break;
+        case 3: context->guest_ds = selector; break;
+        case 4: context->guest_fs = selector; break;
+        case 5: context->guest_gs = selector; break;
+        default: break;
+    }
+    if (context->shadow_selectors != nullptr)
+    {
+        context->shadow_selectors->selectors[segment_register] = selector;
+    }
+}
+
 void BuildAotSegmentTable(ThreadContext* context,
                            AotSegmentTable* table)
 {
@@ -358,19 +399,14 @@ void BuildAotSegmentTable(ThreadContext* context,
         return;
     }
     *table = AotSegmentTable{};
+    // Task i018. With a shadow block the block is authoritative -- the
+    // guarded load slot writes it natively, so guest_* is the mirror and is
+    // refreshed here rather than pushed into the block as before. Without a
+    // block, guest_* remains the only state there is.
+    SyncGuestSegmentsFromShadow(context);
     const std::uint16_t selectors[6] = {
         context->guest_es, 0U, context->guest_ss,
         context->guest_ds, context->guest_fs, context->guest_gs};
-
-    if (context->shadow_selectors != nullptr)
-    {
-        context->shadow_selectors->selectors[0] = selectors[0];
-        context->shadow_selectors->selectors[1] = 0U;
-        context->shadow_selectors->selectors[2] = selectors[2];
-        context->shadow_selectors->selectors[3] = selectors[3];
-        context->shadow_selectors->selectors[4] = selectors[4];
-        context->shadow_selectors->selectors[5] = selectors[5];
-    }
 
     std::uint32_t addresses[6] = {};
     for (std::uint8_t seg = 0; seg < 6U; ++seg)
@@ -379,6 +415,8 @@ void BuildAotSegmentTable(ThreadContext* context,
         {
             continue; // CS has no shadow
         }
+        std::uint32_t pair0_address = 0;
+        std::uint32_t pair1_address = 0;
         if (context->shadow_selectors != nullptr)
         {
             const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(
@@ -386,6 +424,14 @@ void BuildAotSegmentTable(ThreadContext* context,
             addresses[seg] = address <= UINT32_MAX
                 ? static_cast<std::uint32_t>(address)
                 : 0U;
+            const std::uintptr_t pair_base =
+                reinterpret_cast<std::uintptr_t>(
+                    &context->shadow_selectors->accepted_pair[seg][0]);
+            if (addresses[seg] != 0U && pair_base + 2U <= UINT32_MAX)
+            {
+                pair0_address = static_cast<std::uint32_t>(pair_base);
+                pair1_address = static_cast<std::uint32_t>(pair_base + 2U);
+            }
         }
         else
         {
@@ -402,6 +448,8 @@ void BuildAotSegmentTable(ThreadContext* context,
         BuildAotSegmentResolution(
             context->selector_table, addresses[seg], selectors[seg],
             &table->segments[seg]);
+        table->segments[seg].pair0_address = pair0_address;
+        table->segments[seg].pair1_address = pair1_address;
     }
     // Tasks 712 and 717. Applied here, in the one place the fold table is
     // built, so that Task 289's fingerprint comparison compares like with like
@@ -440,6 +488,8 @@ bool SameAotSegmentResolution(
     const AotSegmentResolution& right)
 {
     return left.shadow_address == right.shadow_address &&
+        left.pair0_address == right.pair0_address &&
+        left.pair1_address == right.pair1_address &&
         left.selector == right.selector && left.base == right.base &&
         left.limit == right.limit && left.flags == right.flags &&
         left.policy == right.policy;

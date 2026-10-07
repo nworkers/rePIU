@@ -370,15 +370,27 @@ struct AotSegmentOverrideSite
     std::uint8_t guard_prologue[kAotSegmentGuardPrologueBytes] = {};
     std::uint8_t guard_prologue_size = 0;
 };
-// Task 291. A guarded segment-pop slot reads the physical segment selector and
-// compares it with both the original guest stack word and this shadow word.
-// Success consumes the stack dword without changing selector state; mismatch
-// restores the exact entry state and reaches fallback_offset (INT3).
+// A guarded POP Sreg slot.
+//
+// Task i018. The i386 slot no longer reads the physical segment register (see
+// AotGuardedSegmentLoadSite for the --segment-restore grounds). It takes the
+// stack word the guest pops as the new value: equal to the shadow it passes as
+// a no-op, equal to either accepted-pair word it writes the shadow natively and
+// passes, and anything else restores entry state and reaches the INT3 at
+// fallback_offset for the HLE pop. Only the success path consumes the stack
+// dword. The long-mode slot keeps Task 291's physical-and-shadow compare; its
+// sites leave the pair offsets zero.
 struct AotGuardedSegmentPopSite
 {
     std::uint32_t guest_source = 0;
     std::uint32_t cache_offset = 0;
     std::uint32_t shadow_address_offset = 0;
+    // Task i018. abs32 operands of the two accepted-pair compares and of the
+    // native shadow store, as on the load site. Zero on slots emitted without
+    // them (long mode), which the patcher reads as "patch the old layout".
+    std::uint32_t pair0_address_offset = 0;
+    std::uint32_t pair1_address_offset = 0;
+    std::uint32_t shadow_store_offset = 0;
     std::uint32_t success_counter_address_offset = 0;
     std::uint32_t fallback_counter_address_offset = 0;
     std::uint32_t fallback_offset = 0;
@@ -391,13 +403,28 @@ struct AotGuardedSegmentPopSite
     bool has_counter_operands = false;
 };
 
-// A guarded register-source MOV Sreg,r16 slot. Success is a semantic no-op
-// when source, physical, and shadow selectors already match.
+// A guarded register-source MOV Sreg,r16 slot.
+//
+// Task i018. The i386 slot no longer reads the physical segment register --
+// the --segment-restore probe established that a VEH resume never installs a
+// guest selector there, so the physical compare could only ever pass for flat
+// reloads. The slot now treats the shadow word as the virtual state: a load
+// equal to the shadow passes as a no-op, a load equal to either word of the
+// register's accepted pair (see AotShadowSelectorBlock) writes the shadow
+// natively and passes, and anything else restores entry state and reaches the
+// INT3 at fallback_offset for the HLE load. The long-mode slot keeps its
+// shadow-equality-only form; its sites leave the pair offsets zero.
 struct AotGuardedSegmentLoadSite
 {
     std::uint32_t guest_source = 0;
     std::uint32_t cache_offset = 0;
     std::uint32_t shadow_address_offset = 0;
+    // Task i018. abs32 operands of the two accepted-pair compares and of the
+    // native shadow store. Zero on slots emitted without them (long mode),
+    // which the patcher reads as "patch the old layout".
+    std::uint32_t pair0_address_offset = 0;
+    std::uint32_t pair1_address_offset = 0;
+    std::uint32_t shadow_store_offset = 0;
     std::uint32_t success_counter_address_offset = 0;
     std::uint32_t fallback_counter_address_offset = 0;
     std::uint32_t fallback_offset = 0;
@@ -414,8 +441,14 @@ struct AotGuardedSegmentLoadSite
     bool has_counter_operands = false;
 };
 
-// A guarded MOV r16/r32,Sreg slot. It compares the physical selector with the
-// shadow before writing the destination and restores entry state at fallback.
+// A MOV r16/r32,Sreg slot.
+//
+// Task i018. The i386 slot loads the shadow selector unconditionally (16-bit,
+// so a 32-bit destination keeps its upper half as the HLE does): the HLE
+// returns the shadow too, and the physical compare the slot used to make
+// could only pass while the virtual selector was flat. Its two address fields
+// name the same operand and fallback_offset is the slot start, where an
+// unresolved site's INT3 goes. The long-mode slot keeps its own layout.
 struct AotGuardedSegmentReadSite
 {
     std::uint32_t guest_source = 0;

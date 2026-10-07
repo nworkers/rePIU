@@ -32,6 +32,13 @@ enum class AotSegmentAccessPolicy : std::uint8_t
 struct AotSegmentResolution
 {
     std::uint32_t shadow_address = 0;
+    // Task i018. Addresses of the register's accepted-pair words in the
+    // shadow selector block (see AotShadowSelectorBlock::accepted_pair).
+    // Zero when the block is absent; the guarded-load patcher then points
+    // the pair compares at the shadow word itself, which turns the slot
+    // back into a shadow-equality-only guard.
+    std::uint32_t pair0_address = 0;
+    std::uint32_t pair1_address = 0;
     std::uint16_t selector = 0;
     std::uint32_t base = 0;
     std::uint32_t limit = 0;

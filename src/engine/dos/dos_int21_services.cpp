@@ -1621,12 +1621,8 @@ void HandleDosGetInterruptVector(repiu::platform::GuestCpuContext* win32_context
         ? dpmi_entry.offset
         : (entry.valid ? entry.offset : 0U);
 
-    context->guest_es = segment;
+    SetGuestSegmentSelector(context, 0U, segment);
     win32_context->SegEs = segment;
-    if (context->shadow_selectors != nullptr)
-    {
-        context->shadow_selectors->selectors[0] = segment;
-    }
     ReResolveAotSegmentOverrides(context);
     win32_context->Ebx = offset;
     win32_context->EFlags &= ~1U;
@@ -1662,6 +1658,9 @@ void HandleDosSetInterruptVector(repiu::platform::GuestCpuContext* win32_context
 
 bool HandleDosInterrupt21(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
+    // Task i018. The guarded load slot updates the shadow block natively, so
+    // any service below that consumes guest_* must see the block's state.
+    SyncGuestSegmentsFromShadow(context);
     const std::uint16_t ax = static_cast<std::uint16_t>(
         win32_context->Eax & 0xFFFFU);
     const std::uint8_t ah = static_cast<std::uint8_t>(
@@ -1849,7 +1848,8 @@ bool HandleDosInterrupt21(repiu::platform::GuestCpuContext* win32_context, Threa
                 win32_context->Eax =
                     (win32_context->Eax & 0xFFFF0000U) |
                     kDos4gwIdentificationAxResult;
-                context->guest_gs = kDos4gwClientDataSelector;
+                SetGuestSegmentSelector(
+                    context, 5U, kDos4gwClientDataSelector);
                 ReResolveAotSegmentOverrides(context);
                 if (kDos4gwIdentificationCarry)
                 {

@@ -1050,6 +1050,7 @@ if(WIN32)
         src/tools/aot_probe/aot_boundary_opcode_census_probe.cpp
         src/tools/aot_probe/aot_worker_timing_probe.cpp
         src/tools/aot_probe/selector_guard_probe.cpp
+        src/tools/aot_probe/segment_restore_probe.cpp
         src/tools/aot_probe/main.cpp
     )
     add_executable(repiu_glide_render_probe

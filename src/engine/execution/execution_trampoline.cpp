@@ -3914,25 +3914,35 @@ std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
     }
 
     std::uint16_t shadow = 0;
-    switch (segment_register)
+    if (context.shadow_selectors != nullptr && segment_register < 6U)
     {
-        case 0:
-            shadow = context.guest_es;
-            break;
-        case 2:
-            shadow = context.guest_ss;
-            break;
-        case 3:
-            shadow = context.guest_ds;
-            break;
-        case 4:
-            shadow = context.guest_fs;
-            break;
-        case 5:
-            shadow = context.guest_gs;
-            break;
-        default:
-            return 0;
+        // Task i018. The shadow block is the virtual segment state: the
+        // guarded load slot writes it natively for accepted selector
+        // switches, so the context mirror may be one switch behind.
+        shadow = context.shadow_selectors->selectors[segment_register];
+    }
+    else
+    {
+        switch (segment_register)
+        {
+            case 0:
+                shadow = context.guest_es;
+                break;
+            case 2:
+                shadow = context.guest_ss;
+                break;
+            case 3:
+                shadow = context.guest_ds;
+                break;
+            case 4:
+                shadow = context.guest_fs;
+                break;
+            case 5:
+                shadow = context.guest_gs;
+                break;
+            default:
+                return 0;
+        }
     }
     if (win32_context == nullptr)
     {
@@ -4309,6 +4319,23 @@ bool HandleTimerReturnPad(repiu::platform::GuestCpuContext* const win32_context,
     return true;
 }
 
+// Task i018. Whether an INT8 injection on the direct model enters the
+// handler's cache block (default) or its raw guest address as before.
+// `REPIU_TIMER_HANDLER_CACHE_ENTRY=0|off|false` keeps the old entry.
+bool TimerHandlerCacheEntryEnabled()
+{
+    static const bool enabled = [] {
+        const char* const value = std::getenv("REPIU_TIMER_HANDLER_CACHE_ENTRY");
+        if (value == nullptr || *value == '\0')
+        {
+            return true;
+        }
+        return std::strcmp(value, "0") != 0 && std::strcmp(value, "off") != 0 &&
+            std::strcmp(value, "false") != 0;
+    }();
+    return enabled;
+}
+
 }  // namespace
 
 std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_context,
@@ -4525,6 +4552,44 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
     win32_context->Esp = esp;
     win32_context->SegCs = shadow.selector;
     win32_context->Eip = shadow.offset;
+    // Task i018. On the direct model the handler used to start at its guest
+    // address and run natively until its first fault -- pumpitea's INT8 entry
+    // helper `mov ds, cs:[abs]` faulted that way on every tick, outside the
+    // slot the cache holds for it. Enter the handler's cache block instead
+    // when one exists, translating it on first use; the frame above is the
+    // same either way, and the return pad takes the IRETD as before.
+    if (runtime::execution_model::RunsGuestBytesDirectly() &&
+        context->aot_placement != nullptr && TimerHandlerCacheEntryEnabled())
+    {
+        std::uint32_t handler_cache_address = 0U;
+        if (FindAotCacheAddress(*context->aot_placement, shadow.offset,
+                                &handler_cache_address) &&
+            handler_cache_address != 0U)
+        {
+            win32_context->Eip = handler_cache_address;
+            ++context->timer_handler_entry_cache_count;
+        }
+        else
+        {
+            std::uint32_t translated_entry = 0U;
+            std::uint32_t added_bytes = 0U;
+            if (RequestAotDynamicTranslation(context, shadow.offset,
+                                             &translated_entry, &added_bytes) &&
+                translated_entry != 0U)
+            {
+                win32_context->Eip = translated_entry;
+                ++context->timer_handler_entry_translated_count;
+            }
+            else
+            {
+                ++context->timer_handler_entry_native_count;
+            }
+        }
+    }
+    else
+    {
+        ++context->timer_handler_entry_native_count;
+    }
     win32_context->EFlags &= ~(kEFlagsInterruptEnable | 0x100U);
 
     // The timer tick is injected continuously while the guest runs, so this
@@ -7020,8 +7085,19 @@ bool RunExecutionThread(
     context.shadow_selectors = context.shadow_selector_reservation.block;
     if (context.shadow_selectors != nullptr)
     {
+        // Task i018. The block is authoritative from here on, so it inherits
+        // every selector the context holds, and the accepted pairs get their
+        // flat members. ES/FS/GS are usually still zero at this point, which
+        // the resolution builder reads as unresolved, exactly as before.
+        context.shadow_selectors->selectors[0] = context.guest_es;
         context.shadow_selectors->selectors[2] = context.guest_ss;
         context.shadow_selectors->selectors[3] = context.guest_ds;
+        context.shadow_selectors->selectors[4] = context.guest_fs;
+        context.shadow_selectors->selectors[5] = context.guest_gs;
+        repiu::runtime::SeedAotShadowAcceptedPairs(
+            context.shadow_selectors,
+            context.flat_data_selector,
+            context.flat_stack_selector);
     }
     if (std::getenv("REPIU_LINEXE_INIT_TRACE") != nullptr)
     {

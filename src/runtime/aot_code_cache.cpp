@@ -2554,6 +2554,141 @@ bool EmitSegmentOverrideSlot(const AotInstructionRecord& instruction,
     return true;
 }
 
+// Task i018. The `mov ax, <new value>` an i386 guarded load slot opens with,
+// after its `pushfd; push eax`. A register source reads the register (EAX from
+// the pushed copy at [esp]); a memory source re-encodes the guest's
+// ModRM/SIB/disp with AX as the destination. The slot has moved ESP down by 8
+// by then, so an ESP-based operand is rewritten with +8 in disp32 form; EAX
+// bases and indices stay as they are because push does not alter EAX. The
+// coverage validator calls this too, so the emitted and the expected bytes
+// come from one place.
+bool EncodeGuardedSegmentLoadSource(const AotInstructionRecord& instruction,
+                                    std::vector<std::uint8_t>* const out)
+{
+    if (out == nullptr)
+    {
+        return false;
+    }
+    out->clear();
+    if (instruction.gpr_register != kAotSegmentLoadMemorySource)
+    {
+        if (instruction.gpr_register > 7U || instruction.gpr_register == 4U)
+        {
+            return false;
+        }
+        out->insert(out->end(), {0x66U, 0x8BU});
+        if (instruction.gpr_register == 0U)
+        {
+            // The loaded value was in EAX, which now sits at [esp].
+            out->insert(out->end(), {0x04U, 0x24U});
+        }
+        else
+        {
+            out->push_back(static_cast<std::uint8_t>(
+                0xC0U | instruction.gpr_register));
+            out->push_back(0x90U);
+        }
+        return true;
+    }
+    const std::vector<std::uint8_t>& bytes = instruction.bytes;
+    std::size_t position = 0U;
+    while (position < bytes.size() &&
+           (bytes[position] == 0x66U || bytes[position] == 0x2EU ||
+            bytes[position] == 0x3EU))
+    {
+        ++position;
+    }
+    if (position + 2U > bytes.size() || bytes[position] != 0x8EU)
+    {
+        return false;
+    }
+    const std::uint8_t modrm = bytes[position + 1U];
+    std::uint8_t mod = static_cast<std::uint8_t>(modrm >> 6U);
+    const std::uint8_t rm = static_cast<std::uint8_t>(modrm & 0x07U);
+    if (mod == 3U)
+    {
+        return false;
+    }
+    position += 2U;
+    const bool has_sib = rm == 4U;
+    std::uint8_t sib = 0U;
+    if (has_sib)
+    {
+        if (position >= bytes.size())
+        {
+            return false;
+        }
+        sib = bytes[position++];
+    }
+    std::size_t displacement_length = 0U;
+    if (mod == 0U)
+    {
+        if (rm == 5U || (has_sib && (sib & 0x07U) == 5U))
+        {
+            displacement_length = 4U;
+        }
+    }
+    else
+    {
+        displacement_length = mod == 1U ? 1U : 4U;
+    }
+    if (position + displacement_length != bytes.size())
+    {
+        return false;
+    }
+    std::int32_t displacement = 0;
+    if (displacement_length == 1U)
+    {
+        displacement = static_cast<std::int8_t>(bytes[position]);
+    }
+    else if (displacement_length == 4U)
+    {
+        std::uint32_t raw = 0U;
+        std::memcpy(&raw, bytes.data() + position, sizeof(raw));
+        displacement = static_cast<std::int32_t>(raw);
+    }
+    const bool esp_base = has_sib && (sib & 0x07U) == 4U;
+    if (esp_base)
+    {
+        displacement += 8;
+        mod = 2U;
+        displacement_length = 4U;
+    }
+    out->insert(out->end(),
+                {0x66U, 0x8BU, static_cast<std::uint8_t>((mod << 6U) | rm)});
+    if (has_sib)
+    {
+        out->push_back(sib);
+    }
+    if (displacement_length == 1U)
+    {
+        out->push_back(static_cast<std::uint8_t>(displacement));
+    }
+    else if (displacement_length == 4U)
+    {
+        AppendImmediate32(out, static_cast<std::uint32_t>(displacement));
+    }
+    return true;
+}
+
+// Task i018. The pop slot's shape, the load slot's below with the stack word as
+// the new value and a stack advance on the success path only:
+//
+//   9C 50               pushfd; push eax
+//   66 8B 44 24 08      mov ax, [esp+8]           (the word the guest pops)
+//   66 3B 05 <shadow>   cmp ax, [shadow]
+//   74 18               je success
+//   66 3B 05 <pair0>    cmp ax, [accepted_pair0]
+//   74 09               je write
+//   66 3B 05 <pair1>    cmp ax, [accepted_pair1]
+//   75 17               jne fallback
+//   66 A3 <shadow>      write: mov [shadow], ax
+//   FF 05 <success>     success: inc dword [counter]
+//   58 9D               pop eax; popfd
+//   8D 64 24 04         lea esp, [esp+4]
+//   E9 <rel32>          jmp fallthrough
+//   FF 05 <fallback>    fallback: inc dword [counter]
+//   58 9D CC            pop eax; popfd; int3
 bool EmitGuardedSegmentPopSlot(const AotInstructionRecord& instruction,
                                AotCodeCacheImage* image)
 {
@@ -2569,19 +2704,27 @@ bool EmitGuardedSegmentPopSlot(const AotInstructionRecord& instruction,
     site.guest_source = instruction.guest_address;
     site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     site.segment_register = instruction.segment_register;
-    image->bytes.push_back(0x9CU); // pushfd
-    image->bytes.push_back(0x50U); // push eax
-    image->bytes.push_back(0x8CU); // mov ax, Sreg
-    image->bytes.push_back(static_cast<std::uint8_t>(
-        0xC0U | (instruction.segment_register << 3U)));
     image->bytes.insert(image->bytes.end(),
-                        {0x66U, 0x3BU, 0x44U, 0x24U, 0x08U});
-    image->bytes.insert(image->bytes.end(), {0x75U, 0x1AU});
+                        {0x9CU, 0x50U, 0x66U, 0x8BU, 0x44U, 0x24U, 0x08U});
     image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
     site.shadow_address_offset =
         static_cast<std::uint32_t>(image->bytes.size());
     AppendImmediate32(&image->bytes, 0U);
-    image->bytes.insert(image->bytes.end(), {0x75U, 0x11U});
+    image->bytes.insert(image->bytes.end(), {0x74U, 0x18U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
+    site.pair0_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x74U, 0x09U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
+    site.pair1_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x75U, 0x17U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0xA3U});
+    site.shadow_store_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
     image->bytes.insert(image->bytes.end(), {0xFFU, 0x05U});
     site.success_counter_address_offset =
         static_cast<std::uint32_t>(image->bytes.size());
@@ -2607,15 +2750,40 @@ bool EmitGuardedSegmentPopSlot(const AotInstructionRecord& instruction,
     return true;
 }
 
+// Task i018. The slot's shape: the physical segment register is gone from the
+// guard. The --segment-restore probe measured that a Win32 VEH resume never
+// installs a guest selector into a physical segment register, so comparing
+// against it could only ever pass for flat reloads and made pumpitea's memcpy
+// ES flip (0x0024<->0x002B, both base-0 selectors) trap twice per call. The
+// slot now asks the virtual state: a load equal to the shadow is a no-op; a
+// load equal to either accepted-pair word writes the shadow natively and
+// continues; anything else restores entry state and falls back to the HLE.
+//
+//   9C 50               pushfd; push eax
+//   66 8B ..            mov ax, <new value>       (EncodeGuardedSegmentLoadSource:
+//                                                  gpr, [esp] for eax, or the
+//                                                  re-encoded memory operand)
+//   66 3B 05 <shadow>   cmp ax, [shadow]
+//   74 18               je success
+//   66 3B 05 <pair0>    cmp ax, [accepted_pair0]
+//   74 09               je write
+//   66 3B 05 <pair1>    cmp ax, [accepted_pair1]
+//   75 13               jne fallback
+//   66 A3 <shadow>      write: mov [shadow], ax
+//   FF 05 <success>     success: inc dword [counter]
+//   58 9D E9 <rel32>    pop eax; popfd; jmp fallthrough
+//   FF 05 <fallback>    fallback: inc dword [counter]
+//   58 9D CC            pop eax; popfd; int3
 bool EmitGuardedSegmentLoadSlot(const AotInstructionRecord& instruction,
                                 AotCodeCacheImage* image)
 {
-    if (image == nullptr || instruction.gpr_register > 7U ||
-        instruction.gpr_register == 4U ||
+    std::vector<std::uint8_t> source;
+    if (image == nullptr ||
         (instruction.segment_register != 0U &&
          instruction.segment_register != 3U &&
          instruction.segment_register != 4U &&
-         instruction.segment_register != 5U))
+         instruction.segment_register != 5U) ||
+        !EncodeGuardedSegmentLoadSource(instruction, &source))
     {
         return false;
     }
@@ -2626,27 +2794,27 @@ bool EmitGuardedSegmentLoadSlot(const AotInstructionRecord& instruction,
     site.gpr_register = instruction.gpr_register;
     image->bytes.push_back(0x9CU);  // pushfd
     image->bytes.push_back(0x50U);  // push eax
-    image->bytes.push_back(0x66U);  // mov ax,Sreg
-    image->bytes.push_back(0x8CU);
-    image->bytes.push_back(static_cast<std::uint8_t>(
-        0xC0U | (instruction.segment_register << 3U)));
-    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU});
-    if (instruction.gpr_register == 0U)
-    {
-        image->bytes.insert(image->bytes.end(), {0x04U, 0x24U});
-    }
-    else
-    {
-        image->bytes.push_back(static_cast<std::uint8_t>(
-            0xC0U | instruction.gpr_register));
-        image->bytes.push_back(0x90U);
-    }
-    image->bytes.insert(image->bytes.end(), {0x75U, 0x16U});
+    image->bytes.insert(image->bytes.end(), source.begin(), source.end());
     image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
     site.shadow_address_offset =
         static_cast<std::uint32_t>(image->bytes.size());
     AppendImmediate32(&image->bytes, 0U);
-    image->bytes.insert(image->bytes.end(), {0x75U, 0x0DU, 0xFFU, 0x05U});
+    image->bytes.insert(image->bytes.end(), {0x74U, 0x18U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
+    site.pair0_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x74U, 0x09U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
+    site.pair1_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x75U, 0x13U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0xA3U});
+    site.shadow_store_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0xFFU, 0x05U});
     site.success_counter_address_offset =
         static_cast<std::uint32_t>(image->bytes.size());
     AppendImmediate32(&image->bytes, 0U);
@@ -2688,20 +2856,22 @@ bool EmitGuardedSegmentReadSlot(const AotInstructionRecord& instruction,
     site.segment_register = instruction.segment_register;
     site.gpr_register = instruction.gpr_register;
 
-    image->bytes.insert(image->bytes.end(), {0x9CU, 0x50U});
-    image->bytes.insert(image->bytes.end(), {0x66U, 0x8CU});
-    image->bytes.push_back(static_cast<std::uint8_t>(
-        0xC0U | (instruction.segment_register << 3U)));
-    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
-    site.shadow_address_offset =
-        static_cast<std::uint32_t>(image->bytes.size());
-    AppendImmediate32(&image->bytes, 0U);
-    image->bytes.insert(image->bytes.end(), {0x75U, 0x0EU, 0x58U, 0x9DU});
+    // Task i018. The shadow word is the virtual segment state and the HLE
+    // returns exactly it, so the slot loads it unconditionally. The physical
+    // compare it used to make could only pass while the virtual selector was
+    // flat (the --segment-restore probe) and trapped pumpitea's memcpy on
+    // every `mov ax, ds` under DS=0x0024. Both address fields name the one
+    // operand; fallback_offset is the slot start, where an unresolved site's
+    // INT3 goes.
+    //
+    //   66 8B 05|reg<<3 <shadow>   mov r16, [shadow]
+    //   E9 <rel32>                 jmp fallthrough
     image->bytes.insert(image->bytes.end(), {0x66U, 0x8BU});
     image->bytes.push_back(static_cast<std::uint8_t>(
         0x05U | (instruction.gpr_register << 3U)));
-    site.load_shadow_address_offset =
+    site.shadow_address_offset =
         static_cast<std::uint32_t>(image->bytes.size());
+    site.load_shadow_address_offset = site.shadow_address_offset;
     AppendImmediate32(&image->bytes, 0U);
     AppendRel32(&image->bytes, 0xE9U);
     image->fixups.push_back({AotFixupKind::kBlockFallthrough,
@@ -2709,8 +2879,7 @@ bool EmitGuardedSegmentReadSlot(const AotInstructionRecord& instruction,
                              instruction.fallthrough_target,
                              static_cast<std::uint32_t>(image->bytes.size() - 4U),
                              false});
-    site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
-    image->bytes.insert(image->bytes.end(), {0x58U, 0x9DU, 0xCCU});
+    site.fallback_offset = site.cache_offset;
     RecordGuardPrologue(*image, &site);
     image->guarded_segment_read_sites.push_back(site);
     return true;
@@ -3832,6 +4001,9 @@ bool ValidateAotCodeCacheHleCoverage(
                     }
                     continue;
                 }
+                // Task i018. The accepted-pair pop slot: the stack word
+                // against the shadow and the two pair words, a native shadow
+                // store on a pair match, and the stack advance on success only.
                 const auto fallthrough_fixup = std::find_if(
                     image.fixups.begin(), image.fixups.end(),
                     [&instruction, slot](const AotCodeCacheFixup& fixup) {
@@ -3839,49 +4011,58 @@ bool ValidateAotCodeCacheHleCoverage(
                             fixup.guest_source == instruction.guest_address &&
                             fixup.guest_target ==
                                 instruction.fallthrough_target &&
-                            fixup.cache_patch_offset == slot + 33U &&
+                            fixup.cache_patch_offset == slot + 53U &&
                             fixup.resolved;
                     });
-                const std::uint8_t expected_modrm = static_cast<std::uint8_t>(
-                    0xC0U | (instruction.segment_register << 3U));
                 if (pop_site == image.guarded_segment_pop_sites.end() ||
                     fallthrough_fixup == image.fixups.end() ||
-                    slot != map->cache_offset || map->emitted_length != 46U ||
-                    slot + 46U > image.bytes.size() ||
-                    pop_site->shadow_address_offset != slot + 14U ||
-                    pop_site->success_counter_address_offset != slot + 22U ||
-                    pop_site->fallback_counter_address_offset != slot + 39U ||
-                    pop_site->fallback_offset != slot + 45U ||
+                    slot != map->cache_offset || map->emitted_length != 66U ||
+                    slot + 66U > image.bytes.size() ||
+                    pop_site->shadow_address_offset != slot + 10U ||
+                    pop_site->pair0_address_offset != slot + 19U ||
+                    pop_site->pair1_address_offset != slot + 28U ||
+                    pop_site->shadow_store_offset != slot + 36U ||
+                    pop_site->success_counter_address_offset != slot + 42U ||
+                    pop_site->fallback_counter_address_offset != slot + 59U ||
+                    pop_site->fallback_offset != slot + 65U ||
                     image.bytes[slot] != 0x9CU ||
                     image.bytes[slot + 1U] != 0x50U ||
-                    image.bytes[slot + 2U] != 0x8CU ||
-                    image.bytes[slot + 3U] != expected_modrm ||
-                    image.bytes[slot + 4U] != 0x66U ||
-                    image.bytes[slot + 5U] != 0x3BU ||
-                    image.bytes[slot + 6U] != 0x44U ||
-                    image.bytes[slot + 7U] != 0x24U ||
-                    image.bytes[slot + 8U] != 0x08U ||
-                    image.bytes[slot + 9U] != 0x75U ||
-                    image.bytes[slot + 10U] != 0x1AU ||
-                    image.bytes[slot + 11U] != 0x66U ||
-                    image.bytes[slot + 12U] != 0x3BU ||
-                    image.bytes[slot + 13U] != 0x05U ||
-                    image.bytes[slot + 18U] != 0x75U ||
-                    image.bytes[slot + 19U] != 0x11U ||
-                    image.bytes[slot + 20U] != 0xFFU ||
-                    image.bytes[slot + 21U] != 0x05U ||
-                    image.bytes[slot + 26U] != 0x58U ||
-                    image.bytes[slot + 27U] != 0x9DU ||
-                    image.bytes[slot + 28U] != 0x8DU ||
-                    image.bytes[slot + 29U] != 0x64U ||
-                    image.bytes[slot + 30U] != 0x24U ||
-                    image.bytes[slot + 31U] != 0x04U ||
-                    image.bytes[slot + 32U] != 0xE9U ||
-                    image.bytes[slot + 37U] != 0xFFU ||
-                    image.bytes[slot + 38U] != 0x05U ||
-                    image.bytes[slot + 43U] != 0x58U ||
-                    image.bytes[slot + 44U] != 0x9DU ||
-                    image.bytes[slot + 45U] != 0xCCU)
+                    image.bytes[slot + 2U] != 0x66U ||
+                    image.bytes[slot + 3U] != 0x8BU ||
+                    image.bytes[slot + 4U] != 0x44U ||
+                    image.bytes[slot + 5U] != 0x24U ||
+                    image.bytes[slot + 6U] != 0x08U ||
+                    image.bytes[slot + 7U] != 0x66U ||
+                    image.bytes[slot + 8U] != 0x3BU ||
+                    image.bytes[slot + 9U] != 0x05U ||
+                    image.bytes[slot + 14U] != 0x74U ||
+                    image.bytes[slot + 15U] != 0x18U ||
+                    image.bytes[slot + 16U] != 0x66U ||
+                    image.bytes[slot + 17U] != 0x3BU ||
+                    image.bytes[slot + 18U] != 0x05U ||
+                    image.bytes[slot + 23U] != 0x74U ||
+                    image.bytes[slot + 24U] != 0x09U ||
+                    image.bytes[slot + 25U] != 0x66U ||
+                    image.bytes[slot + 26U] != 0x3BU ||
+                    image.bytes[slot + 27U] != 0x05U ||
+                    image.bytes[slot + 32U] != 0x75U ||
+                    image.bytes[slot + 33U] != 0x17U ||
+                    image.bytes[slot + 34U] != 0x66U ||
+                    image.bytes[slot + 35U] != 0xA3U ||
+                    image.bytes[slot + 40U] != 0xFFU ||
+                    image.bytes[slot + 41U] != 0x05U ||
+                    image.bytes[slot + 46U] != 0x58U ||
+                    image.bytes[slot + 47U] != 0x9DU ||
+                    image.bytes[slot + 48U] != 0x8DU ||
+                    image.bytes[slot + 49U] != 0x64U ||
+                    image.bytes[slot + 50U] != 0x24U ||
+                    image.bytes[slot + 51U] != 0x04U ||
+                    image.bytes[slot + 52U] != 0xE9U ||
+                    image.bytes[slot + 57U] != 0xFFU ||
+                    image.bytes[slot + 58U] != 0x05U ||
+                    image.bytes[slot + 63U] != 0x58U ||
+                    image.bytes[slot + 64U] != 0x9DU ||
+                    image.bytes[slot + 65U] != 0xCCU)
                 {
                     return fail(instruction.guest_address);
                 }
@@ -3977,60 +4158,73 @@ bool ValidateAotCodeCacheHleCoverage(
                     }
                     continue;
                 }
+                // Task i018. The accepted-pair slot: no physical segment
+                // read, the loaded value against the shadow and the two pair
+                // words, and a native shadow store on a pair match. The
+                // opening `mov ax, <source>` varies in length (register, [esp]
+                // or a re-encoded memory operand), so the tail is located
+                // from the same encoder the emitter used.
+                std::vector<std::uint8_t> source;
+                if (!EncodeGuardedSegmentLoadSource(instruction, &source))
+                {
+                    return fail(instruction.guest_address);
+                }
+                const std::uint32_t tail =
+                    slot + 2U + static_cast<std::uint32_t>(source.size());
+                const std::uint32_t slot_length = tail + 55U - slot;
                 const auto fallthrough_fixup = std::find_if(
                     image.fixups.begin(), image.fixups.end(),
-                    [&instruction, slot](const AotCodeCacheFixup& fixup) {
+                    [&instruction, tail](const AotCodeCacheFixup& fixup) {
                         return fixup.kind == AotFixupKind::kBlockFallthrough &&
                             fixup.guest_source == instruction.guest_address &&
                             fixup.guest_target ==
                                 instruction.fallthrough_target &&
-                            fixup.cache_patch_offset == slot + 29U &&
+                            fixup.cache_patch_offset == tail + 42U &&
                             fixup.resolved;
                     });
-                const std::uint8_t expected_physical_modrm =
-                    static_cast<std::uint8_t>(
-                        0xC0U | (instruction.segment_register << 3U));
-                const std::uint8_t expected_source_modrm =
-                    instruction.gpr_register == 0U
-                        ? 0x04U
-                        : static_cast<std::uint8_t>(
-                            0xC0U | instruction.gpr_register);
-                const std::uint8_t expected_source_tail =
-                    instruction.gpr_register == 0U ? 0x24U : 0x90U;
                 if (site == image.guarded_segment_load_sites.end() ||
                     fallthrough_fixup == image.fixups.end() ||
-                    slot != map->cache_offset || map->emitted_length != 42U ||
-                    slot + 42U > image.bytes.size() ||
-                    site->shadow_address_offset != slot + 14U ||
-                    site->success_counter_address_offset != slot + 22U ||
-                    site->fallback_counter_address_offset != slot + 35U ||
-                    site->fallback_offset != slot + 41U ||
+                    slot != map->cache_offset ||
+                    map->emitted_length != slot_length ||
+                    slot + slot_length > image.bytes.size() ||
+                    site->shadow_address_offset != tail + 3U ||
+                    site->pair0_address_offset != tail + 12U ||
+                    site->pair1_address_offset != tail + 21U ||
+                    site->shadow_store_offset != tail + 29U ||
+                    site->success_counter_address_offset != tail + 35U ||
+                    site->fallback_counter_address_offset != tail + 48U ||
+                    site->fallback_offset != tail + 54U ||
                     image.bytes[slot] != 0x9CU ||
                     image.bytes[slot + 1U] != 0x50U ||
-                    image.bytes[slot + 2U] != 0x66U ||
-                    image.bytes[slot + 3U] != 0x8CU ||
-                    image.bytes[slot + 4U] != expected_physical_modrm ||
-                    image.bytes[slot + 5U] != 0x66U ||
-                    image.bytes[slot + 6U] != 0x3BU ||
-                    image.bytes[slot + 7U] != expected_source_modrm ||
-                    image.bytes[slot + 8U] != expected_source_tail ||
-                    image.bytes[slot + 9U] != 0x75U ||
-                    image.bytes[slot + 10U] != 0x16U ||
-                    image.bytes[slot + 11U] != 0x66U ||
-                    image.bytes[slot + 12U] != 0x3BU ||
-                    image.bytes[slot + 13U] != 0x05U ||
-                    image.bytes[slot + 18U] != 0x75U ||
-                    image.bytes[slot + 19U] != 0x0DU ||
-                    image.bytes[slot + 20U] != 0xFFU ||
-                    image.bytes[slot + 21U] != 0x05U ||
-                    image.bytes[slot + 26U] != 0x58U ||
-                    image.bytes[slot + 27U] != 0x9DU ||
-                    image.bytes[slot + 28U] != 0xE9U ||
-                    image.bytes[slot + 33U] != 0xFFU ||
-                    image.bytes[slot + 34U] != 0x05U ||
-                    image.bytes[slot + 39U] != 0x58U ||
-                    image.bytes[slot + 40U] != 0x9DU ||
-                    image.bytes[slot + 41U] != 0xCCU)
+                    !std::equal(source.begin(), source.end(),
+                                image.bytes.data() + slot + 2U) ||
+                    image.bytes[tail] != 0x66U ||
+                    image.bytes[tail + 1U] != 0x3BU ||
+                    image.bytes[tail + 2U] != 0x05U ||
+                    image.bytes[tail + 7U] != 0x74U ||
+                    image.bytes[tail + 8U] != 0x18U ||
+                    image.bytes[tail + 9U] != 0x66U ||
+                    image.bytes[tail + 10U] != 0x3BU ||
+                    image.bytes[tail + 11U] != 0x05U ||
+                    image.bytes[tail + 16U] != 0x74U ||
+                    image.bytes[tail + 17U] != 0x09U ||
+                    image.bytes[tail + 18U] != 0x66U ||
+                    image.bytes[tail + 19U] != 0x3BU ||
+                    image.bytes[tail + 20U] != 0x05U ||
+                    image.bytes[tail + 25U] != 0x75U ||
+                    image.bytes[tail + 26U] != 0x13U ||
+                    image.bytes[tail + 27U] != 0x66U ||
+                    image.bytes[tail + 28U] != 0xA3U ||
+                    image.bytes[tail + 33U] != 0xFFU ||
+                    image.bytes[tail + 34U] != 0x05U ||
+                    image.bytes[tail + 39U] != 0x58U ||
+                    image.bytes[tail + 40U] != 0x9DU ||
+                    image.bytes[tail + 41U] != 0xE9U ||
+                    image.bytes[tail + 46U] != 0xFFU ||
+                    image.bytes[tail + 47U] != 0x05U ||
+                    image.bytes[tail + 52U] != 0x58U ||
+                    image.bytes[tail + 53U] != 0x9DU ||
+                    image.bytes[tail + 54U] != 0xCCU)
                 {
                     return fail(instruction.guest_address);
                 }
@@ -4138,47 +4332,32 @@ bool ValidateAotCodeCacheHleCoverage(
                 const std::uint32_t slot = site !=
                     image.guarded_segment_read_sites.end()
                         ? site->cache_offset : 0U;
+                // Task i018. The i386 read slot: an unconditional 16-bit load
+                // from the shadow and the fallthrough jump; no guard, so no
+                // INT3 of its own (an unresolved site gets one at the start).
                 const auto fallthrough_fixup = std::find_if(
                     image.fixups.begin(), image.fixups.end(),
                     [&instruction, slot](const AotCodeCacheFixup& fixup) {
                         return fixup.kind == AotFixupKind::kBlockFallthrough &&
                             fixup.guest_source == instruction.guest_address &&
                             fixup.guest_target == instruction.fallthrough_target &&
-                            fixup.cache_patch_offset == slot + 24U &&
+                            fixup.cache_patch_offset == slot + 8U &&
                             fixup.resolved;
                     });
-                const std::uint8_t expected_physical_modrm =
-                    static_cast<std::uint8_t>(
-                        0xC0U | (instruction.segment_register << 3U));
                 const std::uint8_t expected_load_modrm =
                     static_cast<std::uint8_t>(
                         0x05U | (instruction.gpr_register << 3U));
                 if (site == image.guarded_segment_read_sites.end() ||
                     fallthrough_fixup == image.fixups.end() ||
-                    slot != map->cache_offset || map->emitted_length != 31U ||
-                    slot + 31U > image.bytes.size() ||
-                    site->shadow_address_offset != slot + 8U ||
-                    site->load_shadow_address_offset != slot + 19U ||
-                    site->fallback_offset != slot + 28U ||
-                    image.bytes[slot] != 0x9CU ||
-                    image.bytes[slot + 1U] != 0x50U ||
-                    image.bytes[slot + 2U] != 0x66U ||
-                    image.bytes[slot + 3U] != 0x8CU ||
-                    image.bytes[slot + 4U] != expected_physical_modrm ||
-                    image.bytes[slot + 5U] != 0x66U ||
-                    image.bytes[slot + 6U] != 0x3BU ||
-                    image.bytes[slot + 7U] != 0x05U ||
-                    image.bytes[slot + 12U] != 0x75U ||
-                    image.bytes[slot + 13U] != 0x0EU ||
-                    image.bytes[slot + 14U] != 0x58U ||
-                    image.bytes[slot + 15U] != 0x9DU ||
-                    image.bytes[slot + 16U] != 0x66U ||
-                    image.bytes[slot + 17U] != 0x8BU ||
-                    image.bytes[slot + 18U] != expected_load_modrm ||
-                    image.bytes[slot + 23U] != 0xE9U ||
-                    image.bytes[slot + 28U] != 0x58U ||
-                    image.bytes[slot + 29U] != 0x9DU ||
-                    image.bytes[slot + 30U] != 0xCCU)
+                    slot != map->cache_offset || map->emitted_length != 12U ||
+                    slot + 12U > image.bytes.size() ||
+                    site->shadow_address_offset != slot + 3U ||
+                    site->load_shadow_address_offset != slot + 3U ||
+                    site->fallback_offset != slot ||
+                    image.bytes[slot] != 0x66U ||
+                    image.bytes[slot + 1U] != 0x8BU ||
+                    image.bytes[slot + 2U] != expected_load_modrm ||
+                    image.bytes[slot + 7U] != 0xE9U)
                 {
                     return fail(instruction.guest_address);
                 }

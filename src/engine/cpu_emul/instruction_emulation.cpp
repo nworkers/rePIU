@@ -216,13 +216,21 @@ void TraceGuestSegmentEvent(const char* event,
         ? static_cast<std::uint64_t>(win32_context.Esp)
         : static_cast<std::uint64_t>(descriptor->base) +
           static_cast<std::uint32_t>(win32_context.Esp);
+    // Task i018. The load path traces before it writes any state, so the
+    // guest_*, physical Seg* and shadow values printed here are the pre-event
+    // state a guarded slot's compare just saw.
+    const std::uint16_t shadow_es = context.shadow_selectors != nullptr
+        ? context.shadow_selectors->selectors[0] : 0xFFFFU;
+    const std::uint16_t shadow_ds = context.shadow_selectors != nullptr
+        ? context.shadow_selectors->selectors[3] : 0xFFFFU;
     char line[384] = {};
     const int length = std::snprintf(
         line,
         sizeof(line),
         "[repiu-segment-%s] eip=0x%08X segment=%u selector=0x%04X "
         "value=0x%08X ds=0x%04X es=0x%04X ss=0x%04X fs=0x%04X gs=0x%04X "
-        "base=0x%08X limit=0x%08X effective=0x%08llX\n",
+        "base=0x%08X limit=0x%08X effective=0x%08llX "
+        "phys_ds=0x%04X phys_es=0x%04X shadow_ds=0x%04X shadow_es=0x%04X\n",
         event,
         static_cast<std::uint32_t>(win32_context.Eip),
         static_cast<unsigned>(segment_register),
@@ -235,7 +243,11 @@ void TraceGuestSegmentEvent(const char* event,
         static_cast<unsigned>(context.guest_gs),
         descriptor == nullptr ? 0U : descriptor->base,
         descriptor == nullptr ? 0U : descriptor->limit,
-        static_cast<unsigned long long>(effective));
+        static_cast<unsigned long long>(effective),
+        static_cast<unsigned>(win32_context.SegDs & 0xFFFFU),
+        static_cast<unsigned>(win32_context.SegEs & 0xFFFFU),
+        static_cast<unsigned>(shadow_ds),
+        static_cast<unsigned>(shadow_es));
     if (length > 0)
     {
         repiu::platform::WriteHostErrorStream(
@@ -307,6 +319,17 @@ void RecordGuestSegmentLoad(repiu::platform::GuestCpuContext* win32_context,
             });
     }
 
+    // Task i018. Traced before any state is written, so every field the line
+    // prints -- guest_*, the context's physical Seg*, and the shadow words --
+    // is the pre-load state a guarded slot's compare just saw. (The physical
+    // Seg* written below are known to be inert on resume; the
+    // --segment-restore probe measured that.)
+    TraceGuestSegmentEvent("load",
+                           *win32_context,
+                           *context,
+                           segment_register,
+                           selector,
+                           source);
     switch (segment_register)
     {
         case 0:
@@ -331,15 +354,30 @@ void RecordGuestSegmentLoad(repiu::platform::GuestCpuContext* win32_context,
         default:
             break;
     }
-    TraceGuestSegmentEvent("load",
-                           *win32_context,
-                           *context,
-                           segment_register,
-                           selector,
-                           source);
     if (context->shadow_selectors != nullptr && segment_register < 6U)
     {
         context->shadow_selectors->selectors[segment_register] = selector;
+        // Task i018. A base-0, descriptor-backed selector the HLE just
+        // accepted becomes the register's accepted alternate: the guarded
+        // load slot may thereafter switch to it natively by writing the
+        // shadow word, which is the same acceptance this path just granted.
+        // The flat member of the pair is seeded once at block creation.
+        if ((segment_register == 0U || segment_register == 3U ||
+             segment_register == 4U || segment_register == 5U) &&
+            selector != 0U &&
+            selector !=
+                context->shadow_selectors->accepted_pair[segment_register][0])
+        {
+            const repiu::runtime::GuestDescriptor* descriptor =
+                repiu::runtime::FindDescriptor(
+                    context->selector_table, selector);
+            if (descriptor != nullptr && descriptor->present &&
+                descriptor->base == 0U)
+            {
+                context->shadow_selectors
+                    ->accepted_pair[segment_register][1] = selector;
+            }
+        }
     }
     // Task 264 Phase 3a: the guest just (re)configured a segment register, so
     // re-fold selectors and bases into the natively-translated segment-override

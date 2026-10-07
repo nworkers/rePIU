@@ -2530,6 +2530,88 @@ fallback and matching EEPROM hashes. The path is default-on for `dynamic`; setti
 `REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false`, or an unknown value, disables it
 fail-closed.
 
+## i386 shadow 진실원 세그먼트 슬롯 / Shadow-authoritative i386 segment slots
+
+issue #18(2026-10-06~07)부터 i386(direct 모델)의 guarded **load**·**pop** 슬롯은
+물리 segment 레지스터를 읽지 않습니다. `repiu_aot_probe --segment-restore`가
+Win32 VEH 재개는 컨텍스트의 segment 쓰기를 무시한다는 것을 확정했으므로(물리
+레지스터는 항상 flat selector), 위의 "physical = stack = shadow" 비교는 flat
+재로드에서만 통과할 수 있었고 게스트 selector(pumpitea의 0x0024) 로드는 구조적으로
+항상 폴백했습니다. 지금은 shadow selector 블록(`AotShadowSelectorBlock`)이 가상
+세그먼트 상태의 진실원입니다.
+
+* 블록은 레지스터별 **수용 쌍** `accepted_pair[reg][0..1]`을 가집니다. `[0]`은
+  호스트 flat selector(생성 시 씨딩), `[1]`은 HLE 로드가 마지막으로 수용한 base 0
+  descriptor의 non-flat selector이며 DPMI set-base(AX=0007)가 그 selector를
+  움직이면 0으로 지웁니다. 슬롯은 즉치가 아니라 이 메모리 워드와 비교하므로 쌍이
+  바뀌어도 캐시 재패치가 없습니다.
+* 슬롯의 새 값(load: 레지스터 또는 재부호화한 메모리 소스, pop: 스택 워드)이
+  `[shadow]`와 같으면 no-op 통과, 쌍의 한쪽과 같으면 `[shadow] ← 새 값`을
+  네이티브로 쓰고 통과, 그 외에는 진입 상태를 복원해 INT3 폴백(HLE)으로 갑니다.
+  pop은 성공 경로에서만 `esp += 4`입니다.
+* 메모리-소스 로드(`mov Sreg, r/m16`)는 32-bit 주소, 접두어 0x66/0x2E만, 소스
+  세그먼트 CS/DS/SS일 때 `kGuardedSegmentLoad`(`gpr_register =
+  kAotSegmentLoadMemorySource`)로 분류되고, 이미터가 ModRM을 ax 목적지로
+  재부호화합니다(ESP 베이스는 슬롯의 push 2개만큼 +8). pumpitea INT8 ISR의
+  `66 2E 8E 1D disp32`가 동기입니다.
+* 엔진은 shadow→`guest_*` 방향으로 동기합니다(`BuildAotSegmentTable`,
+  `SyncGuestSegmentsFromShadow`, `SetGuestSegmentSelector`). 전량 재패치는 네이티브
+  flip마다가 아니라 다음 HLE 재해석이 바뀐 shadow를 볼 때 한 번 일어납니다.
+* i386 **read** 슬롯(`mov r16/r32, Sreg`)은 가드 없이 `[shadow]`를 16-bit로
+  로드하고 fallthrough로 뜁니다(12바이트). HLE도 shadow를 돌려주므로 물리 비교는
+  결과를 바꾸지 않고 트랩만 더했습니다.
+* INT8 주입(`InjectPendingInterrupts`)은 direct 모델에서 벡터 주소를
+  `FindAotCacheAddress`로 찾아 캐시 블록으로 진입하고, 없으면
+  `RequestAotDynamicTranslation`을 한 번 호출합니다. 이전에는 원 게스트 주소로
+  들어가 ISR 앞부분이 캐시 밖에서 네이티브로 돌며 폴트(세그먼트 로드, 포트 I/O)로
+  HLE에 들어왔습니다. `REPIU_TIMER_HANDLER_CACHE_ENTRY=0|off|false`로 끕니다.
+* long-mode(x64 cache 모델) 슬롯은 그대로이며, 메모리-소스 로드는 x64에서 INT3
+  boundary로 남습니다.
+
+```mermaid
+flowchart TD
+    N["새 값: 레지스터 / 메모리 소스 / 스택 워드"] --> A{"== [shadow]?"}
+    A -->|예| S["통과 (pop: esp += 4)"]
+    A -->|아니오| B{"== [pair0] 또는 [pair1]?"}
+    B -->|예| W["[shadow] ← 새 값"] --> S
+    B -->|아니오| F["INT3 → HLE load/pop"]
+```
+
+Since issue #18 (2026-10-06/07) the i386 (direct model) guarded **load** and
+**pop** slots read no physical segment register. `repiu_aot_probe
+--segment-restore` established that a Win32 VEH resume ignores segment writes
+in the context (the physical registers always hold the flat selector), so the
+"physical = stack = shadow" compare above could pass only for flat reloads and
+guest-selector loads (pumpitea's 0x0024) structurally always fell back. The
+shadow selector block (`AotShadowSelectorBlock`) is now the source of truth for
+the virtual segment state. It carries a per-register **accepted pair**
+`accepted_pair[reg][0..1]`: the host flat selector (seeded at creation) and
+the last base-0, descriptor-backed non-flat selector the HLE load accepted,
+cleared when DPMI set-base moves it; the slots compare against these memory
+words, not immediates, so pair changes never re-patch the cache. A slot's new
+value (load: register or re-encoded memory source; pop: stack word) equal to
+`[shadow]` passes as a no-op, equal to either pair word writes the shadow
+natively and passes, and anything else restores entry state and falls back to
+the HLE through INT3; the pop consumes the stack dword on success only.
+Memory-source loads (`mov Sreg, r/m16`) classify as `kGuardedSegmentLoad` with
+`gpr_register = kAotSegmentLoadMemorySource` under 32-bit addressing, prefixes
+0x66/0x2E only and a CS/DS/SS source, and the emitter re-encodes the ModRM to an
+`ax` destination (+8 on an ESP base for the slot's two pushes); pumpitea's INT8
+ISR entry `66 2E 8E 1D disp32` motivated it. The engine syncs shadow →
+`guest_*` (`BuildAotSegmentTable`, `SyncGuestSegmentsFromShadow`,
+`SetGuestSegmentSelector`), and the whole-cache re-patch fires once at the next
+HLE re-resolution that sees a changed shadow rather than per flip. The i386
+**read** slot (`mov r16/r32, Sreg`) loads `[shadow]` unguarded as a 16-bit
+value and jumps on (12 bytes): the HLE returns the shadow too, so the former
+physical compare only added traps. INT8 injection (`InjectPendingInterrupts`)
+on the direct model enters the handler's cache block found by
+`FindAotCacheAddress`, requesting one `RequestAotDynamicTranslation` when
+unmapped; it used to enter the raw guest vector, so the handler's first
+instructions ran natively outside the cache and reached the HLE through faults
+(segment loads, port I/O). `REPIU_TIMER_HANDLER_CACHE_ENTRY=0|off|false`
+disables it. Long-mode slots are unchanged; memory-source loads stay INT3
+boundaries on x64.
+
 ## 네이티브 span 음성 캐시 / Native-span negative cache
 
 Task 304는 기본 native linear-span scan이 0~1개 일반 명령 뒤 정적 경계에서 거절한

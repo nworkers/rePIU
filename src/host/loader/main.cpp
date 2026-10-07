@@ -2554,6 +2554,10 @@ void PrintExecutionAttempt(
                 attempt.aot_timer_safe_point_trap_count,
                 attempt.aot_timer_safe_point_injected_count,
                 attempt.aot_timer_safe_point_deferred_count);
+    logger.info("INT8 handler entry cache/translated/native: {}/{}/{}",
+                attempt.timer_handler_entry_cache_count,
+                attempt.timer_handler_entry_translated_count,
+                attempt.timer_handler_entry_native_count);
     logger.info(
         "AOT timer source profile enabled/entries/overflow/"
         "attributed-ticks: {}/{}/{}/{}",
@@ -5667,9 +5671,15 @@ int main(int argc, char** argv)
     aot_build_options.direct_return_table_bits =
         repiu::runtime::ResolveAotDirectReturnTableBits(
             std::getenv("REPIU_AOT_DIRECT_RETURN_TABLE_BITS"));
+    // Task i018 promoted this from opt-in. With the INT 21h allowlist
+    // narrowed to the register-only services (AH=2Ch/42h; AH=3Fh read broke
+    // eight titles by skipping the reentry funnel after guest memory
+    // changed), the 16-romset smoke matrix runs clean and pumpitea's
+    // post-logo gap drops from ~6 s to ~1.5-2.7 s. REPIU_AOT_DBT_SUPERBLOCK=0
+    // restores the INT3-only boundaries.
     aot_build_options.enable_dbt_hle_dispatch =
         use_dynamic_backend &&
-        repiu::runtime::ResolveOptInToggle(
+        repiu::runtime::ResolvePromotedToggle(
             std::getenv("REPIU_AOT_DBT_SUPERBLOCK"));
     // Task 386 promoted the isolated Port-I/O dispatch after a Music Select
     // capture confirmed lower per-frame exception and HLE costs. Explicit

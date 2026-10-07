@@ -51,7 +51,8 @@ bool FindDispatchSite(
     return false;
 }
 
-bool RequiresVehMediatedHle(ThreadContext* context, std::uint32_t guest_eip)
+bool RequiresVehMediatedHle(ThreadContext* context, std::uint32_t guest_eip,
+                            std::uint32_t eax)
 {
     const auto* code = reinterpret_cast<const std::uint8_t*>(
         static_cast<std::uintptr_t>(guest_eip));
@@ -75,6 +76,34 @@ bool RequiresVehMediatedHle(ThreadContext* context, std::uint32_t guest_eip)
     switch (instruction.mnemonic)
     {
         case ZYDIS_MNEMONIC_INT:
+        {
+            // Task i018. INT 21h services that only read and write general
+            // registers and flags run through the host dispatch: AH=2Ch
+            // (get time -- pumpitea's calibrate/delay loops, ~100k calls per
+            // 30 s of loading) and AH=42h (lseek -- the second stall's
+            // ~45k-call burst). Both leave ESP, the segment registers and
+            // guest memory untouched and advance EIP by two, which the
+            // dispatcher resolves as the block's own continuation; the ESP
+            // state-mismatch guard below the call still applies.
+            //
+            // AH=3Fh (read) was in this list and broke pumpitc and seven
+            // other titles whose loaders it served: a read lands in guest
+            // memory, and resuming through the dispatcher's direct cache
+            // jump skips the reentry funnel's retirement and quarantine
+            // checks that the VEH path applies after guest memory changes.
+            // Every memory-writing service and every other vector keeps its
+            // VEH mediation.
+            const std::uint8_t ah =
+                static_cast<std::uint8_t>((eax >> 8) & 0xFFU);
+            const bool int21 = instruction.operand_count > 0 &&
+                operands[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE &&
+                operands[0].imm.value.u == 0x21U;
+            if (int21 && (ah == 0x2CU || ah == 0x42U))
+            {
+                return false;
+            }
+            return true;
+        }
         case ZYDIS_MNEMONIC_INT1:
         case ZYDIS_MNEMONIC_INT3:
         case ZYDIS_MNEMONIC_INTO:
@@ -221,7 +250,7 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtHleFrame(
 
     const std::uint32_t cache_base = context->aot_placement->base_address;
     frame[kGuestSourceIndex] = cache_base + site.fallback_cache_offset;
-    if (RequiresVehMediatedHle(context, guest_source))
+    if (RequiresVehMediatedHle(context, guest_source, frame[7]))
     {
         RecordAotDbtHleFallback(
             context, AotDbtHleFallbackReason::kVehRequired);

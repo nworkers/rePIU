@@ -86,4 +86,5 @@ Status labels are **Confirmed**, **Inferred**, and **Unresolved**. See the linke
 * [pumpit3 bring-up: 프로필 추가에서 렌더 루프까지 / pumpit3 bring-up](pumpit3-bring-up.md)
 * [pumpit3 기동 중 멈춤 / pumpit3 startup stall](pumpit3-startup-stall.md)
 * [pumpito CHD/ISO9660 마운트 분석 / pumpito CHD/ISO9660 mount](pumpito-chd-iso9660-mount.md)
+* [pumpitea 로딩 공백과 세그먼트 flip·재패치 결합 / pumpitea loading gap: segment flip and re-patch coupling](pumpitea-loading-segment-flip.md)
 * [pumpite CHD/ISO9660 마운트 분석 / pumpite CHD/ISO9660 mount](pumpite-chd-iso9660-mount.md)

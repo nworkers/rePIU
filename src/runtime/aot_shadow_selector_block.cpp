@@ -71,6 +71,25 @@ AotShadowSelectorReservation ReserveAotShadowSelectorBlock()
     return result;
 }
 
+void SeedAotShadowAcceptedPairs(AotShadowSelectorBlock* const block,
+                                const std::uint16_t flat_data_selector,
+                                const std::uint16_t flat_stack_selector)
+{
+    if (block == nullptr)
+    {
+        return;
+    }
+    for (std::size_t seg = 0; seg < 6U; ++seg)
+    {
+        if (seg == 1U)
+        {
+            continue;  // CS has no shadow and no accepted pair.
+        }
+        block->accepted_pair[seg][0] =
+            seg == 2U ? flat_stack_selector : flat_data_selector;
+    }
+}
+
 void ReleaseAotShadowSelectorBlock(
     const AotShadowSelectorReservation& reservation)
 {

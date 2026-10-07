@@ -31,12 +31,14 @@ enum class AotInstructionKind
     // MOV r16/r32,Sreg reads a guest selector natively only while physical and
     // shadow selectors agree; divergence falls back to HLE (Task 383).
     kGuardedSegmentRead,
-    // MOV Sreg,r16 is skipped only while source, physical, and shadow
-    // selectors already agree; mismatch falls back to HLE (Task 389).
+    // MOV Sreg,r/m16. The i386 slot compares the new value with the shadow
+    // selector and the register's accepted pair and writes the shadow natively
+    // on a match; anything else falls back to HLE (Task 389, Task i018). A
+    // memory source sets gpr_register to kAotSegmentLoadMemorySource.
     kGuardedSegmentLoad,
-    // A plain POP ES/DS/FS/GS whose cache slot advances the stack only when
-    // physical, shadow, and stack selectors are already identical. Any
-    // mismatch reaches the existing HLE boundary (Task 291).
+    // A plain POP ES/DS/FS/GS. The i386 slot treats the popped word like the
+    // load above and consumes the stack dword only on success; any other value
+    // reaches the existing HLE boundary (Task 291, Task i018).
     kGuardedSegmentPop,
     // Task 742. `push es`/`push ds`/`push fs`/`push gs` with a 32-bit operand.
     // Invalid opcodes in long mode; the long-mode slot pushes the shadow
@@ -45,6 +47,13 @@ enum class AotInstructionKind
     // Port I/O (IN/OUT DX) handled without #DB exception traps (Task 311).
     kPortIo,
 };
+
+// Task i018. `AotInstructionRecord::gpr_register` of a kGuardedSegmentLoad
+// whose source is memory rather than a 16-bit register; `bytes` then carries
+// the instruction the i386 emitter re-encodes. No GPR index reaches this value,
+// and the long-mode emitter's `gpr_register > 7` refusal keeps such a load an
+// INT3 boundary on x64.
+inline constexpr std::uint8_t kAotSegmentLoadMemorySource = 0x80U;
 
 struct AotInstructionRecord
 {
