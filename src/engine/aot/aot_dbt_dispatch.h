@@ -3,7 +3,6 @@
 #include "execution/thread_context.h"
 
 #include <cstdint>
-#include <string_view>
 #include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::engine
@@ -32,7 +31,5 @@ void TraceAotHleReentryState(
     const repiu::platform::GuestCpuContext* registers,
     std::uint32_t handled_guest_eip,
     std::uint32_t current_guest_eip);
-
-bool ResolveAotDbtPostHleTranslationEnabled(std::string_view setting);
 
 }  // namespace repiu::engine

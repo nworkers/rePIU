@@ -326,12 +326,10 @@ target_sources(repiu_exe
         src/engine/aot/aot_boundary_provenance.cpp
         src/engine/aot/aot_boundary_reason.cpp
         src/engine/aot/aot_dbt_call_return_trace.cpp
-        src/engine/aot/aot_dbt_call_step_probe.cpp
         src/engine/aot/aot_dbt_dispatch.cpp
         src/engine/aot/aot_dbt_direct_edge_dispatch.cpp
         src/engine/aot/aot_dbt_hle_dispatch.cpp
         src/engine/aot/aot_dbt_glide_gate_dispatch.cpp
-        src/engine/aot/aot_dbt_indirect_dispatch.cpp
         src/engine/aot/aot_dbt_return_dispatch.cpp
         src/engine/aot/aot_retired_trap_profile.cpp
         src/engine/aot/aot_guard_compare_fault.cpp
@@ -985,8 +983,6 @@ if(WIN32)
         src/tools/aot_probe/arena_view_probe.cpp
         src/tools/aot_probe/boundary_provenance_probe.cpp
         src/tools/aot_probe/dbt_call_return_trace_probe.cpp
-        src/tools/aot_probe/dbt_call_step_probe.cpp
-        src/tools/aot_probe/dbt_indirect_dispatch_probe.cpp
         src/tools/aot_probe/direct_edge_dispatch_probe.cpp
         src/tools/aot_probe/dbt_return_fallback_probe.cpp
         src/tools/aot_probe/env_toggle_probe.cpp

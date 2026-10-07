@@ -1,7 +1,6 @@
 #include "aot_dbt_direct_edge_dispatch.h"
 #include "aot_dbt_glide_gate_dispatch.h"
 #include "aot_dbt_hle_dispatch.h"
-#include "aot_dbt_indirect_dispatch.h"
 #include "aot_dbt_return_dispatch.h"
 
 // Task 759. The dispatch thunks of the direct execution model (Win32 and
@@ -19,7 +18,6 @@ extern "C" {
 
 void AotDbtDirectEdgeDispatchThunk();
 void AotDbtHleDispatchThunk();
-void AotDbtIndirectMissThunk();
 void AotDbtReturnMissThunk();
 void AotDbtGlideGateDispatchThunk();
 
@@ -36,11 +34,6 @@ void* GetAotDbtDirectEdgeDispatchThunkAddress()
 void* GetAotDbtHleDispatchThunkAddress()
 {
     return reinterpret_cast<void*>(&AotDbtHleDispatchThunk);
-}
-
-void* GetAotDbtIndirectMissThunkAddress()
-{
-    return reinterpret_cast<void*>(&AotDbtIndirectMissThunk);
 }
 
 void* GetAotDbtReturnMissThunkAddress()

@@ -73,10 +73,8 @@
 #include "romset_config_probe.h"
 #include "nvram_path_probe.h"
 #include "dbt_return_fallback_probe.h"
-#include "dbt_indirect_dispatch_probe.h"
 #include "direct_edge_dispatch_probe.h"
 #include "dbt_call_return_trace_probe.h"
-#include "dbt_call_step_probe.h"
 
 #include <Zydis.h>
 
@@ -1055,19 +1053,11 @@ int main(int argc, char** argv)
     {
         return 1;
     }
-    if (!repiu::tools::RunAotDbtIndirectDispatchProbe())
-    {
-        return 1;
-    }
     if (!repiu::tools::RunAotDbtDirectEdgeDispatchProbe())
     {
         return 1;
     }
     if (!repiu::tools::RunAotDbtCallReturnTraceProbe())
-    {
-        return 1;
-    }
-    if (!repiu::tools::RunAotDbtCallStepProbe())
     {
         return 1;
     }

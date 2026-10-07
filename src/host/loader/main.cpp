@@ -1896,13 +1896,12 @@ void PrintExecutionAttempt(
                 reentry > reentry_named ? reentry - reentry_named : 0U;
             logger.info(
                 "aot reentry cycles guest-lookup/provenance/retired/"
-                "boundary-reason/native-span/single-step/residual: "
-                "{}/{}/{}/{}/{}/{}/{}",
+                "boundary-reason/single-step/residual: "
+                "{}/{}/{}/{}/{}/{}",
                 bucket(ExecutionTimeBucket::kAotReentryGuestLookup),
                 bucket(ExecutionTimeBucket::kAotReentryProvenance),
                 bucket(ExecutionTimeBucket::kAotReentryRetired),
                 bucket(ExecutionTimeBucket::kAotReentryBoundaryReason),
-                bucket(ExecutionTimeBucket::kAotReentryNativeSpan),
                 bucket(ExecutionTimeBucket::kAotReentrySingleStep),
                 reentry_residual);
             const auto reentry_count = [&time_profile](
@@ -1911,12 +1910,11 @@ void PrintExecutionAttempt(
             };
             logger.info(
                 "aot reentry count guest-lookup/provenance/retired/"
-                "boundary-reason/native-span/single-step: {}/{}/{}/{}/{}/{}",
+                "boundary-reason/single-step: {}/{}/{}/{}/{}",
                 reentry_count(ExecutionTimeBucket::kAotReentryGuestLookup),
                 reentry_count(ExecutionTimeBucket::kAotReentryProvenance),
                 reentry_count(ExecutionTimeBucket::kAotReentryRetired),
                 reentry_count(ExecutionTimeBucket::kAotReentryBoundaryReason),
-                reentry_count(ExecutionTimeBucket::kAotReentryNativeSpan),
                 reentry_count(ExecutionTimeBucket::kAotReentrySingleStep));
             if (reentry != 0U)
             {
@@ -1926,8 +1924,8 @@ void PrintExecutionAttempt(
                 };
                 logger.info(
                     "aot reentry share guest-lookup/provenance/retired/"
-                    "boundary-reason/native-span/single-step/residual: "
-                    "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                    "boundary-reason/single-step/residual: "
+                    "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
                     reentry_share(
                         bucket(ExecutionTimeBucket::kAotReentryGuestLookup)),
                     reentry_share(
@@ -1936,8 +1934,6 @@ void PrintExecutionAttempt(
                         bucket(ExecutionTimeBucket::kAotReentryRetired)),
                     reentry_share(
                         bucket(ExecutionTimeBucket::kAotReentryBoundaryReason)),
-                    reentry_share(
-                        bucket(ExecutionTimeBucket::kAotReentryNativeSpan)),
                     reentry_share(
                         bucket(ExecutionTimeBucket::kAotReentrySingleStep)),
                     reentry_share(reentry_residual));
@@ -2463,9 +2459,6 @@ void PrintExecutionAttempt(
         attempt.native_linear_span_cancel_count,
         attempt.native_linear_span_instruction_total,
         attempt.native_linear_span_reject_count);
-    logger.info("native linear span cache hit/miss: {}/{}",
-                attempt.native_linear_span_cache_hit_count,
-                attempt.native_linear_span_cache_miss_count);
     logger.info(
         "native linear span reject cache hit/miss/stale/store/capacity-skip: "
         "{}/{}/{}/{}/{}",
@@ -2474,10 +2467,7 @@ void PrintExecutionAttempt(
         attempt.native_linear_span_reject_cache_stale_count,
         attempt.native_linear_span_reject_cache_store_count,
         attempt.native_linear_span_reject_cache_capacity_skip_count);
-    logger.info(
-        "native linear span write cross/uncovered/fault-cancel: {}/{}/{}",
-                attempt.native_linear_span_write_cross_count,
-                attempt.native_linear_span_write_guard_uncovered_count,
+    logger.info("native linear span write fault-cancel: {}",
                 attempt.native_linear_span_write_fault_cancel_count);
     logger.info("native linear span last cancel code/eip: {}/{}",
                 Hex32(attempt.native_linear_span_last_cancel_code),
@@ -2496,9 +2486,6 @@ void PrintExecutionAttempt(
                 Hex32(attempt.native_linear_span_cancel_dr2_first_eip),
                 Hex32(attempt.native_linear_span_cancel_dr3_first_eip),
                 Hex32(attempt.native_linear_span_cancel_other_db_first_eip));
-    logger.info("native linear span jump chain/backward-stop: {}/{}",
-                attempt.native_linear_span_direct_jump_chain_count,
-                attempt.native_linear_span_backward_jump_stop_count);
     logger.info("execution backend: {}",
                 repiu::runtime::ExecutionBackendName(
                     attempt.execution_backend));
@@ -2615,34 +2602,6 @@ void PrintExecutionAttempt(
     }
     logger.info("AOT-DBT return fallback reason total: {}",
                 aot_dbt_return_fallback_reason_total);
-    logger.info(
-        "AOT-DBT indirect entry/attempt/success/fallback: {}/{}/{}/{}",
-        attempt.aot_dbt_indirect_entry_count,
-        attempt.aot_dbt_indirect_attempt_count,
-        attempt.aot_dbt_indirect_success_count,
-        attempt.aot_dbt_indirect_fallback_count);
-    logger.info(
-        "AOT-DBT indirect fallback reason "
-        "site/state/opcode/source/zero/hle/quarantine/non-guest/translate/unknown: "
-        "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
-        attempt.aot_dbt_indirect_fallback_reason_counts[0],
-        attempt.aot_dbt_indirect_fallback_reason_counts[1],
-        attempt.aot_dbt_indirect_fallback_reason_counts[2],
-        attempt.aot_dbt_indirect_fallback_reason_counts[3],
-        attempt.aot_dbt_indirect_fallback_reason_counts[4],
-        attempt.aot_dbt_indirect_fallback_reason_counts[5],
-        attempt.aot_dbt_indirect_fallback_reason_counts[6],
-        attempt.aot_dbt_indirect_fallback_reason_counts[7],
-        attempt.aot_dbt_indirect_fallback_reason_counts[8],
-        attempt.aot_dbt_indirect_fallback_reason_counts[9]);
-    std::uint64_t aot_dbt_indirect_fallback_reason_total = 0;
-    for (std::uint32_t count :
-         attempt.aot_dbt_indirect_fallback_reason_counts)
-    {
-        aot_dbt_indirect_fallback_reason_total += count;
-    }
-    logger.info("AOT-DBT indirect fallback reason total: {}",
-                aot_dbt_indirect_fallback_reason_total);
     logger.info("AOT boundary reason ret/indir/direct/cond/other: "
                 "{}/{}/{}/{}/{}",
                 attempt.aot_boundary_return_count,
@@ -2869,9 +2828,6 @@ void PrintExecutionAttempt(
                 attempt.aot_generation_failure_count,
                 attempt.aot_generation_relinked_entry_count,
                 attempt.aot_retired_entry_trap_count);
-    logger.info("AOT retired span attempt/success: {}/{}",
-                attempt.aot_retired_span_attempt_count,
-                attempt.aot_retired_span_success_count);
     const auto& retired_profile = attempt.aot_retired_trap_profile;
     const double retired_top_coverage =
         retired_profile.total_trap_count != 0U
@@ -3072,114 +3028,6 @@ void PrintExecutionAttempt(
                 repiu::engine::
                     kAotCallReturnTraceCapacity];
             log_call_return_trace("AOT-DBT CALL/RET trace", entry);
-        }
-    }
-    if (attempt.aot_dbt_call_step_probe_configured)
-    {
-        const auto phase_name =
-            [](repiu::engine::AotCallStepProbePhase phase) {
-                switch (phase)
-                {
-                    case repiu::engine::
-                        AotCallStepProbePhase::kAwaitPreC3:
-                        return "await-pre-c3";
-                    case repiu::engine::
-                        AotCallStepProbePhase::kAwaitPostC3:
-                        return "await-post-c3";
-                    case repiu::engine::
-                        AotCallStepProbePhase::kAwaitReturnTarget:
-                        return "await-return-target";
-                    default:
-                        return "idle";
-                }
-            };
-        logger.info(
-            "AOT-DBT CALL step probe "
-            "targets/events/arms/completes/conflicts/skipped/phase/active: "
-            "{}/{}/{}/{}/{}/{}/{}/{}",
-            attempt.aot_dbt_call_step_probe_target_count,
-            attempt.aot_dbt_call_step_probe_trace_count,
-            attempt.aot_dbt_call_step_probe_arm_count,
-            attempt.aot_dbt_call_step_probe_complete_count,
-            attempt.aot_dbt_call_step_probe_conflict_count,
-            attempt.aot_dbt_call_step_probe_skipped_count,
-            phase_name(attempt.aot_dbt_call_step_probe_phase),
-            attempt.aot_dbt_call_step_probe_active_call_sequence);
-        std::ostringstream targets;
-        for (std::uint32_t index = 0;
-             index < attempt.aot_dbt_call_step_probe_target_count;
-             ++index)
-        {
-            if (index != 0U)
-            {
-                targets << ",";
-            }
-            targets << attempt.aot_dbt_call_step_probe_targets[index];
-        }
-        logger.info("AOT-DBT CALL step probe target sequences: {}",
-                    targets.str());
-        const std::uint32_t begin =
-            attempt.aot_dbt_call_step_probe_trace_count >
-                    repiu::engine::
-                        kAotCallStepProbeTraceCapacity
-                ? attempt.aot_dbt_call_step_probe_trace_count -
-                      repiu::engine::
-                          kAotCallStepProbeTraceCapacity
-                : 0U;
-        for (std::uint32_t sequence = begin;
-             sequence < attempt.aot_dbt_call_step_probe_trace_count;
-             ++sequence)
-        {
-            const auto& entry = attempt.aot_dbt_call_step_probe_trace[
-                sequence %
-                repiu::engine::
-                    kAotCallStepProbeTraceCapacity];
-            const char* kind = "unexpected";
-            switch (entry.kind)
-            {
-                case repiu::engine::
-                    AotCallStepProbeEventKind::kPreC3:
-                    kind = "pre-c3";
-                    break;
-                case repiu::engine::
-                    AotCallStepProbeEventKind::kPostC3:
-                    kind = "post-c3";
-                    break;
-                case repiu::engine::
-                    AotCallStepProbeEventKind::kReturnTarget:
-                    kind = "return-target";
-                    break;
-                case repiu::engine::
-                    AotCallStepProbeEventKind::kConflict:
-                    kind = "conflict";
-                    break;
-                default:
-                    break;
-            }
-            logger.info(
-                "AOT-DBT CALL step #{} {} call#/source/target/return/"
-                "EIP/ESP/expected-EIP/expected-ESP/eip-match/esp-match/"
-                "EFLAGS/DR6: {}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
-                entry.sequence, kind, entry.call_sequence,
-                Hex32(entry.guest_source), Hex32(entry.guest_target),
-                Hex32(entry.guest_return), Hex32(entry.eip),
-                Hex32(entry.esp), Hex32(entry.expected_eip),
-                Hex32(entry.expected_esp),
-                entry.eip_matches ? "true" : "false",
-                entry.esp_matches ? "true" : "false",
-                Hex32(entry.eflags), Hex32(entry.dr6));
-            logger.info(
-                "AOT-DBT CALL step #{} "
-                "EAX/EBX/ECX/EDX/ESI/EDI/EBP/stack-mask/stack: "
-                "{}/{}/{}/{}/{}/{}/{}/{}/{},{},{},{}",
-                entry.sequence, Hex32(entry.eax), Hex32(entry.ebx),
-                Hex32(entry.ecx), Hex32(entry.edx), Hex32(entry.esi),
-                Hex32(entry.edi), Hex32(entry.ebp),
-                Hex32(entry.stack_valid_mask),
-                Hex32(entry.stack_dwords[0]),
-                Hex32(entry.stack_dwords[1]),
-                Hex32(entry.stack_dwords[2]),
-                Hex32(entry.stack_dwords[3]));
         }
     }
     logger.info("execution probe configured/hit/offset: {}/{}/{}",
@@ -5660,10 +5508,6 @@ int main(int argc, char** argv)
     // capture confirmed lower per-frame exception and HLE costs; Task i020
     // removed its kill switch.
     aot_build_options.enable_dbt_port_io_dispatch = use_dynamic_backend;
-    aot_build_options.enable_dbt_segment_override_dispatch =
-        use_dynamic_backend &&
-        repiu::runtime::ResolveOptInToggle(
-            std::getenv("REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH"));
     // Task 291 A/B promoted the guarded no-state-change segment-pop path for
     // aot-dbt. Explicit false and unknown values fail closed for compatibility
     // diagnosis and regression bisects.
@@ -5684,34 +5528,6 @@ int main(int argc, char** argv)
         use_dynamic_backend &&
         repiu::runtime::ResolvePromotedToggle(
             std::getenv("REPIU_AOT_GUARDED_SEGMENT_READ"));
-    // Task 282 indirect call/jump host dispatch is implemented and passes every
-    // synthetic probe, but a live `aot-dbt` run reveals a cumulative corruption
-    // that crashes the Glide attract path (see
-    // docs/analysis/current-execution-frontier.md). It is therefore opt-in and
-    // OFF by default so `aot-dbt` keeps its known-good Task 281 behavior; set
-    // REPIU_AOT_DBT_INDIRECT=1 to enable it for further investigation.
-    if (use_dynamic_backend)
-    {
-        // Task 283 call/jump split probe. Accept `1`/`both` (both kinds),
-        // `call`/`calls` (calls only), `jump`/`jumps` (jumps only), anything else
-        // or unset stays OFF. The kind gates default true, so `1`/`both` matches
-        // the Task 282 behavior exactly.
-        const char* indirect_toggle = std::getenv("REPIU_AOT_DBT_INDIRECT");
-        const std::string indirect_mode =
-            indirect_toggle != nullptr ? std::string(indirect_toggle)
-                                       : std::string();
-        const bool calls_only =
-            indirect_mode == "call" || indirect_mode == "calls";
-        const bool jumps_only =
-            indirect_mode == "jump" || indirect_mode == "jumps";
-        const bool both = indirect_mode == "1" || indirect_mode == "both";
-        aot_build_options.enable_dbt_indirect_miss_dispatch =
-            both || calls_only || jumps_only;
-        aot_build_options.enable_dbt_indirect_dispatch_calls =
-            both || calls_only;
-        aot_build_options.enable_dbt_indirect_dispatch_jumps =
-            both || jumps_only;
-    }
     if (use_dynamic_backend && !ReadAotIndirectInlineCacheEntryCount(
             &aot_build_options.indirect_inline_cache_entry_count))
     {
@@ -5818,8 +5634,6 @@ int main(int argc, char** argv)
                      aot_build_options.enable_dbt_hle_dispatch);
         logger->info("AOT-DBT Port-I/O dispatch enabled: {}",
                      aot_build_options.enable_dbt_port_io_dispatch);
-        logger->info("AOT-DBT segment-override dispatch enabled: {}",
-                     aot_build_options.enable_dbt_segment_override_dispatch);
         logger->info(
             "AOT-DBT Glide gate direct dispatch requested/capable/enabled: {}/{}/{}",
             direct_glide_dispatch_requested,

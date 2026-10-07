@@ -2001,8 +2001,6 @@ bool PatchRel32(std::vector<std::uint8_t>* bytes,
 
 bool EmitIndirectInlineCacheSlot(const AotInstructionRecord& instruction,
                                  std::uint32_t entry_count,
-                                 bool enable_call_dispatch,
-                                 bool enable_jump_dispatch,
                                  AotCodeCacheImage* image)
 {
     if (image == nullptr || instruction.bytes.size() < 2U ||
@@ -2109,11 +2107,6 @@ bool EmitIndirectInlineCacheSlot(const AotInstructionRecord& instruction,
     site.guest_source = instruction.guest_address;
     site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     site.is_call = operation == 2U;
-    // Task 283: gate the host-dispatch tail by instruction kind so a live A/B run
-    // can bisect the Task 282 crash. When both flags are set (the default and the
-    // probe's path) this is identical to the original single-flag behavior.
-    const bool enable_dbt_indirect_miss_dispatch =
-        site.is_call ? enable_call_dispatch : enable_jump_dispatch;
     image->bytes.push_back(0x9CU);  // pushfd
     for (std::uint32_t index = 0; index < entry_count; ++index)
     {
@@ -2147,62 +2140,7 @@ bool EmitIndirectInlineCacheSlot(const AotInstructionRecord& instruction,
         site.entries[0].jump_displacement_offset;
     site.miss_cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.push_back(0x9DU);  // popfd
-    if (!enable_dbt_indirect_miss_dispatch)
-    {
-        image->bytes.push_back(0xCCU);  // dispatcher miss
-    }
-    else
-    {
-        // Task 282 host-dispatch tail. The three pushed slots sit exactly where
-        // the shared resolver expects them: a call's return address lands on the
-        // slot the handler itself rewrites at `Esp - 4`, the miss address
-        // becomes the resolved cache target, and the guest source doubles as the
-        // continuation the thunk returns through.
-        AotDbtIndirectDispatchSite dispatch_site;
-        dispatch_site.guest_source = instruction.guest_address;
-        dispatch_site.miss_cache_offset = site.miss_cache_offset;
-        dispatch_site.is_call = site.is_call;
-        image->bytes.push_back(0x68U);
-        AppendImmediate32(
-            &image->bytes,
-            site.is_call ? instruction.guest_address + instruction.length : 0U);
-        image->bytes.push_back(0x68U);
-        dispatch_site.miss_address_immediate_offset =
-            static_cast<std::uint32_t>(image->bytes.size());
-        AppendImmediate32(&image->bytes, 0U);
-        image->bytes.push_back(0x68U);
-        AppendImmediate32(&image->bytes, instruction.guest_address);
-        AppendRel32(&image->bytes, 0xE9U);
-        dispatch_site.thunk_displacement_offset =
-            static_cast<std::uint32_t>(image->bytes.size() - 4U);
-        dispatch_site.fallback_cache_offset =
-            static_cast<std::uint32_t>(image->bytes.size());
-        // The thunk RET has already removed guest-source metadata. The
-        // fallback discards both remaining slots -- for a CALL, the return
-        // address pushed above as well -- because the breakpoint below
-        // re-dispatches the guest instruction from its pre-transfer state.
-        //
-        // Task 737. Task 650 kept a CALL's return address here, for x86-64's
-        // sake. But this slot is the i386 emitter's alone -- long mode has its
-        // own -- and on i386 the re-dispatch pushes the return address again,
-        // or the legacy fallback re-executes the CALL, so a kept one became a
-        // second copy on the guest stack.
-        image->bytes.insert(image->bytes.end(), {0x8DU, 0x64U, 0x24U, 0x08U});
-        image->bytes.push_back(0xCCU);
-        dispatch_site.success_cache_offset =
-            static_cast<std::uint32_t>(image->bytes.size());
-        if (site.is_call)
-        {
-            image->bytes.push_back(0xC3U);
-        }
-        else
-        {
-            image->bytes.push_back(0xC2U);
-            image->bytes.push_back(0x04U);
-            image->bytes.push_back(0x00U);
-        }
-        image->dbt_indirect_dispatch_sites.push_back(dispatch_site);
-    }
+    image->bytes.push_back(0xCCU);  // dispatcher miss
     for (const AotInlineCacheEntry& entry : site.entries)
     {
         if (!PatchRel32(&image->bytes, entry.guard_offset + 1U,
@@ -2371,14 +2309,14 @@ bool EmitHleDispatchSlot(const AotInstructionRecord& instruction,
 // Task 264 Phase 3a. Translate a segment-override memory access natively:
 // pushfd; cmp word [shadow selector], S; je do_access; (fallback) popfd; int3;
 // do_access: popfd; <access with the segment prefix removed>; jmp fallthrough.
-// The guard falls back to the companion HLE slot (or INT3 when disabled) on
-// a selector mismatch, so the Win32-baked base/selector is self-corrected.
+// The guard falls back to INT3 on a selector mismatch, so the Win32-baked
+// base/selector is self-corrected. (Task i022 deleted the opt-in companion HLE
+// slot.)
 // First slice: only forms that already carry a 32-bit displacement (the segment base is folded
 // into it at placement, no ModRM re-encode); every other form returns false so
 // the caller emits a boundary (current behavior). Returns true if emitted.
 bool EmitSegmentOverrideSlot(const AotInstructionRecord& instruction,
-                             AotCodeCacheImage* image,
-                             bool enable_hybrid_dispatch)
+                             AotCodeCacheImage* image)
 {
     if (image == nullptr || instruction.bytes.empty())
     {
@@ -2512,19 +2450,9 @@ bool EmitSegmentOverrideSlot(const AotInstructionRecord& instruction,
     image->bytes.push_back(0x00U);           // selector S (patched)
     image->bytes.push_back(0x00U);
     image->bytes.push_back(0x74U);           // je do_access
-    image->bytes.push_back(enable_hybrid_dispatch ? 0x06U : 0x02U);
+    image->bytes.push_back(0x02U);
     image->bytes.push_back(0x9DU);           // fallback: popfd
-    std::uint32_t dispatch_jump_patch = 0U;
-    if (enable_hybrid_dispatch)
-    {
-        image->bytes.push_back(0xE9U);       // jmp companion HLE slot
-        dispatch_jump_patch = static_cast<std::uint32_t>(image->bytes.size());
-        AppendImmediate32(&image->bytes, 0U);
-    }
-    else
-    {
-        image->bytes.push_back(0xCCU);       // int3 -> single-step original
-    }
+    image->bytes.push_back(0xCCU);           // int3 -> single-step original
     image->bytes.push_back(0x9DU);           // do_access: popfd
     site.displacement_offset =
         static_cast<std::uint32_t>(image->bytes.size()) +
@@ -2536,19 +2464,6 @@ bool EmitSegmentOverrideSlot(const AotInstructionRecord& instruction,
                              instruction.fallthrough_target,
                              static_cast<std::uint32_t>(image->bytes.size() - 4U),
                              false});
-    if (enable_hybrid_dispatch)
-    {
-        site.dispatch_cache_offset =
-            static_cast<std::uint32_t>(image->bytes.size());
-        if (!EmitHleDispatchSlot(instruction, image))
-        {
-            return false;
-        }
-        const std::int32_t relative = static_cast<std::int32_t>(
-            site.dispatch_cache_offset - (dispatch_jump_patch + 4U));
-        std::memcpy(image->bytes.data() + dispatch_jump_patch,
-                    &relative, sizeof(relative));
-    }
     RecordGuardPrologue(*image, &site);
     image->segment_override_sites.push_back(site);
     return true;
@@ -3154,10 +3069,6 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         options.enable_dbt_hle_dispatch;
     image->dbt_port_io_dispatch_enabled =
         options.enable_dbt_port_io_dispatch;
-    image->dbt_segment_override_dispatch_enabled =
-        options.enable_dbt_segment_override_dispatch;
-    image->dbt_indirect_miss_dispatch_enabled =
-        options.enable_dbt_indirect_miss_dispatch;
     image->dbt_direct_edge_dispatch_enabled =
         options.enable_dbt_direct_edge_dispatch;
     image->timer_safe_points_enabled = options.enable_timer_safe_points;
@@ -3552,9 +3463,7 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                     }
                     break;
                 case AotInstructionKind::kSegmentOverrideMem:
-                    if (!EmitSegmentOverrideSlot(
-                            instruction, image,
-                            options.enable_dbt_segment_override_dispatch))
+                    if (!EmitSegmentOverrideSlot(instruction, image))
                     {
                         image->bytes.push_back(0xCCU);
                         image->fixups.push_back({AotFixupKind::kHleBoundary,
@@ -3617,10 +3526,6 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                     if (!EmitIndirectInlineCacheSlot(
                             instruction,
                             options.indirect_inline_cache_entry_count,
-                            options.enable_dbt_indirect_miss_dispatch &&
-                                options.enable_dbt_indirect_dispatch_calls,
-                            options.enable_dbt_indirect_miss_dispatch &&
-                                options.enable_dbt_indirect_dispatch_jumps,
                             image))
                     {
                         image->bytes.push_back(0xCCU);
@@ -4523,8 +4428,7 @@ bool ValidateAotCodeCacheHleCoverage(
                     slot_end <= image.bytes.size() &&
                     segment_site->guard_address_offset == guard_address_offset &&
                     segment_site->guard_selector_offset == guard_selector_offset &&
-                    segment_site->displacement_offset == displacement_offset &&
-                    segment_site->dispatch_cache_offset == 0U;
+                    segment_site->displacement_offset == displacement_offset;
                 if (!layout_safe ||
                     !std::equal(flags_save, flags_save + save_count,
                                 image.bytes.data() + slot) ||
@@ -4566,60 +4470,8 @@ bool ValidateAotCodeCacheHleCoverage(
             {
                 return fail(instruction.guest_address);
             }
-            if (!image.dbt_segment_override_dispatch_enabled)
-            {
-                if (site->dispatch_cache_offset != 0U ||
-                    image.bytes[site->guard_selector_offset + 3U] != 0x02U ||
-                    image.bytes[site->guard_selector_offset + 5U] != 0xCCU)
-                {
-                    return fail(instruction.guest_address);
-                }
-                continue;
-            }
-            const auto dispatch = std::find_if(
-                image.dbt_hle_dispatch_sites.begin(),
-                image.dbt_hle_dispatch_sites.end(),
-                [&instruction, &site](const AotDbtHleDispatchSite& candidate) {
-                    return candidate.guest_source == instruction.guest_address &&
-                        candidate.dispatch_cache_offset ==
-                            site->dispatch_cache_offset;
-                });
-            const auto fallback_fixup = std::find_if(
-                image.fixups.begin(), image.fixups.end(),
-                [&instruction, &dispatch, &image](
-                    const AotCodeCacheFixup& fixup) {
-                    return dispatch != image.dbt_hle_dispatch_sites.end() &&
-                        fixup.kind == AotFixupKind::kHleBoundary &&
-                        fixup.guest_source == instruction.guest_address &&
-                        fixup.cache_patch_offset ==
-                            dispatch->fallback_cache_offset + 4U;
-                });
-            std::int32_t dispatch_relative = 0;
-            std::memcpy(&dispatch_relative,
-                        image.bytes.data() + site->guard_selector_offset + 6U,
-                        sizeof(dispatch_relative));
-            const std::uint32_t dispatch_target = static_cast<std::uint32_t>(
-                site->guard_selector_offset + 10U + dispatch_relative);
-            if (dispatch == image.dbt_hle_dispatch_sites.end() ||
-                fallback_fixup == image.fixups.end() ||
-                site->dispatch_cache_offset == 0U ||
-                dispatch_target != site->dispatch_cache_offset ||
-                image.bytes[site->guard_selector_offset + 3U] != 0x06U ||
-                image.bytes[site->guard_selector_offset + 5U] != 0xE9U ||
-                dispatch->dispatch_address_immediate_offset !=
-                    site->dispatch_cache_offset + 1U ||
-                dispatch->thunk_displacement_offset !=
-                    site->dispatch_cache_offset + 11U ||
-                dispatch->fallback_cache_offset !=
-                    site->dispatch_cache_offset + 15U ||
-                dispatch->success_cache_offset !=
-                    site->dispatch_cache_offset + 20U ||
-                site->dispatch_cache_offset + 21U > image.bytes.size() ||
-                image.bytes[site->dispatch_cache_offset] != 0x68U ||
-                image.bytes[site->dispatch_cache_offset + 5U] != 0x68U ||
-                image.bytes[site->dispatch_cache_offset + 10U] != 0xE9U ||
-                image.bytes[site->dispatch_cache_offset + 19U] != 0xCCU ||
-                image.bytes[site->dispatch_cache_offset + 20U] != 0xC3U)
+            if (image.bytes[site->guard_selector_offset + 3U] != 0x02U ||
+                image.bytes[site->guard_selector_offset + 5U] != 0xCCU)
             {
                 return fail(instruction.guest_address);
             }

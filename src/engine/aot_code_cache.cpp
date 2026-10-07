@@ -9,7 +9,6 @@
 #include "aot/aot_generation_failure_policy.h"
 #include "aot/aot_dbt_hle_dispatch.h"
 #include "aot/aot_dbt_direct_edge_dispatch.h"
-#include "aot/aot_dbt_indirect_dispatch.h"
 #include "aot/aot_dbt_return_dispatch.h"
 
 #include <cstdio>
@@ -229,13 +228,12 @@ void TraceDynamicAotImageEntry(const runtime::AotCodeCacheImage& image,
                  "[repiu-aot-dynamic] stage=image-segment-site "
                  "guest=0x%08X segment=%u slot=0x%08X "
                  "guard_address=0x%08X guard_selector=0x%08X "
-                 "displacement=0x%08X dispatch=0x%08X "
+                 "displacement=0x%08X "
                  "original_displacement=%d prologue_size=%u prologue=",
                  static_cast<unsigned>(guest_address),
                  static_cast<unsigned>(site->segment_register),
                  site->cache_offset, site->guard_address_offset,
                  site->guard_selector_offset, site->displacement_offset,
-                 site->dispatch_cache_offset,
                  static_cast<int>(site->original_displacement),
                  static_cast<unsigned>(site->guard_prologue_size));
     const std::size_t prologue_count = std::min<std::size_t>(
@@ -350,12 +348,6 @@ void IndexAotBreakpointProvenance(
     {
         index[append_offset + site.fallback_cache_offset + 4U] =
             AotCacheBreakpointProvenance::kPlannerHle;
-    }
-    for (const runtime::AotDbtIndirectDispatchSite& site :
-         image.dbt_indirect_dispatch_sites)
-    {
-        index[append_offset + site.fallback_cache_offset + 4U] =
-            AotCacheBreakpointProvenance::kInlineCacheFallback;
     }
     for (const runtime::AotDbtDirectEdgeDispatchSite& site :
          image.dbt_direct_edge_dispatch_sites)
@@ -668,40 +660,6 @@ bool ResolveAotDbtHleDispatchSites(
     return true;
 }
 
-bool ResolveAotDbtIndirectDispatchSites(
-    const runtime::AotCodeCacheImage& image,
-    std::uint8_t* image_bytes,
-    std::uint32_t image_absolute_base)
-{
-    if (image.dbt_indirect_dispatch_sites.empty())
-    {
-        return true;
-    }
-    const std::uintptr_t thunk_value = reinterpret_cast<std::uintptr_t>(
-        GetAotDbtIndirectMissThunkAddress());
-    if (image_bytes == nullptr || thunk_value == 0U ||
-        thunk_value > std::numeric_limits<std::uint32_t>::max())
-    {
-        return false;
-    }
-    const std::uint32_t thunk = static_cast<std::uint32_t>(thunk_value);
-    for (const runtime::AotDbtIndirectDispatchSite& site :
-         image.dbt_indirect_dispatch_sites)
-    {
-        const std::uint32_t miss_address =
-            image_absolute_base + site.miss_cache_offset;
-        std::memcpy(image_bytes + site.miss_address_immediate_offset,
-                    &miss_address, sizeof(miss_address));
-        const std::uint32_t next_instruction = image_absolute_base +
-            site.thunk_displacement_offset + 4U;
-        const std::int32_t displacement = static_cast<std::int32_t>(
-            thunk - next_instruction);
-        std::memcpy(image_bytes + site.thunk_displacement_offset,
-                    &displacement, sizeof(displacement));
-    }
-    return true;
-}
-
 // Task 264 Phase 3a: fold each natively-translated segment-override access's
 // selector and base into the emitted guard and displacement, in place, while the
 // image bytes are still writable. Offsets are image-relative, matching the
@@ -869,23 +827,13 @@ bool VerifyGuestArenaDirectlyReadable(std::uint32_t runtime_base,
 // flipped the protection of the whole 16 MB cache twice to do it. Measured on
 // this host, that pair costs about 4.2 ms (11.5 M cycles), and a stalled
 // pumpit3 run makes over 12,288 patches -- the dominant cost in the run. The
-// window below covers only the pages actually written. `REPIU_AOT_PATCH_WIDE_PROTECT=1`
-// restores the whole-cache behaviour so the two can be compared in one binary.
+// window below covers only the pages actually written.
 // See docs/design/20260804-413-aot-patch-protection-window.md.
 struct AotCachePatchWindow
 {
     void* base = nullptr;
     std::size_t size = 0;
 };
-
-bool AotPatchWideProtectEnabled()
-{
-    static const bool enabled = [] {
-        const char* value = std::getenv("REPIU_AOT_PATCH_WIDE_PROTECT");
-        return value != nullptr && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
 
 std::size_t AotPatchPageSize()
 {
@@ -902,17 +850,7 @@ std::size_t AotPatchPageSize()
 // and `RegisterAddressMapPages` records the entry under *every* page it spans,
 // so a later write to either page still retires it. The only state that must
 // still block activation is a quarantined page.
-// `REPIU_AOT_STRICT_SPANNING_ENTRY=1` restores the old rule.
 // See docs/design/20260804-417-spanning-entry-activation.md.
-bool AotStrictSpanningEntryEnabled()
-{
-    static const bool enabled = [] {
-        const char* value = std::getenv("REPIU_AOT_STRICT_SPANNING_ENTRY");
-        return value != nullptr && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
-
 bool EntrySpansQuarantinedPage(const AotCodeCachePlacement& placement,
                                const runtime::AotAddressMapEntry& entry)
 {
@@ -958,8 +896,7 @@ AotCachePatchWindow ComputeAotCachePatchWindow(
     const AotCachePatchWindow whole{cache,
                                     static_cast<std::size_t>(
                                         placement.capacity)};
-    if (AotPatchWideProtectEnabled() ||
-        last_offset_exclusive <= first_offset ||
+    if (last_offset_exclusive <= first_offset ||
         last_offset_exclusive > placement.capacity)
     {
         return whole;
@@ -1128,14 +1065,6 @@ bool PlaceAotCodeCache(const runtime::AotCodeCacheImage& image,
         placement->message = "AOT-DBT HLE thunk is unavailable";
         return true;
     }
-    if (!ResolveAotDbtIndirectDispatchSites(
-            image, static_cast<std::uint8_t*>(memory),
-            static_cast<std::uint32_t>(base)))
-    {
-        repiu::platform::ReleaseMemory(memory, capacity);
-        placement->message = "AOT-DBT indirect thunk is unavailable";
-        return true;
-    }
     repiu::platform::MemoryProtection old_protection =
         repiu::platform::MemoryProtection::kNoAccess;
     if (!repiu::platform::ProtectMemory(
@@ -1163,8 +1092,6 @@ bool PlaceAotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->dbt_return_dispatch_sites = image.dbt_return_dispatch_sites;
     SyncAotReturnPatchPolicy(placement);
     placement->dbt_hle_dispatch_sites = image.dbt_hle_dispatch_sites;
-    placement->dbt_indirect_dispatch_sites =
-        image.dbt_indirect_dispatch_sites;
     placement->dbt_direct_edge_dispatch_sites =
         image.dbt_direct_edge_dispatch_sites;
     placement->jump_table_sites = image.jump_table_sites;
@@ -1181,10 +1108,6 @@ bool PlaceAotCodeCache(const runtime::AotCodeCacheImage& image,
         image.dbt_hle_dispatch_enabled;
     placement->dbt_port_io_dispatch_enabled =
         image.dbt_port_io_dispatch_enabled;
-    placement->dbt_segment_override_dispatch_enabled =
-        image.dbt_segment_override_dispatch_enabled;
-    placement->dbt_indirect_miss_dispatch_enabled =
-        image.dbt_indirect_miss_dispatch_enabled;
     placement->dbt_direct_edge_dispatch_enabled =
         image.dbt_direct_edge_dispatch_enabled;
     placement->guarded_segment_pop_enabled =
@@ -1313,10 +1236,6 @@ bool AppendDynamicAotTranslation(
         placement->dbt_hle_dispatch_enabled;
     build_options.enable_dbt_port_io_dispatch =
         placement->dbt_port_io_dispatch_enabled;
-    build_options.enable_dbt_segment_override_dispatch =
-        placement->dbt_segment_override_dispatch_enabled;
-    build_options.enable_dbt_indirect_miss_dispatch =
-        placement->dbt_indirect_miss_dispatch_enabled;
     build_options.enable_dbt_direct_edge_dispatch =
         placement->dbt_direct_edge_dispatch_enabled;
     build_options.enable_guarded_segment_pop =
@@ -1519,7 +1438,6 @@ bool AppendDynamicAotTranslation(
         // a retired page, because this image was just built from that page's
         // current bytes. Everything else keeps the original rule.
         if (!can_activate && entry.guest_address == guest_entry &&
-            !AotStrictSpanningEntryEnabled() &&
             !EntrySpansQuarantinedPage(*placement, entry))
         {
             can_activate = true;
@@ -1688,18 +1606,6 @@ bool AppendDynamicAotTranslation(
         result->message = "AOT-DBT HLE thunk is unavailable";
         return true;
     }
-    if (!ResolveAotDbtIndirectDispatchSites(
-            image, static_cast<std::uint8_t*>(cache) + append_offset,
-            placement->base_address + append_offset))
-    {
-        repiu::platform::ProtectMemory(
-            cache, placement->capacity,
-            repiu::platform::MemoryProtection::kExecuteRead, nullptr);
-        std::fprintf(stderr, "[repiu-aot-unsafe] line=%d\n", __LINE__);
-        result->unsafe_failure = true;
-        result->message = "AOT-DBT indirect thunk is unavailable";
-        return true;
-    }
     std::vector<std::uint32_t> relinked_cache_offsets;
     for (std::size_t image_index = 0;
          image_index < image.address_map.size(); ++image_index)
@@ -1835,16 +1741,6 @@ bool AppendDynamicAotTranslation(
         site.success_cache_offset += append_offset;
         placement->dbt_hle_dispatch_sites.push_back(site);
     }
-    for (runtime::AotDbtIndirectDispatchSite site :
-         image.dbt_indirect_dispatch_sites)
-    {
-        site.miss_cache_offset += append_offset;
-        site.miss_address_immediate_offset += append_offset;
-        site.thunk_displacement_offset += append_offset;
-        site.fallback_cache_offset += append_offset;
-        site.success_cache_offset += append_offset;
-        placement->dbt_indirect_dispatch_sites.push_back(site);
-    }
     for (runtime::AotDbtDirectEdgeDispatchSite site :
          image.dbt_direct_edge_dispatch_sites)
     {
@@ -1869,10 +1765,6 @@ bool AppendDynamicAotTranslation(
         site.displacement_offset += append_offset;
         site.guard_address_offset += append_offset;
         site.guard_selector_offset += append_offset;
-        if (site.dispatch_cache_offset != 0U)
-        {
-            site.dispatch_cache_offset += append_offset;
-        }
         placement->segment_override_sites.push_back(site);
     }
     for (runtime::AotGuardedSegmentPopSite site :

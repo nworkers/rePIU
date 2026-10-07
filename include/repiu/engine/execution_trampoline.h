@@ -95,7 +95,6 @@ enum BreakpointStateFlag : std::uint32_t
     kBreakpointSingleStepTrace = 1U << 1U,
     kBreakpointNativeFastPath = 1U << 2U,
     kBreakpointNativeLinearSpan = 1U << 3U,
-    kBreakpointNativeRegion = 1U << 4U,
 };
 
 struct UnhandledBreakpointEvidence
@@ -483,54 +482,6 @@ struct AotCallReturnTraceEntry
 
 constexpr std::uint32_t kAotCallReturnTraceCapacity = 256;
 
-enum class AotCallStepProbePhase : std::uint32_t
-{
-    kIdle = 0,
-    kAwaitPreC3 = 1,
-    kAwaitPostC3 = 2,
-    kAwaitReturnTarget = 3,
-};
-
-enum class AotCallStepProbeEventKind : std::uint32_t
-{
-    kPreC3 = 0,
-    kPostC3 = 1,
-    kReturnTarget = 2,
-    kConflict = 3,
-    kUnexpected = 4,
-};
-
-struct AotCallStepProbeEntry
-{
-    std::uint32_t sequence = 0;
-    AotCallStepProbeEventKind kind =
-        AotCallStepProbeEventKind::kPreC3;
-    std::uint32_t call_sequence = 0;
-    std::uint32_t guest_source = 0;
-    std::uint32_t guest_target = 0;
-    std::uint32_t guest_return = 0;
-    std::uint32_t eip = 0;
-    std::uint32_t esp = 0;
-    std::uint32_t eflags = 0;
-    std::uint32_t eax = 0;
-    std::uint32_t ebx = 0;
-    std::uint32_t ecx = 0;
-    std::uint32_t edx = 0;
-    std::uint32_t esi = 0;
-    std::uint32_t edi = 0;
-    std::uint32_t ebp = 0;
-    std::uint32_t stack_dwords[4] = {};
-    std::uint32_t stack_valid_mask = 0;
-    std::uint32_t expected_eip = 0;
-    std::uint32_t expected_esp = 0;
-    std::uint32_t dr6 = 0;
-    bool eip_matches = false;
-    bool esp_matches = false;
-};
-
-constexpr std::uint32_t kAotCallStepProbeTargetCapacity = 8;
-constexpr std::uint32_t kAotCallStepProbeTraceCapacity = 32;
-
 struct MinimalExecutionAttempt
 {
     bool valid = false;
@@ -794,8 +745,6 @@ struct MinimalExecutionAttempt
     std::uint32_t native_linear_span_cancel_count = 0;
     std::uint32_t native_linear_span_instruction_total = 0;
     std::uint32_t native_linear_span_reject_count = 0;
-    std::uint32_t native_linear_span_cache_hit_count = 0;
-    std::uint32_t native_linear_span_cache_miss_count = 0;
     std::uint32_t native_linear_span_reject_cache_hit_count = 0;
     std::uint32_t native_linear_span_cancel_tf_count = 0;
     std::uint32_t native_linear_span_cancel_dr0_count = 0;
@@ -813,13 +762,9 @@ struct MinimalExecutionAttempt
     std::uint32_t native_linear_span_reject_cache_stale_count = 0;
     std::uint32_t native_linear_span_reject_cache_store_count = 0;
     std::uint32_t native_linear_span_reject_cache_capacity_skip_count = 0;
-    std::uint32_t native_linear_span_write_cross_count = 0;
-    std::uint32_t native_linear_span_write_guard_uncovered_count = 0;
     std::uint32_t native_linear_span_write_fault_cancel_count = 0;
     std::uint32_t native_linear_span_last_cancel_code = 0;
     std::uint32_t native_linear_span_last_cancel_eip = 0;
-    std::uint32_t native_linear_span_direct_jump_chain_count = 0;
-    std::uint32_t native_linear_span_backward_jump_stop_count = 0;
     runtime::ExecutionBackend execution_backend =
         runtime::ExecutionBackend::kLegacy;
     bool aot_backend_active = false;
@@ -904,12 +849,6 @@ struct MinimalExecutionAttempt
     std::uint32_t aot_dbt_return_fallback_count = 0;
     std::uint32_t aot_dbt_return_fallback_reason_counts[
         kAotDbtDispatchFallbackReasonCount] = {};
-    std::uint32_t aot_dbt_indirect_entry_count = 0;
-    std::uint32_t aot_dbt_indirect_attempt_count = 0;
-    std::uint32_t aot_dbt_indirect_success_count = 0;
-    std::uint32_t aot_dbt_indirect_fallback_count = 0;
-    std::uint32_t aot_dbt_indirect_fallback_reason_counts[
-        kAotDbtDispatchFallbackReasonCount] = {};
     std::uint32_t aot_indirect_dispatch_count = 0;
     std::uint32_t aot_inline_cache_patch_attempt_count = 0;
     std::uint32_t aot_inline_cache_patch_success_count = 0;
@@ -935,8 +874,6 @@ struct MinimalExecutionAttempt
     std::uint32_t aot_generation_relinked_entry_count = 0;
     std::uint32_t aot_retired_entry_trap_count = 0;
     AotRetiredTrapProfileSnapshot aot_retired_trap_profile;
-    std::uint32_t aot_retired_span_attempt_count = 0;
-    std::uint32_t aot_retired_span_success_count = 0;
     std::uint32_t aot_quarantine_count = 0;
     std::uint32_t aot_last_code_write_source = 0;
     std::uint32_t aot_last_code_write_destination = 0;
@@ -1003,20 +940,6 @@ struct MinimalExecutionAttempt
     AotCallReturnTraceEntry aot_dbt_call_return_first_divergence;
     AotCallReturnTraceEntry
         aot_dbt_call_return_trace[kAotCallReturnTraceCapacity];
-    bool aot_dbt_call_step_probe_configured = false;
-    std::uint32_t aot_dbt_call_step_probe_target_count = 0;
-    std::uint32_t aot_dbt_call_step_probe_targets[
-        kAotCallStepProbeTargetCapacity] = {};
-    std::uint32_t aot_dbt_call_step_probe_trace_count = 0;
-    std::uint32_t aot_dbt_call_step_probe_arm_count = 0;
-    std::uint32_t aot_dbt_call_step_probe_complete_count = 0;
-    std::uint32_t aot_dbt_call_step_probe_conflict_count = 0;
-    std::uint32_t aot_dbt_call_step_probe_skipped_count = 0;
-    AotCallStepProbePhase aot_dbt_call_step_probe_phase =
-        AotCallStepProbePhase::kIdle;
-    std::uint32_t aot_dbt_call_step_probe_active_call_sequence = 0;
-    AotCallStepProbeEntry aot_dbt_call_step_probe_trace[
-        kAotCallStepProbeTraceCapacity];
     std::uint32_t diagnostic_poll_iteration_count = 0;
     std::uint32_t diagnostic_progress_count = 0;
     std::uint32_t diagnostic_quiet_iteration_count = 0;

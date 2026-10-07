@@ -73,7 +73,6 @@ enum class ExecutionTimeBucket : std::uint32_t
     kAotReentryProvenance,
     kAotReentryRetired,
     kAotReentryBoundaryReason,
-    kAotReentryNativeSpan,
     kAotReentrySingleStep,
     kCount,
 };

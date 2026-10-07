@@ -1,22 +1,14 @@
 #include "native_linear_span.h"
 
 #include "execution/thread_context.h"
-#include "aot/aot_runtime_dispatch.h"
-#include "repiu/engine/aot_page_coherence.h"
 #include "verified_region_analyzer.h"
 
-#include <Zydis.h>
-
-#include <algorithm>
 #include <cstring>
-#include <cstdlib>
 #include <cstddef>
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include "repiu/platform/guest_cpu_context.h"
-#include "repiu/platform/atomic_ops.h"
 #include "repiu/platform/host_environment.h"
-#include "repiu/platform/virtual_memory.h"
 #include "repiu/platform/fault_handler.h"
 
 namespace repiu::engine
@@ -66,55 +58,6 @@ NativeLinearSpanSetting ReadNativeLinearSpanSetting()
     return ParseNativeLinearSpanSetting(setting.value);
 }
 
-bool ReadNativeLinearSpanCacheSetting()
-{
-    const auto setting = repiu::platform::ReadEnvironmentSetting(
-        "REPIU_NATIVE_LINEAR_SPAN_CACHE", kSettingCapacity);
-    if (!setting.present || setting.too_long)
-    {
-        return false;
-    }
-    return setting.value == "1" || setting.value == "on" ||
-        setting.value == "true";
-}
-
-NativeLinearSpanSetting ReadRetiredTrapNativeSpanSetting()
-{
-    const auto setting = repiu::platform::ReadEnvironmentSetting(
-        "REPIU_AOT_RETIRED_SPAN_REENTRY", kSettingCapacity);
-    if (!setting.present)
-    {
-        return NativeLinearSpanSetting::kBackendDefault;
-    }
-    if (setting.too_long)
-    {
-        return NativeLinearSpanSetting::kDisabled;
-    }
-    return ParseNativeLinearSpanSetting(setting.value);
-}
-
-bool ReadNativeLinearSpanWritesSetting()
-{
-    const auto setting = repiu::platform::ReadEnvironmentSetting(
-        "REPIU_NATIVE_LINEAR_SPAN_WRITES", kSettingCapacity);
-    if (!setting.present || setting.too_long)
-    {
-        return false;
-    }
-    return ResolveNativeLinearSpanWritesEnabled(setting.value);
-}
-
-bool ReadNativeLinearSpanJumpsSetting()
-{
-    const auto setting = repiu::platform::ReadEnvironmentSetting(
-        "REPIU_NATIVE_LINEAR_SPAN_JUMPS", kSettingCapacity);
-    if (!setting.present || setting.too_long)
-    {
-        return false;
-    }
-    return ResolveNativeLinearSpanJumpsEnabled(setting.value);
-}
-
 bool ResolveNativeLinearSpanSetting(
     runtime::ExecutionBackend execution_backend,
     NativeLinearSpanSetting setting)
@@ -141,177 +84,10 @@ bool ResolveNativeLinearSpanSetting(
     return runtime::ExecutionBackendUsesDynamicTranslation(execution_backend);
 }
 
-bool NativeLinearSpanCacheEnabled()
-{
-    static const bool enabled = ReadNativeLinearSpanCacheSetting();
-    return enabled;
-}
-
 bool NativeLinearSpanRejectCacheEnabled(
     runtime::ExecutionBackend execution_backend)
 {
     return ResolveNativeLinearSpanRejectCacheEnabled(execution_backend);
-}
-
-bool RetiredTrapNativeSpanPolicyEnabled(
-    runtime::ExecutionBackend execution_backend)
-{
-    static const NativeLinearSpanSetting setting =
-        ReadRetiredTrapNativeSpanSetting();
-    if (setting == NativeLinearSpanSetting::kBackendDefault)
-    {
-        return false;
-    }
-    return ResolveNativeLinearSpanSetting(execution_backend, setting);
-}
-
-bool NativeLinearSpanWritesEnabled()
-{
-    static const bool enabled = ReadNativeLinearSpanWritesSetting();
-    return enabled;
-}
-
-bool NativeLinearSpanJumpsEnabled()
-{
-    static const bool enabled = ReadNativeLinearSpanJumpsSetting();
-    return enabled;
-}
-
-struct NativeLinearSpanScanContext
-{
-    const ThreadContext* thread = nullptr;
-    const repiu::platform::GuestCpuContext* registers = nullptr;
-    detail::NativeFastPathState* state = nullptr;
-};
-
-bool IsNativeLinearSpanPageWriteGuarded(
-    void* opaque_context,
-    std::uint32_t guest_page)
-{
-    const auto* scan =
-        static_cast<const NativeLinearSpanScanContext*>(opaque_context);
-    return scan != nullptr && scan->thread != nullptr &&
-        !HasPendingAotGuestWrite(
-            scan->thread->aot_page_write_watch) &&
-        IsAotGuestPageWriteWatched(
-            scan->thread->aot_page_write_watch, guest_page);
-}
-
-bool ReadNativeLinearSpanRegister(
-    void* opaque_context,
-    std::uint32_t zydis_register,
-    std::uint32_t* value)
-{
-    const auto* scan =
-        static_cast<const NativeLinearSpanScanContext*>(opaque_context);
-    if (scan == nullptr || scan->registers == nullptr || value == nullptr)
-    {
-        return false;
-    }
-    const repiu::platform::GuestCpuContext& registers = *scan->registers;
-    switch (static_cast<ZydisRegister>(zydis_register))
-    {
-    case ZYDIS_REGISTER_EAX: *value = registers.Eax; return true;
-    case ZYDIS_REGISTER_ECX: *value = registers.Ecx; return true;
-    case ZYDIS_REGISTER_EDX: *value = registers.Edx; return true;
-    case ZYDIS_REGISTER_EBX: *value = registers.Ebx; return true;
-    case ZYDIS_REGISTER_ESP: *value = registers.Esp; return true;
-    case ZYDIS_REGISTER_EBP: *value = registers.Ebp; return true;
-    case ZYDIS_REGISTER_ESI: *value = registers.Esi; return true;
-    case ZYDIS_REGISTER_EDI: *value = registers.Edi; return true;
-    default: return false;
-    }
-}
-
-bool IsNativeLinearSpanWriteTargetAllowed(
-    void* opaque_context,
-    std::uint32_t address,
-    std::uint32_t byte_count)
-{
-    const auto* scan =
-        static_cast<const NativeLinearSpanScanContext*>(opaque_context);
-    const std::uint64_t begin = scan != nullptr && scan->thread != nullptr
-        ? scan->thread->runtime_base
-        : 0U;
-    const std::uint64_t arena_end = scan != nullptr && scan->thread != nullptr
-        ? begin + scan->thread->runtime_size
-        : 0U;
-    const std::uint64_t end = static_cast<std::uint64_t>(address) +
-        byte_count;
-    if (scan == nullptr || scan->thread == nullptr || scan->state == nullptr ||
-        byte_count == 0U ||
-        end > 0x100000000ULL || arena_end > 0x100000000ULL)
-    {
-        return false;
-    }
-    if (address < begin || end < address || end > arena_end)
-    {
-        return false;
-    }
-    std::uint64_t cursor = address;
-    while (cursor < end)
-    {
-        const std::uint32_t current = static_cast<std::uint32_t>(cursor);
-        const std::uint32_t page = AotGuestPage(current);
-        bool writable = IsAotGuestPageWriteWatched(
-            scan->thread->aot_page_write_watch, page);
-        if (!writable)
-        {
-            const auto cached =
-                scan->state->linear_span_write_target_page_cache.find(page);
-            if (cached !=
-                scan->state->linear_span_write_target_page_cache.end())
-            {
-                writable = cached->second;
-            }
-            else
-            {
-                // Another of the hand-written protection classifiers 3b's
-                // QueryMemory was built to answer directly -- this one asking
-                // about writing rather than reading.
-                const repiu::platform::MemoryRegion region =
-                    repiu::platform::QueryMemory(
-                        reinterpret_cast<const void*>(
-                            static_cast<std::uintptr_t>(current)));
-                writable = region.valid && region.committed && region.writable;
-                scan->state->linear_span_write_target_page_cache[page] =
-                    writable;
-            }
-        }
-        if (!writable)
-        {
-            return false;
-        }
-        cursor = std::min<std::uint64_t>(
-            end, static_cast<std::uint64_t>(page) + 0x1000U);
-    }
-    return true;
-}
-
-bool IsNativeLinearSpanDirectJumpTargetAllowed(
-    void* opaque_context,
-    std::uint32_t target)
-{
-    const auto* scan =
-        static_cast<const NativeLinearSpanScanContext*>(opaque_context);
-    return scan != nullptr && scan->thread != nullptr &&
-        scan->thread->aot_placement != nullptr &&
-        !IsAotHleBoundaryAddress(scan->thread, target) &&
-        !IsAotGuestPageQuarantined(
-            *scan->thread->aot_placement, target);
-}
-
-bool QueryNativeLinearSpanGeneration(
-    const ThreadContext* context,
-    std::uint32_t entry,
-    std::uint32_t* generation)
-{
-    return context != nullptr &&
-        context->aot_placement != nullptr &&
-        IsAotGuestPageWriteWatched(
-            context->aot_page_write_watch, entry) &&
-        QueryAotActiveGuestPageGeneration(
-            *context->aot_placement, entry, generation);
 }
 
 }  // namespace
@@ -324,11 +100,6 @@ bool ResolveNativeLinearSpanEnabled(
         execution_backend, ParseNativeLinearSpanSetting(setting));
 }
 
-bool ResolveNativeLinearSpanCacheEnabled(std::string_view setting)
-{
-    return setting == "1" || setting == "on" || setting == "true";
-}
-
 // The negative cache (Task 304) is on wherever spans are on by default: the
 // dynamic backend on a host with hardware debug registers. It has no setting.
 bool ResolveNativeLinearSpanRejectCacheEnabled(
@@ -336,30 +107,6 @@ bool ResolveNativeLinearSpanRejectCacheEnabled(
 {
     return ResolveNativeLinearSpanSetting(
         execution_backend, NativeLinearSpanSetting::kBackendDefault);
-}
-
-bool ResolveRetiredTrapNativeSpanEnabled(
-    runtime::ExecutionBackend,
-    std::string_view setting)
-{
-    return ParseNativeLinearSpanSetting(setting) ==
-        NativeLinearSpanSetting::kEnabled;
-}
-
-bool RetiredTrapNativeSpanEnabled(
-    runtime::ExecutionBackend execution_backend)
-{
-    return RetiredTrapNativeSpanPolicyEnabled(execution_backend);
-}
-
-bool ResolveNativeLinearSpanWritesEnabled(std::string_view setting)
-{
-    return setting == "1" || setting == "on" || setting == "true";
-}
-
-bool ResolveNativeLinearSpanJumpsEnabled(std::string_view setting)
-{
-    return setting == "1" || setting == "on" || setting == "true";
 }
 
 bool NativeLinearSpanEnabled(
@@ -456,44 +203,15 @@ bool TryEnterNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
                               ThreadContext* context)
 {
     detail::NativeFastPathState* state = &context->native_fast_path;
-    if (state->active || state->region_active || state->linear_span_active)
+    if (state->active || state->linear_span_active)
     {
         return false;
     }
     const std::uint32_t entry =
         static_cast<std::uint32_t>(win32_context->Eip);
     detail::NativeLinearSpan span;
-    const bool cache_enabled = NativeLinearSpanCacheEnabled();
-    const bool writes_enabled = NativeLinearSpanWritesEnabled() &&
-        !HasPendingAotGuestWrite(context->aot_page_write_watch) &&
-        IsAotGuestPageWriteWatched(
-            context->aot_page_write_watch, entry);
-    const bool jumps_enabled = NativeLinearSpanJumpsEnabled();
     const bool reject_cache_enabled =
-        NativeLinearSpanRejectCacheEnabled(context->execution_backend) &&
-        !writes_enabled && !jumps_enabled;
-    NativeLinearSpanScanContext scan_context = {
-        context, win32_context, state};
-    detail::NativeLinearSpanOptions scan_options;
-    scan_options.allow_memory_writes = writes_enabled;
-    scan_options.write_guard_query = writes_enabled
-        ? &IsNativeLinearSpanPageWriteGuarded
-        : nullptr;
-    scan_options.register_query = writes_enabled
-        ? &ReadNativeLinearSpanRegister
-        : nullptr;
-    scan_options.write_target_query = writes_enabled
-        ? &IsNativeLinearSpanWriteTargetAllowed
-        : nullptr;
-    scan_options.chain_forward_direct_jumps = jumps_enabled;
-    scan_options.direct_jump_target_query = jumps_enabled
-        ? &IsNativeLinearSpanDirectJumpTargetAllowed
-        : nullptr;
-    scan_options.write_guard_context = &scan_context;
-    std::uint32_t generation = 0;
-    const bool cacheable_page = cache_enabled &&
-        QueryNativeLinearSpanGeneration(context, entry, &generation);
-    bool scan_succeeded = false;
+        NativeLinearSpanRejectCacheEnabled(context->execution_backend);
     if (reject_cache_enabled &&
         detail::LookupNativeLinearSpanRejectCache(state, entry))
     {
@@ -501,54 +219,18 @@ bool TryEnterNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
             1, std::memory_order_relaxed);
         return false;
     }
-    if (cacheable_page)
+    if (!detail::ScanNativeLinearSpanWithZydis(
+            entry, context->runtime_base, context->runtime_size, &span))
     {
-        scan_succeeded = detail::LookupNativeLinearSpanScanCache(
-            state, entry, AotGuestPage(entry), generation, &span);
-    }
-    else if (cache_enabled)
-    {
-        state->linear_span_cache_miss_count.fetch_add(
-            1, std::memory_order_relaxed);
-    }
-    if (!scan_succeeded)
-    {
-        scan_succeeded = detail::ScanNativeLinearSpanWithZydis(
-            entry, context->runtime_base, context->runtime_size, &span,
-            (writes_enabled || jumps_enabled) ? &scan_options : nullptr);
-        if (!scan_succeeded && reject_cache_enabled)
+        if (reject_cache_enabled)
         {
             detail::StoreNativeLinearSpanRejectCache(
                 state, entry, span);
         }
-        if (scan_succeeded && cacheable_page &&
-            AotGuestPage(span.boundary_address) ==
-                AotGuestPage(entry))
-        {
-            detail::StoreNativeLinearSpanScanCache(
-                state, entry, AotGuestPage(entry), generation, span);
-        }
-    }
-    if (span.boundary_write_guard_uncovered)
-    {
-        state->linear_span_write_guard_uncovered_count.fetch_add(
-            1, std::memory_order_relaxed);
-    }
-    if (span.boundary_backward_jump)
-    {
-        state->linear_span_backward_jump_stop_count.fetch_add(
-            1, std::memory_order_relaxed);
-    }
-    if (!scan_succeeded)
-    {
         state->linear_span_reject_count.fetch_add(
             1, std::memory_order_relaxed);
         return false;
     }
-    state->linear_span_write_cross_count.fetch_add(
-        span.crossed_memory_write_count, std::memory_order_relaxed);
-    state->linear_span_direct_jump_chain_count.fetch_add(
-        span.chained_direct_jump_count, std::memory_order_relaxed);
     state->linear_span_boundary = span.boundary_address;
     state->linear_span_instruction_count = span.instruction_count;
     state->linear_span_saved_dr0 =
@@ -571,88 +253,8 @@ bool TryEnterNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
     return true;
 }
 
-bool TryEnterRetiredTrapNativeSpan(repiu::platform::GuestCpuContext* win32_context,
-                                   ThreadContext* context)
-{
-    if (win32_context == nullptr || context == nullptr)
-    {
-        return false;
-    }
-    context->aot_retired_span_attempt_count.fetch_add(
-        1U, std::memory_order_relaxed);
-    if (context->shared_live_telemetry != nullptr)
-    {
-        repiu::platform::AtomicIncrement(
-            &context->shared_live_telemetry
-                 ->aot_retired_span_attempt_count);
-    }
-    if (!TryEnterNativeLinearSpan(win32_context, context))
-    {
-        return false;
-    }
-    context->aot_retired_span_success_count.fetch_add(
-        1U, std::memory_order_relaxed);
-    if (context->shared_live_telemetry != nullptr)
-    {
-        repiu::platform::AtomicIncrement(
-            &context->shared_live_telemetry
-                 ->aot_retired_span_success_count);
-    }
-    // Preserve the retired fallback's pending-reentry and trace policy. The
-    // span clears TF only until Dr0 reaches its boundary; that boundary must
-    // resume the exact existing AOT/HLE single-step chain.
-    return true;
-}
-
 namespace detail
 {
-
-bool LookupNativeLinearSpanScanCache(
-    NativeFastPathState* state,
-    std::uint32_t entry,
-    std::uint32_t guest_page,
-    std::uint32_t generation,
-    NativeLinearSpan* span)
-{
-    if (state == nullptr || span == nullptr)
-    {
-        return false;
-    }
-    const auto cached = state->linear_span_scan_cache.find(entry);
-    if (cached == state->linear_span_scan_cache.end())
-    {
-        state->linear_span_cache_miss_count.fetch_add(
-            1, std::memory_order_relaxed);
-        return false;
-    }
-    if (cached->second.guest_page != guest_page ||
-        cached->second.generation != generation)
-    {
-        state->linear_span_scan_cache.erase(cached);
-        state->linear_span_cache_miss_count.fetch_add(
-            1, std::memory_order_relaxed);
-        return false;
-    }
-    *span = cached->second.span;
-    state->linear_span_cache_hit_count.fetch_add(
-        1, std::memory_order_relaxed);
-    return true;
-}
-
-void StoreNativeLinearSpanScanCache(
-    NativeFastPathState* state,
-    std::uint32_t entry,
-    std::uint32_t guest_page,
-    std::uint32_t generation,
-    const NativeLinearSpan& span)
-{
-    if (state == nullptr)
-    {
-        return;
-    }
-    state->linear_span_scan_cache[entry] = {
-        guest_page, generation, span};
-}
 
 bool LookupNativeLinearSpanRejectCache(
     NativeFastPathState* state,
