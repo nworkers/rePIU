@@ -17,13 +17,6 @@ namespace repiu::engine::detail
 
 constexpr std::uint32_t kNativeLinearSpanRejectCacheMaxEntries = 65536;
 
-struct NativeLinearSpanCacheEntry
-{
-    std::uint32_t guest_page = 0;
-    std::uint32_t generation = 0;
-    NativeLinearSpan span;
-};
-
 struct NativeLinearSpanRejectCacheEntry
 {
     std::array<std::uint8_t, kNativeLinearSpanRejectSnapshotCapacity>
@@ -53,33 +46,6 @@ struct NativeFastPathState
     std::atomic<std::uint32_t> last_rejected_bytes_low{0};
     std::atomic<std::uint32_t> last_rejected_bytes_high{0};
 
-    // Route A region execution (Task 266). Unlike the clean-function fast path
-    // above, a region may contain up to three HLE-sensitive instructions. They
-    // are trapped with hardware execution breakpoints (Dr1-Dr3) rather than code
-    // patches, so no guest byte is modified; Dr0 breakpoints the caller return
-    // address to bound the region. On a Dr1-Dr3 fault the sensitive instruction
-    // is HLE-emulated (it has not executed yet) and native execution resumes.
-    static constexpr std::uint32_t kMaxRegionSensitive = 3;
-    bool region_active = false;
-    std::uint32_t region_return_address = 0;
-    std::uint32_t region_sensitive_addr[kMaxRegionSensitive] = {0, 0, 0};
-    std::uint32_t region_sensitive_slots = 0;
-    std::uint32_t region_saved_dr0 = 0;
-    std::uint32_t region_saved_dr1 = 0;
-    std::uint32_t region_saved_dr2 = 0;
-    std::uint32_t region_saved_dr3 = 0;
-    std::uint32_t region_saved_dr6 = 0;
-    std::uint32_t region_saved_dr7 = 0;
-    std::unordered_map<std::uint32_t, std::int8_t> region_analyzable_cache;
-    std::unordered_map<std::uint32_t, std::vector<std::uint32_t>>
-        region_sensitive_cache;
-    std::atomic<std::uint32_t> region_entry_count{0};
-    std::atomic<std::uint32_t> region_sensitive_hit_count{0};
-    std::atomic<std::uint32_t> region_reject_count{0};
-    std::atomic<std::uint32_t> region_return_count{0};
-    std::atomic<std::uint32_t> region_cancel_count{0};
-    std::atomic<std::uint32_t> region_stray_heal_count{0};
-
     // Task 275 general-entry straight-line spans. Dr0 guards the first
     // sensitive/control/store boundary while TF is clear. The boundary remains
     // on the existing single-step path; no guest byte is modified.
@@ -106,10 +72,6 @@ struct NativeFastPathState
     std::atomic<std::uint32_t> linear_span_cancel_other_db_first_eip{0};
     std::atomic<std::uint32_t> linear_span_instruction_total{0};
     std::atomic<std::uint32_t> linear_span_reject_count{0};
-    std::unordered_map<std::uint32_t, NativeLinearSpanCacheEntry>
-        linear_span_scan_cache;
-    std::atomic<std::uint32_t> linear_span_cache_hit_count{0};
-    std::atomic<std::uint32_t> linear_span_cache_miss_count{0};
     std::unordered_map<std::uint32_t, NativeLinearSpanRejectCacheEntry>
         linear_span_reject_cache;
     std::atomic<std::uint32_t> linear_span_reject_cache_hit_count{0};
@@ -118,15 +80,12 @@ struct NativeFastPathState
     std::atomic<std::uint32_t> linear_span_reject_cache_store_count{0};
     std::atomic<std::uint32_t>
         linear_span_reject_cache_capacity_skip_count{0};
-    std::atomic<std::uint32_t> linear_span_write_cross_count{0};
-    std::atomic<std::uint32_t> linear_span_write_guard_uncovered_count{0};
+    // Task 288 added this for spans that crossed memory writes. Task i022
+    // deleted that crossing, but a span still ends here when an implicit stack
+    // write such as `push` faults on a watched page.
     std::atomic<std::uint32_t> linear_span_write_fault_cancel_count{0};
     std::atomic<std::uint32_t> linear_span_last_cancel_code{0};
     std::atomic<std::uint32_t> linear_span_last_cancel_eip{0};
-    std::unordered_map<std::uint32_t, bool>
-        linear_span_write_target_page_cache;
-    std::atomic<std::uint32_t> linear_span_direct_jump_chain_count{0};
-    std::atomic<std::uint32_t> linear_span_backward_jump_stop_count{0};
 };
 
 bool TryEnterNativeFastPath(repiu::platform::GuestCpuContext* context,

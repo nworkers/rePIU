@@ -8,19 +8,20 @@
 ## 0. 이 멈춤은 해소됐습니다 (Tasks 414 · 417, 2026-08-04)
 
 기본 빌드에서는 **더 이상 재현되지 않습니다**(60초 8회 중 8회 정상). 따라서 이 문서는
-이제 **회귀 확인과 A/B 재현** 절차입니다. 원인 둘은 각각 스위치로 되살릴 수 있습니다.
+이제 **회귀 확인** 절차입니다. 원인 둘을 되살리던 스위치는 모두 제거되어, 두 원인 모두
+그 수정 이전 빌드로만 재현됩니다.
 
 | 되살릴 원인 | 스위치 | 되돌아오는 증상 |
 |---|---|---|
 | 포화 (Task 414) | ~~`REPIU_PORT_IO_DELAY_LOOP=0`~~ — #20에서 제거, 되살릴 수 없음 | 14회 중 0회 정상, 프레임 0~1 |
-| arena 낙하 (Task 417) | `REPIU_AOT_STRICT_SPANNING_ENTRY=1` | 5회 중 2회 멈춤, single-step 1.6~1.7M |
+| arena 낙하 (Task 417) | ~~`REPIU_AOT_STRICT_SPANNING_ENTRY=1`~~ — #22에서 제거, 되살릴 수 없음 | 5회 중 2회 멈춤, single-step 1.6~1.7M |
 
-포화 원인의 delay loop 일괄 처리는 #20 이후 항상 켜져 있어, 그 원인은 Task 414 이전
-빌드로만 재현됩니다. 기본값으로 돌린 실행이 멈추면 **새 원인**이므로 §2·§3 절차로 좁힙니다.
+포화 원인은 Task 414 이전 빌드로, arena 낙하는 Task 417 이전 빌드로만 재현됩니다. 기본값으로 돌린 실행이 멈추면 **새 원인**이므로 §2·§3 절차로 좁힙니다.
 
 ## 1. 재현
 
-기본 빌드는 정상이므로 재현하려면 §0의 스위치 중 하나를 켭니다. 원래 재현율 **약
+기본 빌드는 정상이므로 재현하려면 §0의 원인이 살아 있는 옛 빌드(Task 414 또는 417
+이전)를 씁니다. 원래 재현율 **약
 29%**(17회 중 5회)는 두 원인이 모두 살아 있던 빌드의 값이므로, 어느 쪽이든 한 번에
 여러 회 돌립니다. EEPROM은 **실행별로 격리**합니다(공유하면 영속 상태가 새어 결과가
 무효가 됩니다).
@@ -75,7 +76,7 @@ AOT generation failure addresses/skips/quarantine-fallbacks/spanning-activations
 |---|---|
 | `a` = 0, `d` ≥ 1 | 정상. 걸친 요청 항목이 활성화돼 실패가 아예 없습니다 |
 | `a` ≥ 1 | 세대 실패가 남아 있습니다. `b`(건너뛴 시도)가 크면 그 주소를 게스트가 계속 밟는 중입니다 |
-| `c` ≥ 1 | 페이지 단위 격리로 되돌아갔습니다 — 스위치가 켜졌거나 억제 집합이 찼습니다 |
+| `c` ≥ 1 | 페이지 단위 격리로 되돌아갔습니다 — 억제 집합이 찼습니다 |
 
 ## 3. 두 덤프를 뺄 때의 비대칭 (이 증상에서 특히 중요)
 
@@ -114,17 +115,17 @@ what is specific to the pumpit3 stall.
 ## 0. This stall is fixed (Tasks 414 and 417, 2026-08-04)
 
 The default build **no longer reproduces it** (eight healthy runs of eight at 60 seconds),
-so this page is now a regression check and an A/B reproduction procedure. Each cause can be
-brought back with a switch, except that the saturation's switch is gone:
-`REPIU_PORT_IO_DELAY_LOOP=0` (zero healthy runs in fourteen, 0-1 frames) was removed in #20,
-so the delay-loop batching is always on and the saturation reproduces only on a build from
-before Task 414. `REPIU_AOT_STRICT_SPANNING_ENTRY=1` still restores the arena fall-through
-(two stalls in five, 1.6-1.7 M single steps). **A stall with default settings is a new
+so this page is now a regression check. Both switches that brought a cause back are gone:
+`REPIU_PORT_IO_DELAY_LOOP=0` (zero healthy runs in fourteen, 0-1 frames) was removed in #20
+and `REPIU_AOT_STRICT_SPANNING_ENTRY=1` (two stalls in five, 1.6-1.7 M single steps) in #22,
+so the saturation reproduces only on a build from before Task 414 and the arena fall-through
+only on one from before Task 417. **A stall with default settings is a new
 cause**, to be narrowed with the sections below.
 
 ## 1. Reproduce
 
-To reproduce, enable one of the switches above; the original **29%** rate (five of seventeen)
+To reproduce, use an old build in which the cause is still live (from before Task 414 or
+417); the original **29%** rate (five of seventeen)
 belongs to the build where both causes were live, so run several either way. Keep
 the EEPROM **isolated per run** — sharing it leaks persistent state and invalidates the
 result. Use the `dynamic` backend with a 60-second timeout. **Do not redirect through
@@ -148,8 +149,8 @@ signature a figure from the old build. Read the policy line instead:
 `AOT generation failure addresses/skips/quarantine-fallbacks/spanning-activations`.
 Zero failed addresses with one or more spanning activations is healthy; a nonzero address
 count means a generation failure survives, with the skip count showing how often the guest
-still reaches it; a nonzero quarantine fallback means the page-wide penalty is back, either
-by switch or because the suppression set filled.
+still reaches it; a nonzero quarantine fallback means the page-wide penalty is back because
+the suppression set filled.
 
 ## 3. Subtracting two dumps is asymmetric
 

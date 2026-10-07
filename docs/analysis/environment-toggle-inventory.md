@@ -35,9 +35,12 @@
 (Task 414 이전 정지 재현), `scripts/task365_glide_setter_state_elision.ps1`,
 `scripts/task414_delay_loop_ab.ps1`.
 
-### 2번 묶음 — 기능과 스위치를 함께 삭제할 옵트인 실험 (11개 묶음, 보류)
+### 2번 묶음 — 기능과 스위치를 함께 삭제한 옵트인 실험 (11개 묶음, issue #22에서 삭제)
 
-기본 꺼짐인 채 승격되지 않았고 7~8월 이후 쓴 기록이 없다.
+기본 꺼짐인 채 승격되지 않았고 7~8월 이후 쓴 기록이 없다. issue #22(2026-10-08)에서
+기능과 스위치를 함께 삭제했다. 간접 디스패치 경로에서만 무장되던 진단
+`REPIU_AOT_DBT_CALL_STEP`(Task 285)도 같이 지웠다. 설계는
+`docs/design/20261008-i022-delete-abandoned-opt-in-experiments.md`.
 
 | 변수 | 근거 |
 |---|---|
@@ -50,8 +53,23 @@
 | `REPIU_AOT_SEGMENT_WRITE_BLOCKS_RESUME` | Task 346 이전 동작 복원 스위치(07-28) |
 | `REPIU_AOT_QUARANTINE_FIRST_WRITE`, `REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE`, `REPIU_AOT_STRICT_SPANNING_ENTRY`, `REPIU_AOT_PATCH_WIDE_PROTECT` | 07-28~08-04, 실험·A/B 전용 |
 
-참조하는 스크립트: `scripts/benchmark_native_linear_span.ps1`, `task283`~`task287`,
-`task347`, `task413`.
+참조하던 스크립트(조사 때의 기록을 바로잡음): span 변수는 `task287`과
+`benchmark_native_linear_span.ps1`만, `REPIU_AOT_DBT_INDIRECT`는 `task283`~`task287`과
+벤치마크 스크립트, `REPIU_AOT_PATCH_WIDE_PROTECT`는 `task413`이 썼다. `task347`은
+`REPIU_AOT_DBT_POST_HLE_TRANSLATE`를 비우기만 했다. #22에서 `task347`을 뺀 일곱 개를
+지웠고 `task347`에서는 지워진 변수 줄만 뺐다.
+
+삭제에서 확인한 사실:
+
+* 이전 동작을 되살리던 다섯 스위치(`SEGMENT_WRITE_BLOCKS_RESUME`, `QUARANTINE_FIRST_WRITE`,
+  `QUARANTINE_ON_GENERATION_FAILURE`, `STRICT_SPANNING_ENTRY`, `PATCH_WIDE_PROTECT`)는
+  모두 조건 하나를 더하는 형태여서, 같은 동작이 기본 경로의 안전 분기(기록표 넘침, 억제
+  집합 포화, 빈 패치 범위)로는 계속 도달 가능하다.
+* span 쓰기 실험의 `write fault-cancel` 집계는 기본 span에서도 쓰인다. `push` 같은 암묵적
+  스택 write는 명시적 memory write 판정에 걸리지 않아 span 안에 들어갈 수 있고, 감시
+  page에서 fault를 낸다.
+* `VehExitSite`의 세 값(`kCallStepProbe`, `kNativeRegionReturn`, `kNativeRegionSensitive`)은
+  번호를 지키기 위해 퇴역 자리로 남겼다.
 
 ### 유지
 
@@ -102,15 +120,25 @@ candidates; only some historical A/B scripts reference them (listed per group).
   by the concluded A/B procedures in `docs/guides/glide-setter-elision-testing.md`,
   `gameplay-scene-capture.md`, `pumpit3-stall-reproduction.md` (reproducing the pre-Task-414
   stall) and `scripts/task365_*`, `task414_*`.
-* **Group 2 — delete feature and switch, abandoned opt-in experiments (11 groups, deferred).**
-  Never promoted, unused since July–August: `REPIU_AOT_DBT_POST_HLE_TRANSLATE` (judged
+* **Group 2 — feature and switch deleted, abandoned opt-in experiments (11 groups, deleted in
+  issue #22 on 2026-10-08, with `REPIU_AOT_DBT_CALL_STEP`, a Task 285 diagnostic only the
+  indirect dispatch path armed).** Never promoted, unused since July–August: `REPIU_AOT_DBT_POST_HLE_TRANSLATE` (judged
   "ineffective — the path is never even entered"), `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH`,
   `REPIU_AOT_DBT_INDIRECT`, `REPIU_NATIVE_REGION` (superseded by the default clean-function
   fast path), `REPIU_NATIVE_LINEAR_SPAN_CACHE`/`_JUMPS`/`_WRITES`,
   `REPIU_AOT_RETIRED_SPAN_REENTRY`, `REPIU_AOT_SEGMENT_WRITE_BLOCKS_RESUME`,
   `REPIU_AOT_QUARANTINE_FIRST_WRITE`, `REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE`,
-  `REPIU_AOT_STRICT_SPANNING_ENTRY`, `REPIU_AOT_PATCH_WIDE_PROTECT`. Referenced by
-  `scripts/benchmark_native_linear_span.ps1`, `task283`–`task287`, `task347`, `task413`.
+  `REPIU_AOT_STRICT_SPANNING_ENTRY`, `REPIU_AOT_PATCH_WIDE_PROTECT`. Corrected script record:
+  only `task287` and `benchmark_native_linear_span.ps1` used the span variables,
+  `task283`–`task287` and the benchmark used `REPIU_AOT_DBT_INDIRECT`, `task413` used
+  `REPIU_AOT_PATCH_WIDE_PROTECT`, and `task347` only cleared `REPIU_AOT_DBT_POST_HLE_TRANSLATE`;
+  #22 deleted all but `task347`, which only lost that line. Found while deleting: the five
+  rollback switches each added one condition, so the same behavior stays reachable through the
+  default path's safety branches (table overflow, a full suppression set, an empty patch
+  range); the span-writes experiment's `write fault-cancel` count is used by default spans too,
+  because an implicit stack write such as `push` passes the explicit-write check and can fault
+  on a watched page; and `VehExitSite`'s three unused values keep their slots so later numbers
+  do not move.
 * **Keep**: recent promotions whose rollback insurance still matters
   (`REPIU_AOT_DBT_SUPERBLOCK`, `REPIU_TIMER_HANDLER_CACHE_ENTRY`, `REPIU_TIMER_RETURN_PAD`,
   `REPIU_GLIDE_LFB_HIGH_PRECISION`, `REPIU_PIC_TIMER_IN_SERVICE`, `REPIU_GUEST_CLI_HOLD`,

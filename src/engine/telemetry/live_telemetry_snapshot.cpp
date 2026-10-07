@@ -248,12 +248,10 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
         "[repiu-live] elapsed_ms=%lu poll=%lu phase=%u heartbeat=%u "
         "dispatch_entry=%u dispatch_exit=%u last_eip=0x%08X "
         "progress=%u single_step=%u aot=%u/%u fast=%u/%u/%u "
-        "routea=%u/%u region=%u/%u/%u/%u/%u "
-        "span=%u/%u/%u/%u/%u span_cache=%u/%u "
-        "span_reject_cache=%u/%u/%u/%u/%u span_write=%u/%u/%u "
+        "routea=%u/%u "
+        "span=%u/%u/%u/%u/%u "
+        "span_reject_cache=%u/%u/%u/%u/%u span_write=%u "
         "span_cancel_last=0x%08X/0x%08X "
-        "span_jump=%u/%u "
-        "retired_span=%u/%u "
         "selguard=%u/%u/%u/%u/%u "
         "posthle=%u/%u "
         "prov=%u/%u/%u/%u/%u/%u/%u/%u "
@@ -277,16 +275,6 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
         context.routea_sensitive_count.load(std::memory_order_relaxed),
         context.routea_segment_sensitive_count.load(
             std::memory_order_relaxed),
-        context.native_fast_path.region_entry_count.load(
-            std::memory_order_relaxed),
-        context.native_fast_path.region_sensitive_hit_count.load(
-            std::memory_order_relaxed),
-        context.native_fast_path.region_return_count.load(
-            std::memory_order_relaxed),
-        context.native_fast_path.region_reject_count.load(
-            std::memory_order_relaxed),
-        context.native_fast_path.region_stray_heal_count.load(
-            std::memory_order_relaxed),
         context.native_fast_path.linear_span_entry_count.load(
             std::memory_order_relaxed),
         context.native_fast_path.linear_span_boundary_count.load(
@@ -296,10 +284,6 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
         context.native_fast_path.linear_span_instruction_total.load(
             std::memory_order_relaxed),
         context.native_fast_path.linear_span_reject_count.load(
-            std::memory_order_relaxed),
-        context.native_fast_path.linear_span_cache_hit_count.load(
-            std::memory_order_relaxed),
-        context.native_fast_path.linear_span_cache_miss_count.load(
             std::memory_order_relaxed),
         context.native_fast_path.linear_span_reject_cache_hit_count.load(
             std::memory_order_relaxed),
@@ -312,23 +296,11 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
         context.native_fast_path
             .linear_span_reject_cache_capacity_skip_count.load(
                 std::memory_order_relaxed),
-        context.native_fast_path.linear_span_write_cross_count.load(
-            std::memory_order_relaxed),
-        context.native_fast_path.linear_span_write_guard_uncovered_count.load(
-            std::memory_order_relaxed),
         context.native_fast_path.linear_span_write_fault_cancel_count.load(
             std::memory_order_relaxed),
         context.native_fast_path.linear_span_last_cancel_code.load(
             std::memory_order_relaxed),
         context.native_fast_path.linear_span_last_cancel_eip.load(
-            std::memory_order_relaxed),
-        context.native_fast_path.linear_span_direct_jump_chain_count.load(
-            std::memory_order_relaxed),
-        context.native_fast_path.linear_span_backward_jump_stop_count.load(
-            std::memory_order_relaxed),
-        context.aot_retired_span_attempt_count.load(
-            std::memory_order_relaxed),
-        context.aot_retired_span_success_count.load(
             std::memory_order_relaxed),
         context.aot_selector_guard_native_site_count.load(
             std::memory_order_relaxed),
@@ -1472,12 +1444,6 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->native_linear_span_reject_count =
         context.native_fast_path.linear_span_reject_count.load(
             std::memory_order_relaxed);
-    attempt->native_linear_span_cache_hit_count =
-        context.native_fast_path.linear_span_cache_hit_count.load(
-            std::memory_order_relaxed);
-    attempt->native_linear_span_cache_miss_count =
-        context.native_fast_path.linear_span_cache_miss_count.load(
-            std::memory_order_relaxed);
     attempt->native_linear_span_reject_cache_hit_count =
         context.native_fast_path.linear_span_reject_cache_hit_count.load(
             std::memory_order_relaxed);
@@ -1494,12 +1460,6 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.native_fast_path
             .linear_span_reject_cache_capacity_skip_count.load(
                 std::memory_order_relaxed);
-    attempt->native_linear_span_write_cross_count =
-        context.native_fast_path.linear_span_write_cross_count.load(
-            std::memory_order_relaxed);
-    attempt->native_linear_span_write_guard_uncovered_count =
-        context.native_fast_path.linear_span_write_guard_uncovered_count.load(
-            std::memory_order_relaxed);
     attempt->native_linear_span_write_fault_cancel_count =
         context.native_fast_path.linear_span_write_fault_cancel_count.load(
             std::memory_order_relaxed);
@@ -1508,12 +1468,6 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             std::memory_order_relaxed);
     attempt->native_linear_span_last_cancel_eip =
         context.native_fast_path.linear_span_last_cancel_eip.load(
-            std::memory_order_relaxed);
-    attempt->native_linear_span_direct_jump_chain_count =
-        context.native_fast_path.linear_span_direct_jump_chain_count.load(
-            std::memory_order_relaxed);
-    attempt->native_linear_span_backward_jump_stop_count =
-        context.native_fast_path.linear_span_backward_jump_stop_count.load(
             std::memory_order_relaxed);
     attempt->execution_backend = context.execution_backend;
     attempt->aot_backend_active = context.aot_placement != nullptr;
@@ -1709,22 +1663,6 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             context.aot_dbt_return_fallback_reason_counts[index].load(
                 std::memory_order_relaxed);
     }
-    attempt->aot_dbt_indirect_entry_count =
-        context.aot_dbt_indirect_entry_count.load(std::memory_order_relaxed);
-    attempt->aot_dbt_indirect_success_count =
-        context.aot_dbt_indirect_success_count.load(std::memory_order_relaxed);
-    attempt->aot_dbt_indirect_fallback_count =
-        context.aot_dbt_indirect_fallback_count.load(std::memory_order_relaxed);
-    attempt->aot_dbt_indirect_attempt_count =
-        attempt->aot_dbt_indirect_success_count +
-        attempt->aot_dbt_indirect_fallback_count;
-    for (std::uint32_t index = 0;
-         index < kAotDbtDispatchFallbackReasonCount; ++index)
-    {
-        attempt->aot_dbt_indirect_fallback_reason_counts[index] =
-            context.aot_dbt_indirect_fallback_reason_counts[index].load(
-                std::memory_order_relaxed);
-    }
     attempt->aot_indirect_dispatch_count =
         context.aot_indirect_dispatch_count.load(std::memory_order_relaxed);
     attempt->aot_inline_cache_patch_attempt_count =
@@ -1813,12 +1751,6 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.aot_retired_entry_trap_count.load(std::memory_order_relaxed);
     attempt->aot_retired_trap_profile =
         SnapshotAotRetiredTrapProfile(context.aot_retired_trap_profile);
-    attempt->aot_retired_span_attempt_count =
-        context.aot_retired_span_attempt_count.load(
-            std::memory_order_relaxed);
-    attempt->aot_retired_span_success_count =
-        context.aot_retired_span_success_count.load(
-            std::memory_order_relaxed);
     attempt->aot_quarantine_count =
         context.aot_quarantine_count.load(std::memory_order_relaxed);
     attempt->aot_last_code_write_source =
@@ -1932,30 +1864,6 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     std::memcpy(attempt->aot_dbt_call_return_trace,
                 context.aot_dbt_call_return_trace,
                 sizeof(attempt->aot_dbt_call_return_trace));
-    attempt->aot_dbt_call_step_probe_configured =
-        context.aot_dbt_call_step_probe_configured;
-    attempt->aot_dbt_call_step_probe_target_count =
-        context.aot_dbt_call_step_probe_target_count;
-    std::memcpy(attempt->aot_dbt_call_step_probe_targets,
-                context.aot_dbt_call_step_probe_targets,
-                sizeof(attempt->aot_dbt_call_step_probe_targets));
-    attempt->aot_dbt_call_step_probe_trace_count =
-        context.aot_dbt_call_step_probe_trace_count;
-    attempt->aot_dbt_call_step_probe_arm_count =
-        context.aot_dbt_call_step_probe_arm_count;
-    attempt->aot_dbt_call_step_probe_complete_count =
-        context.aot_dbt_call_step_probe_complete_count;
-    attempt->aot_dbt_call_step_probe_conflict_count =
-        context.aot_dbt_call_step_probe_conflict_count;
-    attempt->aot_dbt_call_step_probe_skipped_count =
-        context.aot_dbt_call_step_probe_skipped_count;
-    attempt->aot_dbt_call_step_probe_phase =
-        context.aot_dbt_call_step_probe_phase;
-    attempt->aot_dbt_call_step_probe_active_call_sequence =
-        context.aot_dbt_call_step_probe_active_call_sequence;
-    std::memcpy(attempt->aot_dbt_call_step_probe_trace,
-                context.aot_dbt_call_step_probe_trace,
-                sizeof(attempt->aot_dbt_call_step_probe_trace));
     attempt->diagnostic_poll_iteration_count =
         context.diagnostic_poll_iteration_count;
     attempt->diagnostic_progress_count =

@@ -48,8 +48,8 @@
 // and then calls; the resolver rewrites the return address to say where the
 // guest goes next, and when there is no resolver to run the thunk still has to
 // leave the site somewhere it can continue from. Returning as if nothing
-// happened would land in the metadata the site pushed. The five thunks answer
-// this with 15, 15, 16, 21 bytes and one int3 -- one per site shape -- so the
+// happened would land in the metadata the site pushed. The four thunks answer
+// this with 15, 15, 16 bytes and one int3 -- one per site shape -- so the
 // answer is a parameter and not a shared constant.
 .macro REPIU_STACK_BRIDGE entry, resolver, context_ptr, host_esp_ptr, refusal=return
     .globl \entry

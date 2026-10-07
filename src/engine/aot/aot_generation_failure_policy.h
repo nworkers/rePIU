@@ -21,14 +21,13 @@ std::uint32_t AotGenerationFailureAddressCount();
 // Translation attempts skipped because the address had already failed.
 std::uint32_t& AotGenerationFailureSkipCount();
 
-// How often the old whole-page quarantine still fired, either through
-// `REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE` or the address-set limit.
+// How often the old whole-page quarantine still fired because the address set
+// was full.
 std::uint32_t& AotGenerationFailureQuarantineCount();
 
 // Task 417. How often a requested entry that straddles a page boundary into a
 // retired neighbour was activated anyway, which is the case that previously
 // produced the failure this policy then had to absorb.
-// `REPIU_AOT_STRICT_SPANNING_ENTRY=1` restores the old refusal.
 std::uint32_t& AotSpanningEntryActivationCount();
 
 }  // namespace repiu::engine

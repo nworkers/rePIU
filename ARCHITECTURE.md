@@ -564,27 +564,11 @@ TF를 끕니다. 경계 #DB는 debug register와 TF를 복원하고 기존 singl
 self-modifying code 뒤의 stale decode를 재사용하지 않습니다. 예상하지 않은 exception도
 같은 fail-closed 복원 경로를 사용합니다.
 
-Task 288 Stage 1은 이 기본 동작을 유지하면서 `REPIU_NATIVE_LINEAR_SPAN_CACHE=1`일 때만
-entry EIP별 스캔 결과를 실험적으로 캐시합니다. 캐시 가능한 항목은 같은 4 KiB 페이지
-안에서 끝나고, 그 페이지가 write-watch로 보호되며 active AOT generation을 가진 경우로
-제한됩니다. 키에 page generation을 포함하므로 새 generation 발행 뒤에는 stale 항목을
-지우고 재스캔합니다. retired, quarantined, 미추적, cross-page 항목은 항상 재스캔합니다.
-60초 supervisor/direct 예비 A/B에서 hit가 0이었으므로 이 캐시는 기본 OFF이며, 기존
-`dynamic` span 기본 정책에는 영향을 주지 않습니다.
-
-Task 288 Stage 2는 `REPIU_NATIVE_LINEAR_SPAN_WRITES=1`에서만 memory-write 통과를
-실험합니다. 스캐너가 지나는 모든 코드 page가 write-watch로 덮여야 하며, entry 자체의
-write, 같은 span에서 base/index register가 먼저 바뀐 write, guest runtime 밖 또는
-read-only/uncommitted target은 기존 경계로 남깁니다. target page 보호 결과는 process
-수명 동안 캐시하고 write-watch page는 동기 fault로 기존 coherence 경로에 되돌립니다.
-예상 write fault는 일반 cancel과 별도 집계합니다. 240초 direct pilot에서 draw/swap이
-약 20% 감소했으므로 이 기능도 기본 OFF입니다.
-
-Task 288 Stage 3은 `REPIU_NATIVE_LINEAR_SPAN_JUMPS=1`에서만 in-range 전방 near direct
-`jmp rel`의 target으로 스캔을 이어갑니다. HLE boundary 또는 quarantined page target,
-indirect/far jump와 역방향 jump는 기존 경계로 남습니다. 60초 A/B에서 forward chain은
-0회, backward stop은 703회였으므로 기본 OFF이며 conditional-branch Dr1 확장도 진행하지
-않습니다.
+Task 288은 이 위에 세 가지 옵트인 실험(entry별 scan 캐시, memory-write 통과, 전방
+`jmp` 연결)을 더했지만 모두 기본 OFF로 남았고(hit 0, draw/swap 약 20% 감소, forward
+chain 0회), issue #22에서 스위치와 함께 삭제했습니다. 다만 span 안의 `push` 같은 암묵적
+스택 write가 write-watch page에서 fault를 내는 경우는 기본 span에서도 생기므로, 그
+fault를 일반 cancel과 따로 세는 `write fault-cancel` 집계는 남아 있습니다.
 
 Task 287의 반복 A/B 뒤 `dynamic`는 환경 변수 미지정 시 이 span을 기본 활성화합니다.
 다른 backend의 기본값은 계속 OFF입니다. `REPIU_NATIVE_LINEAR_SPAN=1|on|true`는
@@ -599,28 +583,11 @@ TF, then passes the boundary instruction to the existing single-step/HLE chain. 
 writes stay outside spans and results are not cached, preventing stale decoded spans after
 self-modification. Unexpected exceptions use the same fail-closed restoration.
 
-Task 288 Stage 1 adds an experimental per-entry scan cache only when
-`REPIU_NATIVE_LINEAR_SPAN_CACHE=1`. A result is cacheable only when its boundary remains on
-the same 4 KiB page and that page is both write-watched and backed by an active AOT
-generation. The page generation is part of the key, so generation replacement discards a
-stale entry and rescans. Retired, quarantined, untracked, and cross-page results always
-rescan. The cache remains default off because 60-second supervisor and direct-loader pilot
-runs observed zero hits; the existing `dynamic` span default is unchanged.
-
-Task 288 Stage 2 experimentally crosses memory writes only under
-`REPIU_NATIVE_LINEAR_SPAN_WRITES=1`. Every traversed code page must be write-watched. A write
-at the entry, a write whose base/index register changed earlier in the span, or a target
-outside guest runtime or on a read-only/uncommitted non-watched page remains at the old
-boundary. Target-page protection results are cached for the process lifetime; a write to a
-watched page faults synchronously back into the existing coherence path. Expected write
-faults are counted separately from ordinary cancellation. This feature also remains default
-off because a 240-second direct pilot reduced draw/swap by about 20%.
-
-Task 288 Stage 3 chains an in-range forward near direct `jmp rel` only under
-`REPIU_NATIVE_LINEAR_SPAN_JUMPS=1`. Targets that are HLE boundaries or quarantined pages,
-indirect/far jumps, and backward jumps retain the old boundary. A 60-second A/B observed
-zero forward chains and 703 backward stops, so the feature remains default off and the
-conditional-branch Dr1 extension is not pursued.
+Task 288 added three opt-in experiments on top (a per-entry scan cache, crossing memory
+writes, chaining forward `jmp`s); all stayed default off (zero hits, about 20% fewer
+draws/swaps, zero forward chains) and issue #22 deleted them with their switches. A default
+span can still fault on a write-watched page through an implicit stack write such as `push`,
+so the `write fault-cancel` count, kept apart from ordinary cancellation, remains.
 
 After Task 287's repeated A/B, `dynamic` enables spans by default when the environment is
 unset; other backends remain off by default. `REPIU_NATIVE_LINEAR_SPAN=1|on|true` enables
@@ -1010,10 +977,10 @@ nonzero flat descriptor와 검증된 GS non-flat base-add descriptor만 guard �
 각각 누적 193,288/120,668, 실제 HLE exit 7,554, mismatch 0이었고 fatal/legacy fallback은
 0이었습니다.
 
-Task 289 Stage 2의 `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1`은 생성 CFG 전체의 HLE record가
-실제 `INT3` 또는 mismatch-to-`INT3` selector guard인지 검증한 뒤 post-HLE cache miss를
-번역합니다. segment-write와 quarantine 장벽은 유지됩니다. 60초 A/B에서 번역 시도가
-0회였으므로 기본 OFF입니다.
+Task 289 Stage 2는 post-HLE cache miss를 번역하는 옵트인을 더했지만 60초 A/B에서 번역
+시도가 0회여서 기본 OFF로 남았고, issue #22에서 스위치와 함께 삭제했습니다. cache miss의
+번역은 Linux x64 long mode에서 첫 명령의 바이트가 다를 때(`non_identical_target`)만
+일어납니다.
 
 Task 276 defines the execution policy in the platform-neutral
 `runtime::ExecutionBackend`, which Task 425 reduced to `legacy` and `dynamic`. The
@@ -1043,10 +1010,10 @@ DPMI descriptor changes, and DOS/LINEXE shadow-selector changes re-patch sites o
 complete fingerprint changes. A 60-second smoke recorded cumulative native/HLE site counts
 of 193,288/120,668, 7,554 actual HLE exits, zero mismatches, and zero fatal/legacy fallback.
 
-Under `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1`, Task 289 Stage 2 validates that every HLE record
-in a complete generated CFG is an actual `INT3` or a selector guard whose mismatch reaches
-`INT3`, then translates a post-HLE cache miss. Segment-write and quarantine barriers remain.
-The feature stays default off because a 60-second A/B recorded zero translation attempts.
+Task 289 Stage 2 added an opt-in that translated post-HLE cache misses; a 60-second A/B
+recorded zero translation attempts, so it stayed default off, and issue #22 deleted it with its
+switch. A cache miss is translated only on Linux x64 long mode when the first instruction's
+bytes differ (`non_identical_target`).
 
 ### AOT-DBT return miss host dispatch
 
@@ -1132,33 +1099,24 @@ protects self-modifying pages and therefore stays fail-closed on the RET path; t
 same hot phase produced 34,851 indirect boundaries, about 4.3x the RET fallbacks,
 which fixes Stage 4 on indirect call/jump host dispatch.
 
-### AOT-DBT indirect call/jump host dispatch (Stage 4, opt-in) / 4단계 (opt-in)
+### AOT-DBT indirect call/jump host dispatch (Stage 4, 삭제됨) / Stage 4 (deleted)
 
-Task 282는 4단계를 A안으로 구현합니다. `FF /2`/`FF /4` inline-cache miss tail을 3슬롯
-프레임(return addr / miss / guest source)으로 방출해 Task 277 host-stack thunk로
-연결하고, adapter가 저장된 guest `CONTEXT`로 기존 `HandleAotIndirectTransfer`를
-재사용합니다. call은 `C3`, jump은 `C2 04 00` continuation으로 스택 의미를 재현하며,
-실패는 `lea esp,[esp+8]; INT3`로 fail-closed합니다. fallback 원인 enum은 return과 공용
-(`AotDbtDispatchFallbackReason`, slot 3=`kUnreadableSource`)이고, 보고 attempt는 두 경로
-모두 `success + fallback`으로 도출합니다.
+Task 282는 `FF /2`/`FF /4` inline-cache miss tail을 host-stack thunk로 보내는 4단계를
+구현했지만, 실제 `dynamic`에서 켜면 Glide attract 경로가 결정적으로 크래시해 기본 OFF
+(`REPIU_AOT_DBT_INDIRECT`)로 남았습니다. issue #22에서 방출 꼬리, thunk, 핸들러, 이
+경로에서만 무장되던 call-step 진단(`REPIU_AOT_DBT_CALL_STEP`, Task 285)과 함께
+삭제했습니다. miss tail은 `popfd; INT3`이고, 반환 경로와 공용인 fallback 원인 enum
+(`AotDbtDispatchFallbackReason`)과 VEH 경로의 `HandleAotIndirectTransfer`는 남아
+있습니다. 과거 분석은 `docs/analysis/current-execution-frontier.md` Task 282 항목에
+있습니다.
 
-합성 probe(`dbt_indirect_dispatch_all`)는 통과하지만, 실제 `dynamic`에서 활성화하면 Glide
-attract 경로에서 결정적으로 크래시합니다. 성공 전이의 최종 상태는 VEH
-`CONTINUE_EXECUTION` 경로와 증명상 동일한데도 누적 손상이 발생하며, layout·inline cache
-patch·FPU/SSE는 통제 실험으로 근인에서 배제됐습니다. 따라서 이 경로는 **기본 비활성
-(opt-in, `REPIU_AOT_DBT_INDIRECT=1`)** 이며, 기본 `dynamic`는 Task 281 상태를 유지합니다.
-상세는 `docs/analysis/current-execution-frontier.md` Task 282 항목을 참조합니다.
-
-Task 282 implements Stage 4 (option A): the `FF /2` / `FF /4` inline-cache miss tail
-emits a three-slot frame and routes to the Task 277 host-stack thunk, whose adapter
-reuses `HandleAotIndirectTransfer` from the saved guest `CONTEXT`; calls use a `C3`
-continuation and jumps a `C2 04 00`, and failures fail closed to `lea esp,[esp+8]; INT3`.
-The fallback-cause enum is shared with the RET path, and the reported attempt is derived
-as `success + fallback` for both paths. The synthetic probe passes, but enabling the path
-live deterministically crashes the Glide attract path even though the success transfer's
-final state is provably identical to the VEH `CONTINUE_EXECUTION` path; layout, patching,
-and FPU/SSE were ruled out. The path is therefore opt-in and disabled by default
-(`REPIU_AOT_DBT_INDIRECT=1`), and the default `dynamic` keeps its Task 281 behavior.
+Task 282 implemented Stage 4, routing the `FF /2` / `FF /4` inline-cache miss tail to a
+host-stack thunk, but enabling it live deterministically crashed the Glide attract path, so it
+stayed default off (`REPIU_AOT_DBT_INDIRECT`). Issue #22 deleted the emitted tail, thunk and
+handler together with the call-step diagnostic only this path armed (`REPIU_AOT_DBT_CALL_STEP`,
+Task 285). The miss tail is `popfd; INT3`; the fallback-cause enum shared with the return path
+(`AotDbtDispatchFallbackReason`) and the VEH path's `HandleAotIndirectTransfer` remain. The
+historical analysis is under Task 282 in `docs/analysis/current-execution-frontier.md`.
 
 ### AOT-DBT 미해결 direct edge dispatch / unresolved direct-edge dispatch
 
@@ -1915,18 +1873,18 @@ self-modification은 해당 page만 legacy quarantine하고, 번역·발행 실�
 떨어졌습니다. 실패한 것은 entry 하나이므로 지금은 **실패한 guest 주소만** 억제
 집합(용량 256)에 넣고 다시 시도하지 않습니다. 재시도 storm을 막는다는 quarantine의
 성질은 유지하면서 나머지 page는 계속 cache에서 돕니다.
-`REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE=1`이거나 억제 집합이 가득 차면 예전
-page 단위 격리로 돌아갑니다. 정책은 `aot_generation_failure_policy.h`가 노출하는
+억제 집합이 가득 차면 예전 page 단위 격리로 돌아갑니다(예전 동작을 되살리던
+스위치는 issue #22에서 삭제). 정책은 `aot_generation_failure_policy.h`가 노출하는
 counter(실패 주소 수, 건너뛴 시도, page 격리 횟수, 걸친 활성화 횟수)로 보고합니다.
 
 **page 경계를 걸친 요청 항목 (Task 417).** 그 세대 실패의 근인이 여기였습니다.
-`CanActivateWin32AotAddressMapEntry`는 entry가 걸친 page가 retired면 활성화를
+`CanActivateAotAddressMapEntry`는 entry가 걸친 page가 retired면 활성화를
 거부하는데 **요청 page만 예외**였으므로, 이웃 page가 retired된 뒤에는 경계를 걸친
 요청 entry가 다시는 활성화되지 못하고 실행이 arena로 떨어졌습니다. append 루프는
 이제 **요청 항목 하나에 한해**, quarantined page를 걸치지 않는 한 활성으로 둡니다.
 지금 막 현재 guest byte로 번역한 image이고 `RegisterAddressMapPages`가 걸친 **모든**
 page에 등록하므로 이후 어느 page에 써도 같은 entry가 retire됩니다. 나머지 entry는
-규칙 그대로이며 `REPIU_AOT_STRICT_SPANNING_ENTRY=1`이면 예전 거부 규칙입니다.
+규칙 그대로입니다(예전 거부 규칙을 되살리던 스위치는 issue #22에서 삭제).
 
 `aot_page_coherence_win32`는 translated instruction이 있는 guest page를
 `PAGE_EXECUTE_READ`로 감시합니다. native guest/cache store의 write fault에서는
@@ -1943,7 +1901,7 @@ stateDiagram-v2
     Retired --> Translating: next page entry
     Translating --> Active: publish generation N+1
     Translating --> Suppressed: 세대 실패 → 실패 주소만 (Task 415)
-    Suppressed --> Quarantined: 억제 집합 포화 또는<br/>QUARANTINE_ON_GENERATION_FAILURE=1
+    Suppressed --> Quarantined: 억제 집합 포화
     Active --> Quarantined: same-page self modification
     note right of Suppressed
         걸친 요청 항목은 이제 활성화되므로
@@ -2130,7 +2088,8 @@ Task 637부터 HLE가 원본 명령을 완전히 처리하고 EIP를 전진시�
 미매핑 동적 target에서 시작한 fallback이 나중에 알려진 cache 주소에 도달하면 AOT로
 복귀한다는 초기 backend 계약을 복원한 것입니다. 두 상태는 자격만 부여하며,
 segment-write, guest arena, quarantine, 정확한 cache hit와 span preflight 검사는 기존과
-동일하게 적용됩니다. cache miss의 post-HLE 동적 번역은 계속 opt-in입니다.
+동일하게 적용됩니다. cache miss의 post-HLE 동적 번역 옵트인은 issue #22에서
+삭제되었습니다.
 
 Since Task 637, immediate cache re-entry after HLE fully handles an original
 instruction and advances EIP is eligible from either `aot_reentry_pending` or
@@ -2411,20 +2370,20 @@ the entry's whole guest page permanently, dropping every other routine on that p
 to single-stepping. One entry is what failed, so the penalty is now the **failing
 guest address alone**, held in a 256-entry suppression set and never retried — which
 keeps the retry-storm property quarantine provided while the rest of the page keeps
-running from the cache. `REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE=1`, or a full
-suppression set, restores the old page-wide quarantine. `aot_generation_failure_policy.h`
+running from the cache. A full suppression set restores the old page-wide quarantine (the
+switch that restored it outright was deleted in issue #22). `aot_generation_failure_policy.h`
 exposes the counters: failed addresses, skipped attempts, page quarantines, and
 spanning activations.
 
 **A requested entry straddling a page boundary (Task 417)** was the root of those
-failures. `CanActivateWin32AotAddressMapEntry` refuses an entry that spans a retired
+failures. `CanActivateAotAddressMapEntry` refuses an entry that spans a retired
 page and exempted **only the requested page**, so once a neighbour retired, a
 boundary-straddling requested entry could never activate again and execution fell
 back to the arena. The append loop now keeps **the requested entry alone** active
 unless it spans a *quarantined* page: the image was just translated from current
 guest bytes, and `RegisterAddressMapPages` records the entry under **every** page it
 spans, so a later write to either page still retires it. Every other entry keeps the
-old rule, and `REPIU_AOT_STRICT_SPANNING_ENTRY=1` restores the refusal.
+old rule (the switch that restored the refusal was deleted in issue #22).
 
 ### Spin-then-wait for the Glide host-thread rendezvous
 
@@ -2629,8 +2588,8 @@ Task 304는 기본 native linear-span scan이 0~1개 일반 명령 뒤 정적 �
 추가로 native 실행하지 않으므로 SMC/AOT generation 정책보다 보수적인 fallback
 최적화입니다.
 
-write/jump 실험 mode는 register·page·target 상태에 의존하므로 캐시를 우회하고, 항목
-수는 65,536개로 제한합니다. 세 번의 60초 A/B에서 거절 hit율은 99.68~99.69%였고
+항목 수는 65,536개로 제한합니다(이 캐시를 우회하던 write/jump 실험 mode는 issue #22에서
+삭제). 세 번의 60초 A/B에서 거절 hit율은 99.68~99.69%였고
 texture milestone 중앙값은 1,031ms(약 4.9%) 빨라졌습니다. fatal/legacy fallback은 0,
 EEPROM hash는 일치했습니다. 따라서 `dynamic`에서 켜지고 다른 backend에서는 꺼집니다.
 설정 변수 `REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE`는 #20에서 제거되었습니다.
@@ -2641,38 +2600,25 @@ skips Zydis decoding and selects the existing single-step fallback; a mismatch e
 stale entry and rescans. A hit never permits additional native execution, making this a
 conservative fallback optimization independent of SMC/AOT generation state.
 
-Register/page/target-dependent write and jump experiments bypass the cache, which is capped
-at 65,536 entries. Three 60-second A/B pairs observed a 99.68-99.69% rejection hit rate and a
+The cache is capped at 65,536 entries (the write and jump experiments that bypassed it were
+deleted in issue #22). Three 60-second A/B pairs observed a 99.68-99.69% rejection hit rate and a
 1,031ms median texture-milestone improvement (about 4.9%), with zero fatal/legacy fallback
 and matching EEPROM hashes. It is default-on for `dynamic`, default-off elsewhere, and
 disabled by `0|off|false` or unknown settings.
 
-## Retired trap 즉시 native span 후보 / Immediate native span after retired traps
+## Retired trap 즉시 native span 후보 (삭제됨) / Immediate native span after retired traps (deleted)
 
-Task 305는 retired cache `INT3`에서 active/new generation 해결이 실패한 경우, guest EIP를
-복원한 직후 기존 native linear-span scanner를 선택적으로 호출합니다. 기능은
-`REPIU_AOT_RETIRED_SPAN_REENTRY=1|on|true`에서만 켜집니다. scan 거절은 기존 Trap-Flag
-경로를 그대로 사용하며, 성공해도 `aot_reentry_pending`과 single-step trace 정책을
-보존합니다. Dr0 경계에서 기존 AOT/HLE chain이 재개되어 RET, segment, store 및 다른 민감
-경계를 기존 handler가 처리합니다.
+Task 305는 retired cache `INT3`의 해결이 실패한 직후 native linear-span scanner를 부르는
+옵트인(`REPIU_AOT_RETIRED_SPAN_REENTRY`)을 더했습니다. 세 번의 30초 교차 A/B에서
+single-step은 중앙값 2.86% 줄었지만 progress 개선이 0.35%에 그쳐 기본 OFF로 남았고,
+issue #22에서 스위치, 시도·성공 카운터(`retired_span=`), 실행 시간 버킷과 함께
+삭제했습니다.
 
-세 번의 30초 교차 A/B에서 ON은 시도의 95.28~95.46%를 span으로 전환하고 single-step을
-중앙값 2.86% 줄였습니다. 그러나 progress 개선 중앙값은 0.35%, texture 개선 중앙값은
-17ms에 불과했습니다. 모든 유효 실행은 fatal 0과 EEPROM hash 일치를 유지했지만 반복
-처리량 개선이 작아 기본값은 OFF입니다. live/final telemetry의 `retired_span=attempt/success`
-로 실사용 기회를 확인할 수 있습니다.
-
-Task 305 optionally calls the existing native linear-span scanner immediately after a retired
-cache `INT3` cannot resolve to an active or new generation. It is enabled only by
-`REPIU_AOT_RETIRED_SPAN_REENTRY=1|on|true`. Rejection keeps the existing Trap-Flag path;
-success also preserves pending-reentry and single-step policy so the Dr0 boundary resumes the
-same AOT/HLE chain for RET, segment, store, and other sensitive instructions.
-
-Across three 30-second alternating pairs, ON converted 95.28-95.46% of attempts into spans and
-reduced single-step count by a 2.86% median. Median progress improvement was only 0.35%, while
-median texture improvement was 17ms. All valid runs kept zero fatal events and matching EEPROM
-hashes, but the throughput gain was too small for default promotion. Live/final telemetry
-reports the opportunity as `retired_span=attempt/success`.
+Task 305 added an opt-in (`REPIU_AOT_RETIRED_SPAN_REENTRY`) that called the native
+linear-span scanner right after a retired cache `INT3` failed to resolve. Across three
+30-second alternating pairs it cut single-steps by a 2.86% median but improved progress by
+only 0.35%, so it stayed default off; issue #22 deleted it with its switch, its attempt and
+success counters (`retired_span=`) and its execution-time bucket.
 
 ## Retired trap hotset 계측 / Retired-trap hotset profiling
 
@@ -3542,20 +3488,22 @@ Win32 `dynamic`에서 `REPIU_AOT_GUARDED_SEGMENT_LOAD`가 없거나 `1|on|true`�
 
 On Win32 `dynamic`, an unset `REPIU_AOT_GUARDED_SEGMENT_LOAD` or `1|on|true` handles register-source `MOV Sreg, r16` for ES/DS/FS/GS in a dedicated cache slot. It leaves selector state unchanged and falls through only when the source selector equals both the physical CPU selector and HLE shadow. SS, ESP sources, memory sources, selector mismatches, and patch failures restore original EFLAGS/GPRs and retain the existing INT3/VEH HLE path. `0|off|false` and unknown values are fail-closed opt-outs.
 
-## Hybrid segment-override dispatch / Hybrid segment-override dispatch
+## Hybrid segment-override dispatch (삭제됨) / Hybrid segment-override dispatch (deleted)
 
-Win32 `dynamic`에서 `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH=1|on|true`이면 Zydis가 분류한 `kSegmentOverrideMem`에 기존 selector-guard native slot과 fail-closed HLE companion slot을 함께 생성합니다. live segment resolution이 `NativeFolded`이면 native entry를 복원하고, `HleLowMemory`이면 companion slot으로 `JMP rel32`를 패치하며, unresolved이면 기존 `INT3`를 유지합니다. native guard의 selector mismatch도 companion으로 이동하고 지원하지 않거나 안전하지 않은 명령은 기존 INT3/VEH bridge로 복구합니다.
+Task 391·392는 `kSegmentOverrideMem`에 selector-guard native slot과 fail-closed HLE
+companion slot을 함께 만들어, live segment policy가 `HleLowMemory`이면 companion으로
+`JMP rel32`를 패치하는 옵트인(`REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH`)을 더했습니다.
+`pumpit1` 장시간 검증에서 frame 처리량이 21.13% 낮아 기본 OFF로 남았고, issue #22에서
+companion slot 방출, 검증, 패치와 함께 삭제했습니다. slot은 `je 0x02; popfd; int3`이고,
+일반 실행은 selector-guard native folding과 low-memory INT3/VEH HLE 경로를 씁니다.
 
-이 정책은 PIU 주소나 게임 상태를 사용하지 않고 명령 형식과 live segment policy만 사용합니다. Task 391의 모든 segment override를 dispatcher로 보내는 broad 정책은 장시간 측정에서 회귀하여 폐기했습니다. 미설정 기본값은 장시간 hybrid 검증 전까지 OFF이며, 비활성화하면 기존 selector-guard native folding과 low-memory INT3/VEH HLE 경로가 유지됩니다.
-
-On Win32 `dynamic`, `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH=1|on|true` emits both the existing selector-guard native slot and a fail-closed HLE companion for Zydis-classified `kSegmentOverrideMem`. Live segment resolution restores the native entry for `NativeFolded`, patches a `JMP rel32` to the companion for `HleLowMemory`, and retains `INT3` for unresolved state. A native-guard selector mismatch also enters the companion; unsupported or unsafe instructions recover through the existing INT3/VEH bridge.
-
-The policy uses instruction form and live segment policy rather than PIU addresses or game state. Task 391's broad policy of routing every segment override through the dispatcher was rejected after a long-run regression. The unset default remains OFF pending long hybrid validation; disabled mode preserves selector-guard native folding and the low-memory INT3/VEH HLE path.
-### 장시간 정책 판정 / Long-run policy decision
-
-`pumpit1` 장시간 검증에서 hybrid는 기준보다 frame 처리량이 21.13% 낮고 frame당 전체 예외, guest-run, VEH, Glide gate 비용이 모두 증가했습니다. 따라서 broad와 hybrid segment-override dispatch는 모두 기본 승격 대상에서 제외합니다. opt-in은 기본 OFF 진단 경로로만 유지하며 일반 실행은 기존 selector-guard/INT3/VEH 경로를 사용합니다.
-
-In long `pumpit1` validation, hybrid routing delivered 21.13% fewer frames and increased per-frame total exceptions, guest-run, VEH, and Glide-gate cost. Both broad and hybrid segment-override dispatch are therefore excluded from default promotion. The opt-in remains only as a default-OFF diagnostic path; normal execution uses the existing selector-guard/INT3/VEH path.
+Tasks 391 and 392 added an opt-in (`REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH`) that emitted a
+fail-closed HLE companion beside the selector-guard native slot of a `kSegmentOverrideMem`
+and patched a `JMP rel32` to it when the live segment policy was `HleLowMemory`. Long
+`pumpit1` validation delivered 21.13% fewer frames, so it stayed default off; issue #22
+deleted it with the companion emission, validation and patching. The slot is
+`je 0x02; popfd; int3`, and execution uses selector-guard native folding and the low-memory
+INT3/VEH HLE path.
 
 ## Port I/O 주소 census와 arena 진입 추적 / Port I/O address census and arena entry tracing
 

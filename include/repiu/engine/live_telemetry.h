@@ -9,7 +9,7 @@ namespace repiu::engine
 {
 
 constexpr std::uint32_t kLiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kLiveTelemetryVersion = 23;
+constexpr std::uint32_t kLiveTelemetryVersion = 24;
 constexpr std::uint32_t kNativeSampleRingCapacity = 8;
 constexpr const char* kLiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
@@ -153,8 +153,6 @@ struct SharedLiveTelemetry
     volatile LiveTelemetryWord aot_page_retire_attempt_count = 0;
     volatile LiveTelemetryWord aot_page_retire_success_count = 0;
     volatile LiveTelemetryWord aot_retired_entry_trap_count = 0;
-    volatile LiveTelemetryWord aot_retired_span_attempt_count = 0;
-    volatile LiveTelemetryWord aot_retired_span_success_count = 0;
     volatile LiveTelemetryWord aot_quarantine_count = 0;
     // Provenance of the most recent quarantine (Task 218): which page was
     // retired and the guest write that triggered it, so the storm's cause

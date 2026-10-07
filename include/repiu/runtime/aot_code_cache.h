@@ -37,18 +37,9 @@ struct AotCodeCacheBuildOptions
     std::uint32_t indirect_inline_cache_entry_count =
         kDefaultAotIndirectInlineCacheEntryCount;
     bool enable_dbt_return_miss_dispatch = false;
-    bool enable_dbt_indirect_miss_dispatch = false;
     // Route a static direct edge whose target was not emitted through a
     // fail-closed AOT-DBT runtime-dispatch stub.
     bool enable_dbt_direct_edge_dispatch = false;
-    // Task 283 call/jump split probe. When the master
-    // `enable_dbt_indirect_miss_dispatch` is set, these gate the host-dispatch
-    // tail per instruction kind so a live run can bisect the Task 282 crash by
-    // whether the CALL path's guest-stack return-address write is involved.
-    // Both default true, so the master flag alone still emits both layouts
-    // byte-for-byte as before.
-    bool enable_dbt_indirect_dispatch_calls = true;
-    bool enable_dbt_indirect_dispatch_jumps = true;
     bool enable_guarded_segment_pop = false;
     bool enable_guarded_segment_read = false;
     bool enable_guarded_segment_load = false;
@@ -57,8 +48,6 @@ struct AotCodeCacheBuildOptions
     bool enable_dbt_hle_dispatch = false;
     // Task 385. Reuse the fail-closed host dispatch slot for kPortIo only.
     bool enable_dbt_port_io_dispatch = false;
-    // Task 391. Reuse it for kSegmentOverrideMem only when explicitly enabled.
-    bool enable_dbt_segment_override_dispatch = false;
     // Task 348. Cooperative interrupt rendezvous emitted before direct
     // backward branches so an AOT-native busy loop can reach the existing
     // pending timer-interrupt injection path without cross-thread TF changes.
@@ -294,24 +283,6 @@ struct AotDbtDirectEdgeDispatchSite
     std::uint32_t fallback_cache_offset = 0;
     std::uint32_t success_cache_offset = 0;
 };
-// Task 282. The `FF /2` / `FF /4` inline-cache miss tail of an `aot-dbt` image
-// pushes a fixed three-slot frame (call return address, miss address, guest
-// source) and jumps to the Win32 host-stack thunk. A jump pushes an unused first
-// slot so both kinds share one frame depth, and the emitted continuations decide
-// the final ESP: `C3` for a call leaves the pushed return address at `[esp]`,
-// `C2 04 00` for a jump restores the original ESP, and the fallback continuation
-// discards both remaining slots before the existing provenance `INT3`.
-struct AotDbtIndirectDispatchSite
-{
-    std::uint32_t guest_source = 0;
-    std::uint32_t miss_cache_offset = 0;
-    std::uint32_t miss_address_immediate_offset = 0;
-    std::uint32_t thunk_displacement_offset = 0;
-    std::uint32_t fallback_cache_offset = 0;
-    std::uint32_t success_cache_offset = 0;
-    bool is_call = false;
-};
-
 // A translated bounded switch: `jmp [reg*4 + disp32]` reading a native
 // pointer table emitted inline. Absolute addresses are resolved after the
 // cache is placed; unresolved entries point at fallback_offset (INT3).
@@ -347,8 +318,6 @@ struct AotSegmentOverrideSite
     std::uint32_t guard_address_offset = 0;
     // imm16 field of the guard (the translation-time selector value S).
     std::uint32_t guard_selector_offset = 0;
-    // Companion HLE slot for Task 392 hybrid routing; zero when disabled.
-    std::uint32_t dispatch_cache_offset = 0;
     // The displacement before the segment base is folded in, so the base can be
     // re-applied idempotently when the segment is re-resolved (Task 264).
     std::int32_t original_displacement = 0;
@@ -514,7 +483,6 @@ struct AotCodeCacheImage
     std::vector<AotIndirectInlineCacheSite> indirect_inline_cache_sites;
     std::vector<AotDbtReturnDispatchSite> dbt_return_dispatch_sites;
     std::vector<AotDbtHleDispatchSite> dbt_hle_dispatch_sites;
-    std::vector<AotDbtIndirectDispatchSite> dbt_indirect_dispatch_sites;
     std::vector<AotDbtDirectEdgeDispatchSite>
         dbt_direct_edge_dispatch_sites;
     std::vector<AotJumpTableSite> jump_table_sites;
@@ -536,11 +504,9 @@ struct AotCodeCacheImage
         kDefaultAotDirectReturnTableBits;
     bool dbt_hle_dispatch_enabled = false;
     bool dbt_port_io_dispatch_enabled = false;
-    bool dbt_segment_override_dispatch_enabled = false;
     bool guarded_segment_pop_enabled = false;
     bool guarded_segment_read_enabled = false;
     bool guarded_segment_load_enabled = false;
-    bool dbt_indirect_miss_dispatch_enabled = false;
     bool dbt_direct_edge_dispatch_enabled = false;
     bool timer_safe_points_enabled = false;
     // Task 553. What the long-mode emission actually managed, counted rather

@@ -828,99 +828,17 @@ bool RunSelectorGuardProbe()
         segment_dispatch_record.fallthrough_target;
     segment_dispatch_plan.blocks[1].guest_address =
         segment_dispatch_return.guest_address;
-    runtime::AotCodeCacheBuildOptions segment_dispatch_options;
-    segment_dispatch_options.enable_dbt_segment_override_dispatch = true;
+    // Task i022 deleted the hybrid segment-override dispatch; the default
+    // image keeps the plain selector-checked slot and no HLE dispatch site.
     runtime::AotCodeCacheImage segment_dispatch_image;
-    runtime::AotCodeCacheImage segment_dispatch_disabled_image;
-    bool segment_override_dispatch_specific =
-        runtime::BuildAotCodeCacheImage(
-            segment_dispatch_plan, segment_dispatch_options,
-            &segment_dispatch_image) &&
-        segment_dispatch_image.dbt_segment_override_dispatch_enabled &&
-        segment_dispatch_image.dbt_hle_dispatch_sites.size() == 1U &&
-        segment_dispatch_image.segment_override_sites.size() == 1U &&
-        runtime::ValidateAotCodeCacheHleCoverage(
-            segment_dispatch_plan, segment_dispatch_image) &&
+    const bool segment_override_default_layout =
         runtime::BuildAotCodeCacheImage(
             segment_dispatch_plan, runtime::AotCodeCacheBuildOptions{},
-            &segment_dispatch_disabled_image) &&
-        !segment_dispatch_disabled_image.
-            dbt_segment_override_dispatch_enabled &&
-        segment_dispatch_disabled_image.dbt_hle_dispatch_sites.empty() &&
-        segment_dispatch_disabled_image.segment_override_sites.size() == 1U &&
+            &segment_dispatch_image) &&
+        segment_dispatch_image.dbt_hle_dispatch_sites.empty() &&
+        segment_dispatch_image.segment_override_sites.size() == 1U &&
         runtime::ValidateAotCodeCacheHleCoverage(
-            segment_dispatch_plan, segment_dispatch_disabled_image);
-    if (segment_override_dispatch_specific)
-    {
-        runtime::AotCodeCacheImage broken_segment_dispatch =
-            segment_dispatch_image;
-        const auto& segment_dispatch_site =
-            broken_segment_dispatch.dbt_hle_dispatch_sites[0];
-        broken_segment_dispatch.bytes[
-            segment_dispatch_site.fallback_cache_offset + 4U] = 0x90U;
-        std::uint32_t failure_guest = 0U;
-        segment_override_dispatch_specific =
-            !runtime::ValidateAotCodeCacheHleCoverage(
-                segment_dispatch_plan, broken_segment_dispatch,
-                &failure_guest) &&
-            failure_guest == segment_dispatch_record.guest_address;
-    }
-    bool segment_override_hybrid_patch = false;
-    if (segment_override_dispatch_specific)
-    {
-        engine::AotCodeCachePlacement hybrid_placement;
-        if (engine::PlaceAotCodeCache(
-                segment_dispatch_image, &hybrid_placement) &&
-            hybrid_placement.placed &&
-            hybrid_placement.segment_override_sites.size() == 1U &&
-            hybrid_placement.dbt_hle_dispatch_sites.size() == 1U)
-        {
-            const auto hybrid_site =
-                hybrid_placement.segment_override_sites[0];
-            auto* hybrid_bytes = reinterpret_cast<std::uint8_t*>(
-                static_cast<std::uintptr_t>(hybrid_placement.base_address));
-            engine::AotSegmentTable hybrid_table{};
-            hybrid_table.segments[0] = nonflat;
-            engine::AotSegmentPatchStats hybrid_native_stats;
-            const std::uint32_t hybrid_native_processed =
-                engine::ReResolveWin32AotSegmentOverrides(
-                    &hybrid_placement, &hybrid_table,
-                    &hybrid_native_stats);
-            const bool native_routed = hybrid_native_processed == 1U &&
-                hybrid_native_stats.native_site_count == 1U &&
-                hybrid_bytes[hybrid_site.cache_offset] == 0x9CU;
-
-            hybrid_table.segments[0] = selector_zero;
-            engine::AotSegmentPatchStats hybrid_hle_stats;
-            const std::uint32_t hybrid_hle_processed =
-                engine::ReResolveWin32AotSegmentOverrides(
-                    &hybrid_placement, &hybrid_table, &hybrid_hle_stats);
-            std::int32_t hybrid_relative = 0;
-            std::memcpy(&hybrid_relative,
-                        hybrid_bytes + hybrid_site.cache_offset + 1U,
-                        sizeof(hybrid_relative));
-            const std::uint32_t hybrid_target = static_cast<std::uint32_t>(
-                hybrid_site.cache_offset + 5U + hybrid_relative);
-            const bool hle_routed = hybrid_hle_processed == 1U &&
-                hybrid_hle_stats.hle_site_count == 1U &&
-                hybrid_bytes[hybrid_site.cache_offset] == 0xE9U &&
-                hybrid_target == hybrid_site.dispatch_cache_offset;
-
-            hybrid_table.segments[0] = unresolved;
-            engine::AotSegmentPatchStats hybrid_unresolved_stats;
-            const std::uint32_t hybrid_unresolved_processed =
-                engine::ReResolveWin32AotSegmentOverrides(
-                    &hybrid_placement, &hybrid_table,
-                    &hybrid_unresolved_stats);
-            const bool unresolved_routed =
-                hybrid_unresolved_processed == 1U &&
-                hybrid_unresolved_stats.unresolved_site_count == 1U &&
-                hybrid_bytes[hybrid_site.cache_offset] == 0xCCU;
-            segment_override_hybrid_patch =
-                native_routed && hle_routed && unresolved_routed;
-        }
-        engine::ReleaseAotCodeCache(&hybrid_placement);
-    }
+            segment_dispatch_plan, segment_dispatch_image);
     hle::GlideGatePlan glide_direct_plan;
     glide_direct_plan.valid = true;
     glide_direct_plan.first_gate_offset = 0x100U;
@@ -970,13 +888,6 @@ bool RunSelectorGuardProbe()
         !engine::ResolveGlideGateDirectDispatchEnabled("off") &&
         !engine::ResolveGlideGateDirectDispatchEnabled("false") &&
         !engine::ResolveGlideGateDirectDispatchEnabled("invalid");
-    const bool policy =
-        !engine::ResolveAotDbtPostHleTranslationEnabled("") &&
-        engine::ResolveAotDbtPostHleTranslationEnabled("1") &&
-        engine::ResolveAotDbtPostHleTranslationEnabled("on") &&
-        engine::ResolveAotDbtPostHleTranslationEnabled("true") &&
-        !engine::ResolveAotDbtPostHleTranslationEnabled("0") &&
-        !engine::ResolveAotDbtPostHleTranslationEnabled("invalid");
     const bool all = descriptor_policy && mismatch_fails_closed &&
         whole_cfg_coverage && missing_guard_rejected && native_patch &&
         hle_patch && guarded_pop_patch && guarded_pop_ready &&
@@ -992,8 +903,8 @@ bool RunSelectorGuardProbe()
         guarded_pop_supported_forms && hle_dispatch_ready &&
         hle_dispatch_layout && hle_dispatch_coverage &&
         hle_dispatch_placement && port_io_dispatch_specific &&
-        segment_override_dispatch_specific &&
-        segment_override_hybrid_patch && glide_direct_dispatch_layout && glide_direct_dispatch_policy && policy;
+        segment_override_default_layout && glide_direct_dispatch_layout &&
+        glide_direct_dispatch_policy;
     std::cout << "selector_guard_descriptor_policy="
               << (descriptor_policy ? "true" : "false")
               << "\nselector_guard_mismatch_fail_closed="
@@ -1052,10 +963,8 @@ bool RunSelectorGuardProbe()
               << (glide_direct_dispatch_policy ? "true" : "false")
               << "\nport_io_dispatch_specific="
               << (port_io_dispatch_specific ? "true" : "false")
-              << "\nsegment_override_dispatch_specific="
-              << (segment_override_dispatch_specific ? "true" : "false")
-              << "\nsegment_override_hybrid_patch="
-              << (segment_override_hybrid_patch ? "true" : "false")
+              << "\nsegment_override_default_layout="
+              << (segment_override_default_layout ? "true" : "false")
               << "\nsuperblock_hle_dispatch_ready="
               << (hle_dispatch_ready ? "true" : "false")
               << "\nsuperblock_hle_dispatch_layout="
@@ -1064,8 +973,6 @@ bool RunSelectorGuardProbe()
               << (hle_dispatch_coverage ? "true" : "false")
               << "\nsuperblock_hle_dispatch_placement="
               << (hle_dispatch_placement ? "true" : "false")
-              << "\nselector_guard_post_hle_policy="
-              << (policy ? "true" : "false")
               << "\nselector_guard_all=" << (all ? "true" : "false")
               << "\n";
     return all;

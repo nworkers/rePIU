@@ -103,17 +103,6 @@ void TraceHleReentry(const char* stage,
         detail == nullptr ? "" : detail);
 }
 
-bool PostHleTranslationEnabled()
-{
-    static const bool enabled = [] {
-        const auto setting = repiu::platform::ReadEnvironmentSetting(
-            "REPIU_AOT_DBT_POST_HLE_TRANSLATE", 16U);
-        return setting.present && !setting.too_long &&
-            ResolveAotDbtPostHleTranslationEnabled(setting.value);
-    }();
-    return enabled;
-}
-
 // Task 346: "cannot tell" and "writes one" now have different consequences, so
 // they stop sharing a return value.
 enum class SegmentWriteProbe
@@ -122,17 +111,6 @@ enum class SegmentWriteProbe
     kNo,
     kYes,
 };
-
-// Task 346. Restores the pre-Task-346 blanket refusal for A/B in one binary.
-bool SegmentWriteBlocksResumeEnabled()
-{
-    static const bool enabled = []() {
-        const char* value =
-            std::getenv("REPIU_AOT_SEGMENT_WRITE_BLOCKS_RESUME");
-        return value != nullptr && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
 
 SegmentWriteProbe ProbeGuestInstructionSegmentWriteUncached(ThreadContext* context,
                                                    std::uint32_t guest_eip)
@@ -253,11 +231,6 @@ bool IsImmediateHleReentrySpanSafeUncached(ThreadContext* context,
 }
 
 }  // namespace
-
-bool ResolveAotDbtPostHleTranslationEnabled(std::string_view setting)
-{
-    return setting == "1" || setting == "on" || setting == "true";
-}
 
 // Task 741. Both answers depend only on the guest bytes at the address and
 // the HLE boundary list, so they are remembered per address until a guest
@@ -381,9 +354,7 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
         // fails closed. See docs/design/20260728-346-resume-after-segment-write.md.
         const SegmentWriteProbe segment_write =
             ProbeGuestInstructionSegmentWrite(context, handled_guest_eip);
-        if (segment_write == SegmentWriteProbe::kUnknown ||
-            (segment_write == SegmentWriteProbe::kYes &&
-             SegmentWriteBlocksResumeEnabled()))
+        if (segment_write == SegmentWriteProbe::kUnknown)
         {
             ++context->hle_reentry_reject_segment_write;
             return false;
@@ -460,29 +431,25 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
     }
     else
     {
-        // Task 340: counted before the opt-in is consulted, so a cache miss is
-        // visible whether or not post-HLE translation is enabled. Task 339
-        // found this branch unreachable in practice; this proves it per run.
+        // Task 340: counted on every cache miss, so the miss is visible per
+        // run. Task 339 found this branch unreachable in practice; this proves
+        // it per run.
         ++context->hle_reentry_reject_cache_miss;
-        const bool post_hle_enabled = PostHleTranslationEnabled();
-        // A disabled post-HLE translation setting may retain the original-byte
-        // path only when the first instruction has identical long-mode bytes.
-        // Non-identical code must use the resolver, otherwise a mode16 guest
-        // can silently change the host instruction boundary.
+        // A miss keeps the original-byte path only when the first instruction
+        // has identical long-mode bytes. Non-identical code must use the
+        // resolver, otherwise a mode16 guest can silently change the host
+        // instruction boundary. (Task i022 deleted the opt-in that translated
+        // every miss.)
         const bool non_identical_target =
             runtime::execution_model::RunsLongModeCodeCache() &&
             !CanResumeLinuxX64LegacyTarget(context, current);
         TraceHleReentry(
-            post_hle_enabled
-                ? "cache-miss-gate-enabled"
-                : (non_identical_target ? "cache-miss-non-identical"
-                                        : "cache-miss-gate-disabled"),
+            non_identical_target ? "cache-miss-non-identical"
+                                 : "cache-miss-gate-disabled",
             context, win32_context, handled_guest_eip, current, false, false,
-            post_hle_enabled, false, 0U,
-            post_hle_enabled || non_identical_target
-                ? "translate"
-                : "reject");
-        if (!post_hle_enabled && !non_identical_target)
+            false, false, 0U,
+            non_identical_target ? "translate" : "reject");
+        if (!non_identical_target)
         {
             return false;
         }

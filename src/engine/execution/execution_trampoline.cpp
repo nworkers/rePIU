@@ -62,7 +62,6 @@
 #include "thread_context.h"
 #include "linexe_glide_boundary.h"
 #include "timer_interrupt_boundary.h"
-#include "aot_dbt_call_step_probe.h"
 #include "aot_dbt_dispatch.h"
 #include "aot_dbt_glide_gate_dispatch.h"
 #include "aot_guard_compare_fault.h"
@@ -1358,223 +1357,6 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
     return false;
 }
 
-// Route A native region execution (Task 266). Opt-in via REPIU_NATIVE_REGION.
-// See docs/design/20260723-266-native-region-execution.md.
-bool RouteANativeRegionEnabled()
-{
-    // Task 503d-23. Same hardware condition as the fast path and the linear
-    // span: a region traps its return with `Dr0` and its sensitive instructions
-    // with `Dr1`-`Dr3`, then clears the trap flag. With the arming discarded
-    // that last step releases the guest for good, so the opt-in below cannot
-    // reach a host that has no debug registers to arm.
-    if (!repiu::platform::HardwareDebugRegistersAvailable())
-    {
-        return false;
-    }
-    static const bool enabled = []() {
-        return repiu::platform::IsEnvironmentSettingPresent(
-            "REPIU_NATIVE_REGION");
-    }();
-    return enabled;
-}
-
-// Tear down an active native region: restore the debug registers, re-arm
-// single-step, and clear the active flag. No guest byte is ever modified (the
-// sensitive instructions are trapped with hardware breakpoints, not INT3), so
-// there is nothing to unpatch.
-void LeaveNativeRegion(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context,
-                       bool returned)
-{
-    detail::NativeFastPathState* state = &context->native_fast_path;
-    if (!state->region_active)
-    {
-        return;
-    }
-    win32_context->Dr0 = state->region_saved_dr0;
-    win32_context->Dr1 = state->region_saved_dr1;
-    win32_context->Dr2 = state->region_saved_dr2;
-    win32_context->Dr3 = state->region_saved_dr3;
-    win32_context->Dr6 = state->region_saved_dr6;
-    win32_context->Dr7 = state->region_saved_dr7;
-    win32_context->EFlags |= 0x00000100U;
-    state->region_active = false;
-    if (returned)
-    {
-        state->region_return_count.fetch_add(1, std::memory_order_relaxed);
-    }
-    else
-    {
-        state->region_cancel_count.fetch_add(1, std::memory_order_relaxed);
-    }
-}
-
-// A hardware breakpoint (Dr1-Dr3) at a sensitive instruction faults BEFORE the
-// instruction executes, with EIP at the instruction. HLE-emulate it via the
-// shared dispatch (which advances EIP past it) and keep running natively with
-// the breakpoints armed. Returns false if the instruction is at an unexpected
-// address or has no handler, so the caller tears the region down and lets the
-// single-step path take it (matching the single-step native fall-through).
-bool HandleNativeRegionSensitiveDr(repiu::platform::GuestCpuContext* win32_context,
-                                   ThreadContext* context)
-{
-    detail::NativeFastPathState* state = &context->native_fast_path;
-    const std::uint32_t eip = static_cast<std::uint32_t>(win32_context->Eip);
-    bool ours = false;
-    for (std::uint32_t i = 0; i < state->region_sensitive_slots; ++i)
-    {
-        if (state->region_sensitive_addr[i] == eip)
-        {
-            ours = true;
-            break;
-        }
-    }
-    if (!ours)
-    {
-        return false;
-    }
-    win32_context->EFlags &= ~0x00000100U;  // stay native
-    const bool handled = DispatchGuestHleHandlers(win32_context, context);
-    const std::uint32_t after = static_cast<std::uint32_t>(win32_context->Eip);
-    if (!handled || after == eip)
-    {
-        return false;
-    }
-    state->region_sensitive_hit_count.fetch_add(1, std::memory_order_relaxed);
-    win32_context->Dr6 = 0;
-    win32_context->EFlags &= ~0x00000100U;  // remain native
-    return true;
-}
-
-// Try to enter a native region at the current EIP. Same entry condition as the
-// clean fast path (current EIP is the target of a direct `call rel32`). The
-// region may contain up to kMaxRegionSensitive HLE-sensitive instructions, which
-// are trapped with hardware execution breakpoints (Dr1-Dr3); Dr0 breakpoints the
-// caller return address. Regions with more sensitive instructions than hardware
-// slots are declined (the single-step path keeps handling them).
-bool TryEnterNativeRegion(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
-{
-    detail::NativeFastPathState* state = &context->native_fast_path;
-    const std::uint32_t runtime_base = context->runtime_base;
-    const std::uint32_t runtime_size = context->runtime_size;
-    const std::uint32_t previous_eip = state->previous_eip;
-    state->previous_eip = static_cast<std::uint32_t>(win32_context->Eip);
-    if (state->region_active || state->active)
-    {
-        return false;
-    }
-    const auto in_range = [&](std::uint32_t a, std::uint32_t n) {
-        const std::uint32_t end = a + n;
-        const std::uint32_t rt_end = runtime_base + runtime_size;
-        return end >= a && rt_end >= runtime_base && a >= runtime_base &&
-               end <= rt_end;
-    };
-    if (!in_range(static_cast<std::uint32_t>(win32_context->Esp),
-                  sizeof(std::uint32_t)) ||
-        !in_range(previous_eip, 5U))
-    {
-        return false;
-    }
-    const auto* previous = reinterpret_cast<const std::uint8_t*>(
-        static_cast<std::uintptr_t>(previous_eip));
-    std::int32_t displacement = 0;
-    std::memcpy(&displacement, previous + 1, sizeof(displacement));
-    const std::uint32_t entry = static_cast<std::uint32_t>(win32_context->Eip);
-    if (previous[0] != 0xE8U || previous_eip + 5U + displacement != entry)
-    {
-        return false;
-    }
-    const std::uint32_t return_address = *reinterpret_cast<const std::uint32_t*>(
-        static_cast<std::uintptr_t>(win32_context->Esp));
-    if (!in_range(return_address, 1U))
-    {
-        return false;
-    }
-    const auto cached_reject = state->region_analyzable_cache.find(entry);
-    if (cached_reject != state->region_analyzable_cache.end() &&
-        cached_reject->second == -1)
-    {
-        return false;
-    }
-    std::vector<std::uint32_t>* sensitive = nullptr;
-    const auto cached = state->region_sensitive_cache.find(entry);
-    if (cached != state->region_sensitive_cache.end())
-    {
-        sensitive = &cached->second;
-    }
-    else
-    {
-        constexpr std::uint32_t kMaxSensitive = 256;
-        std::vector<std::uint32_t> found;
-        if (!detail::ScanNativeRegionWithZydis(
-                entry, runtime_base, runtime_size, kMaxSensitive, &found))
-        {
-            state->region_analyzable_cache[entry] = -1;
-            state->region_reject_count.fetch_add(1, std::memory_order_relaxed);
-            return false;
-        }
-        state->region_analyzable_cache[entry] = 1;
-        sensitive = &(state->region_sensitive_cache[entry] = std::move(found));
-    }
-    if (sensitive->size() >
-        detail::NativeFastPathState::kMaxRegionSensitive)
-    {
-        // More sensitive instructions than hardware breakpoint slots: decline so
-        // the single-step path keeps handling this region.
-        state->region_analyzable_cache[entry] = -1;
-        state->region_reject_count.fetch_add(1, std::memory_order_relaxed);
-        return false;
-    }
-    for (std::uint32_t addr : *sensitive)
-    {
-        if (!in_range(addr, 1U))
-        {
-            state->region_analyzable_cache[entry] = -1;
-            return false;
-        }
-    }
-    state->region_sensitive_slots = static_cast<std::uint32_t>(sensitive->size());
-    for (std::uint32_t i = 0;
-         i < detail::NativeFastPathState::kMaxRegionSensitive; ++i)
-    {
-        state->region_sensitive_addr[i] =
-            i < state->region_sensitive_slots ? (*sensitive)[i] : 0U;
-    }
-    state->region_return_address = return_address;
-    state->region_saved_dr0 = static_cast<std::uint32_t>(win32_context->Dr0);
-    state->region_saved_dr1 = static_cast<std::uint32_t>(win32_context->Dr1);
-    state->region_saved_dr2 = static_cast<std::uint32_t>(win32_context->Dr2);
-    state->region_saved_dr3 = static_cast<std::uint32_t>(win32_context->Dr3);
-    state->region_saved_dr6 = static_cast<std::uint32_t>(win32_context->Dr6);
-    state->region_saved_dr7 = static_cast<std::uint32_t>(win32_context->Dr7);
-    win32_context->Dr0 = return_address;
-    std::uint32_t enable_bits = 0x1U;  // L0 for the return-address breakpoint
-    if (state->region_sensitive_slots >= 1)
-    {
-        win32_context->Dr1 = state->region_sensitive_addr[0];
-        enable_bits |= 0x1U << 2;  // L1
-    }
-    if (state->region_sensitive_slots >= 2)
-    {
-        win32_context->Dr2 = state->region_sensitive_addr[1];
-        enable_bits |= 0x1U << 4;  // L2
-    }
-    if (state->region_sensitive_slots >= 3)
-    {
-        win32_context->Dr3 = state->region_sensitive_addr[2];
-        enable_bits |= 0x1U << 6;  // L3
-    }
-    win32_context->Dr6 = 0;
-    // Clear all four slots' enable (bits 0-7) and R/W+LEN control (bits 16-31),
-    // leaving R/W=00 (execute) and LEN=00 (1 byte), then set the enables.
-    win32_context->Dr7 =
-        (static_cast<std::uint32_t>(win32_context->Dr7) & ~0xFFFF00FFU) |
-        enable_bits;
-    win32_context->EFlags &= ~0x00000100U;
-    state->region_active = true;
-    state->region_entry_count.fetch_add(1, std::memory_order_relaxed);
-    return true;
-}
-
 // Route A sizing instrumentation. Decodes the instruction at `eip` and reports
 // whether it is HLE-sensitive under selective-breakpoint region execution: a
 // segment-override memory access, a segment-register move/push/pop, an FS/GS
@@ -2044,26 +1826,16 @@ bool HandleSingleStepTrace(repiu::platform::GuestCpuContext* win32_context, Thre
         NoteVehExitSite(context, VehExitSite::kSingleStepTraceTimerInjected);
         return true;
     }
-    const bool call_step_return_watch =
-        AotDbtCallStepReturnWatchActive(context);
     bool entered_native = false;
     {
         SingleStepHotspotStageScope stage_scope(
             hotspot_scope, SingleStepProfileStage::kNativeEntry);
-        if (!call_step_return_watch && RouteANativeRegionEnabled())
-        {
-            entered_native = TryEnterNativeRegion(win32_context, context);
-        }
-        else if (!call_step_return_watch)
-        {
-            entered_native = detail::TryEnterNativeFastPath(
-                win32_context,
-                &context->native_fast_path,
-                context->runtime_base,
-                context->runtime_size);
-        }
-        if (!call_step_return_watch &&
-            !entered_native &&
+        entered_native = detail::TryEnterNativeFastPath(
+            win32_context,
+            &context->native_fast_path,
+            context->runtime_base,
+            context->runtime_size);
+        if (!entered_native &&
             !context->enable_single_step_trace &&
             NativeLinearSpanEnabled(context->execution_backend))
         {
@@ -3224,16 +2996,6 @@ bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
 
 // Execution probe/trace + guest-IP helpers promoted to external linkage for
 // aot_runtime_dispatch.cpp (relocated out of the anonymous namespace).
-// Task 342. Restores the pre-Task-342 policy for A/B in one binary.
-bool QuarantineOnFirstWriteEnabled()
-{
-    static const bool enabled = []() {
-        const char* value = std::getenv("REPIU_AOT_QUARANTINE_FIRST_WRITE");
-        return value != nullptr && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
-
 // Task 342. Counts how often a page has been written from itself and answers
 // whether this write should quarantine. The first writes only retire, which
 // already stops the cache executing stale bytes; quarantine is the churn
@@ -3249,7 +3011,7 @@ bool ShouldQuarantineWrittenPage(ThreadContext* context,
     // per-address rule alone would miss.
     constexpr std::uint32_t kRepeatWriteThreshold = 4U;
     constexpr std::uint32_t kPageWriteCeiling = 32U;
-    if (context == nullptr || QuarantineOnFirstWriteEnabled())
+    if (context == nullptr)
     {
         return true;
     }
@@ -5209,11 +4971,6 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         return repiu::platform::FaultDisposition::kResume;
     }
 
-    if (HandleAotDbtCallStepProbe(fault, context))
-    {
-        NoteVehExitSite(context, VehExitSite::kCallStepProbe);
-        return repiu::platform::FaultDisposition::kResume;
-    }
     // Task 275 linear spans use Dr0 only. On the expected boundary, restore
     // debug state and deliberately continue through the normal #DB chain so the
     // boundary instruction receives the exact existing single-step/HLE policy.
@@ -5235,39 +4992,6 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         LeaveNativeLinearSpan(
             win32_context, context, reached_boundary, write_fault_cancel,
             fault.kind, fault.host_code);
-    }
-    // Route A native region (Task 266): while a region runs natively, only its
-    // hardware breakpoints trap -- Dr0 at the caller return address and Dr1-Dr3
-    // at the region's sensitive instructions -- all reported as #DB. Handle those
-    // here before any other consumer.
-    if (RouteANativeRegionEnabled() && context->native_fast_path.region_active)
-    {
-        const repiu::platform::FaultKind region_kind = fault.kind;
-        const std::uint32_t region_eip =
-            static_cast<std::uint32_t>(win32_context->Eip);
-        const std::uint32_t region_dr6 =
-            static_cast<std::uint32_t>(win32_context->Dr6);
-        if (region_kind == repiu::platform::FaultKind::kSingleStep)
-        {
-            if ((region_dr6 & 0x1U) != 0U &&
-                region_eip ==
-                    context->native_fast_path.region_return_address)
-            {
-                LeaveNativeRegion(win32_context, context, true);
-                NoteVehExitSite(context, VehExitSite::kNativeRegionReturn);
-                return repiu::platform::FaultDisposition::kResume;
-            }
-            if ((region_dr6 & 0x0EU) != 0U &&
-                HandleNativeRegionSensitiveDr(win32_context, context))
-            {
-                NoteVehExitSite(context, VehExitSite::kNativeRegionSensitive);
-                return repiu::platform::FaultDisposition::kResume;
-            }
-        }
-        // Unexpected exception (unhandled sensitive instruction, guest fault, or
-        // stray debug event): restore the debug registers and fall through to
-        // normal single-step handling with EIP unchanged.
-        LeaveNativeRegion(win32_context, context, false);
     }
     const auto stop_for_aot_terminal_failure = [context, win32_context]() {
         if (!context->aot_terminal_failure.load(std::memory_order_acquire))
@@ -6764,18 +6488,6 @@ bool RunExecutionThread(
     context.aot_dbt_call_return_trace_configured =
         call_return_trace.present && !call_return_trace.too_long &&
         call_return_trace.value == "1";
-    // The probe configurator takes a C string, so the value is copied into a
-    // buffer rather than pointed at. A value too long for it leaves the buffer
-    // empty, which is what the Win32 call did as well.
-    char call_step_probe_text[128] = {};
-    const auto call_step_probe = repiu::platform::ReadEnvironmentSetting(
-        "REPIU_AOT_DBT_CALL_STEP", sizeof(call_step_probe_text));
-    if (call_step_probe.present && !call_step_probe.too_long)
-    {
-        call_step_probe.value.copy(call_step_probe_text,
-                                   call_step_probe.value.size());
-    }
-    ConfigureAotDbtCallStepProbe(&context, call_step_probe_text);
     context.glide_backend.SetExecutionBackend(execution_backend);
     char probe_offset_text[32] = {};
     const auto probe_offset = repiu::platform::ReadEnvironmentSetting(

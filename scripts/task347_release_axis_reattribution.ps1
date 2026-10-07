@@ -151,9 +151,7 @@ $environmentNames = @(
     "REPIU_SINGLE_STEP_HOTSPOT_PROFILE",
     "REPIU_TIMER_INJECT_LOG",
     "REPIU_AOT_DBT_SUPERBLOCK",
-    "REPIU_AOT_DBT_POST_HLE_TRANSLATE",
-    "REPIU_NATIVE_LINEAR_SPAN",
-    "REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE"
+    "REPIU_NATIVE_LINEAR_SPAN"
 )
 $savedEnvironment = @{}
 foreach ($name in $environmentNames)
@@ -177,9 +175,7 @@ try
         "REPIU_SINGLE_STEP_HOTSPOT_PROFILE",
         "REPIU_TIMER_INJECT_LOG",
         "REPIU_AOT_DBT_SUPERBLOCK",
-        "REPIU_AOT_DBT_POST_HLE_TRANSLATE",
-        "REPIU_NATIVE_LINEAR_SPAN",
-        "REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE"))
+        "REPIU_NATIVE_LINEAR_SPAN"))
     {
         [Environment]::SetEnvironmentVariable($name, $null, "Process")
     }

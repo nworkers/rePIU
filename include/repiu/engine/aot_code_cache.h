@@ -43,8 +43,6 @@ struct AotCodeCachePlacement
         dbt_return_dispatch_sites;
     std::vector<runtime::AotDbtHleDispatchSite>
         dbt_hle_dispatch_sites;
-    std::vector<runtime::AotDbtIndirectDispatchSite>
-        dbt_indirect_dispatch_sites;
     std::vector<runtime::AotDbtDirectEdgeDispatchSite>
         dbt_direct_edge_dispatch_sites;
     std::vector<runtime::AotJumpTableSite> jump_table_sites;
@@ -120,8 +118,6 @@ struct AotCodeCachePlacement
         direct_return_probe_sites;
     bool dbt_hle_dispatch_enabled = false;
     bool dbt_port_io_dispatch_enabled = false;
-    bool dbt_segment_override_dispatch_enabled = false;
-    bool dbt_indirect_miss_dispatch_enabled = false;
     bool dbt_direct_edge_dispatch_enabled = false;
     bool guarded_segment_pop_enabled = false;
     bool guarded_segment_read_enabled = false;

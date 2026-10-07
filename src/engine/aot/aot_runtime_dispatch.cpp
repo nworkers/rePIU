@@ -1066,16 +1066,6 @@ std::vector<std::uint32_t>& AotGenerationFailureAddresses()
     return addresses;
 }
 
-bool AotQuarantineOnGenerationFailureEnabled()
-{
-    static const bool enabled = [] {
-        const char* value =
-            std::getenv("REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE");
-        return value != nullptr && std::strcmp(value, "0") != 0;
-    }();
-    return enabled;
-}
-
 bool HasAotGenerationFailureAddress(std::uint32_t address)
 {
     const std::vector<std::uint32_t>& addresses =
@@ -1401,12 +1391,11 @@ bool ResolveAotTransferTargetBody(ThreadContext* context,
             // Task 415: remember the address instead of quarantining its page.
             // The page keeps serving every other entry from the cache, and the
             // skip above makes sure this address is never retried. The old
-            // behaviour returns when the switch is set, or when failures spread
-            // wider than this policy was designed for.
+            // behaviour returns when failures spread wider than this policy was
+            // designed for.
             std::vector<std::uint32_t>& failures =
                 AotGenerationFailureAddresses();
             const bool fall_back_to_quarantine =
-                AotQuarantineOnGenerationFailureEnabled() ||
                 failures.size() >= kAotGenerationFailureAddressCapacity;
             if (!fall_back_to_quarantine)
             {
@@ -2778,18 +2767,6 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
                     context->aot_placement, guest_address))
             {
                 ++context->execution_trace_sentinel_rearm_count;
-            }
-        }
-        if (retired_entry && !is_tracked_trace_address &&
-            RetiredTrapNativeSpanEnabled(context->execution_backend))
-        {
-            // Task 334 interval 5.
-            const ExecutionTimeScope native_span_scope(
-                context->execution_time_profile.get(),
-                ExecutionTimeBucket::kAotReentryNativeSpan);
-            if (TryEnterRetiredTrapNativeSpan(win32_context, context))
-            {
-                return true;
             }
         }
         return false;

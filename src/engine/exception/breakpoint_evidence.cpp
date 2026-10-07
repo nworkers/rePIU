@@ -34,10 +34,6 @@ std::uint32_t CaptureStateFlags(const ThreadContext& context)
     {
         flags |= kBreakpointNativeLinearSpan;
     }
-    if (context.native_fast_path.region_active)
-    {
-        flags |= kBreakpointNativeRegion;
-    }
     return flags;
 }
 

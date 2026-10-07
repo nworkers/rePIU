@@ -1,4 +1,4 @@
-// Task 759. The five dispatch thunks the AOT/DBT engine plants in generated
+// Task 759. The four dispatch thunks the AOT/DBT engine plants in generated
 // code, for the Win32 host: MSVC inline assembly. They used to live in the
 // engine beside the resolver each one calls; the Linux i386 counterparts are
 // the instantiations of one bridge macro in
@@ -28,8 +28,6 @@ void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtDirectEdgeFrame(
 void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtHleFrame(
     void* context, std::uint32_t* frame);
 void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtReturnMissFrame(
-    void* context, std::uint32_t* frame);
-void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtIndirectMissFrame(
     void* context, std::uint32_t* frame);
 void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtGlideGateFrame(
     void* context, std::uint32_t* frame);
@@ -173,58 +171,6 @@ extern "C" __declspec(naked) void AotDbtReturnMissThunk()
     fail_without_host:
         mov eax, dword ptr [esp + 40]
         add eax, 16
-        mov dword ptr [esp + 36], eax
-        popad
-        popfd
-        ret
-    }
-}
-
-// aot_dbt_indirect_dispatch.cpp
-extern "C" __declspec(naked) void AotDbtIndirectMissThunk()
-{
-    __asm
-    {
-        pushfd
-        pushad
-        mov esi, esp
-        mov ecx, dword ptr [g_repiu_active_thread_context]
-        test ecx, ecx
-        jz fail_without_host
-        mov eax, dword ptr [g_repiu_dbt_host_esp]
-        test eax, eax
-        jz fail_without_host
-
-        mov edx, dword ptr [g_repiu_dbt_host_stack_base]
-        mov dword ptr fs:[4], edx
-        mov edx, dword ptr [g_repiu_dbt_host_stack_limit]
-        mov dword ptr fs:[8], edx
-        mov esp, eax
-        // The C++ resolver clobbers x87/MMX/SSE state that the guest may hold
-        // live across this indirect call (Glide init is FP-heavy). The VEH path
-        // preserves it through the OS exception context; reproduce that here by
-        // saving and restoring it around the call. edi survives the stdcall.
-        sub esp, 512
-        and esp, -16
-        fxsave [esp]
-        mov edi, esp
-        push esi
-        push ecx
-        call ResolveAotDbtIndirectMissFrame
-        fxrstor [edi]
-
-        mov eax, dword ptr [g_repiu_dbt_guest_stack_base]
-        mov dword ptr fs:[4], eax
-        mov eax, dword ptr [g_repiu_dbt_guest_stack_limit]
-        mov dword ptr fs:[8], eax
-        mov esp, esi
-        popad
-        popfd
-        ret
-
-    fail_without_host:
-        mov eax, dword ptr [esp + 40]
-        add eax, 21
         mov dword ptr [esp + 36], eax
         popad
         popfd

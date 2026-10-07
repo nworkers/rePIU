@@ -66,7 +66,6 @@
 #include "thread_context.h"
 #include "linexe_glide_boundary.h"
 #include "timer_interrupt_boundary.h"
-#include "aot_dbt_call_step_probe.h"
 #include "aot_dbt_dispatch.h"
 #include "aot_dbt_glide_gate_dispatch.h"
 #include "aot_guard_compare_fault.h"

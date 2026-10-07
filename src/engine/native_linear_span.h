@@ -16,20 +16,10 @@ struct ThreadContext;
 bool ResolveNativeLinearSpanEnabled(
     runtime::ExecutionBackend execution_backend,
     std::string_view setting);
-bool ResolveNativeLinearSpanCacheEnabled(std::string_view setting);
 bool ResolveNativeLinearSpanRejectCacheEnabled(
     runtime::ExecutionBackend execution_backend);
-bool ResolveRetiredTrapNativeSpanEnabled(
-    runtime::ExecutionBackend execution_backend,
-    std::string_view setting);
-bool ResolveNativeLinearSpanWritesEnabled(std::string_view setting);
-bool ResolveNativeLinearSpanJumpsEnabled(std::string_view setting);
 bool NativeLinearSpanEnabled(
     runtime::ExecutionBackend execution_backend);
-bool RetiredTrapNativeSpanEnabled(
-    runtime::ExecutionBackend execution_backend);
-bool TryEnterRetiredTrapNativeSpan(repiu::platform::GuestCpuContext* win32_context,
-                                   ThreadContext* context);
 bool TryEnterNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
                               ThreadContext* context);
 void LeaveNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
@@ -45,18 +35,6 @@ namespace detail
 struct NativeFastPathState;
 struct NativeLinearSpan;
 
-bool LookupNativeLinearSpanScanCache(
-    NativeFastPathState* state,
-    std::uint32_t entry,
-    std::uint32_t guest_page,
-    std::uint32_t generation,
-    NativeLinearSpan* span);
-void StoreNativeLinearSpanScanCache(
-    NativeFastPathState* state,
-    std::uint32_t entry,
-    std::uint32_t guest_page,
-    std::uint32_t generation,
-    const NativeLinearSpan& span);
 bool LookupNativeLinearSpanRejectCache(
     NativeFastPathState* state,
     std::uint32_t entry);

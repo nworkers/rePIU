@@ -36,18 +36,7 @@ std::uint32_t PatchAotSegmentOverrideSites(
         }
         if (resolution.policy == AotSegmentAccessPolicy::kHleLowMemory)
         {
-            if (site.dispatch_cache_offset == 0U)
-            {
-                bytes[site.cache_offset] = 0xCCU;
-            }
-            else
-            {
-                bytes[site.cache_offset] = 0xE9U;
-                const std::int32_t relative = static_cast<std::int32_t>(
-                    site.dispatch_cache_offset - (site.cache_offset + 5U));
-                std::memcpy(bytes + site.cache_offset + 1U,
-                            &relative, sizeof(relative));
-            }
+            bytes[site.cache_offset] = 0xCCU;
             if (stats != nullptr)
             {
                 ++stats->hle_site_count;

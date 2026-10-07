@@ -2,7 +2,6 @@
 #include "aot_dbt_glide_gate_dispatch.h"
 #include "aot_dbt_glide_gate_dispatch_state.h"
 #include "aot_dbt_hle_dispatch.h"
-#include "aot_dbt_indirect_dispatch.h"
 #include "aot_dbt_return_dispatch.h"
 
 #include "aot_runtime_dispatch.h"
@@ -128,11 +127,6 @@ void* GetAotDbtDirectEdgeDispatchThunkAddress()
 }
 
 void* GetAotDbtHleDispatchThunkAddress()
-{
-    return nullptr;
-}
-
-void* GetAotDbtIndirectMissThunkAddress()
 {
     return nullptr;
 }

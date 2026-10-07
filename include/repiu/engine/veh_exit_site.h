@@ -25,6 +25,9 @@ enum class VehExitSite : std::uint8_t
     kUnknown = 0,
     // Pre-chain consumers, in the order the handler reaches them.
     kZeroEip,
+    // Retired by Task i022 with the call-step probe and the native region, and
+    // never set any more. They keep their slots so every later value keeps its
+    // number.
     kCallStepProbe,
     kNativeRegionReturn,
     kNativeRegionSensitive,
