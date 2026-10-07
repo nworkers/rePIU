@@ -118,7 +118,6 @@ constexpr std::uint32_t kShadowWriteProvenanceCapacity = 256;
 enum class AotWorkerOperation : std::uint32_t
 {
     kTranslate = 0,
-    kPatchInlineCache = 1,
     kRetireGuestPage = 2,
 };
 
@@ -193,10 +192,8 @@ struct ThreadContext
     runtime::ExecutionBackend execution_backend =
         runtime::ExecutionBackend::kLegacy;
     bool aot_dbt_glide_direct_dispatch = false;
-    // Task 445: which path serviced each inline-cache patch, so an A/B can be
-    // read from the summary alone.
+    // Task 445: inline-cache patches, all serviced on the guest thread.
     std::uint64_t aot_inline_cache_direct_patch_count = 0;
-    std::uint64_t aot_inline_cache_worker_patch_count = 0;
     // Task 503d-2. These were HANDLE, which is void* on Windows -- the same
     // type, so nothing here changed except that this header no longer pulls in
     // <windows.h>. It was the only thing it needed from it, and 24 of the 32
@@ -225,9 +222,6 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_dbt_indirect_fallback_count{0};
     std::atomic<std::uint32_t> aot_dbt_indirect_fallback_reason_counts[
         kAotDbtDispatchFallbackReasonCount] = {};
-    std::atomic<std::uint32_t> aot_patch_cache_miss_address{0};
-    std::atomic<std::uint32_t> aot_patch_guest_target{0};
-    std::atomic<std::uint32_t> aot_patch_cache_target{0};
     std::atomic<std::uint32_t> aot_retire_guest_page{0};
     std::atomic<bool> aot_retire_quarantine{false};
     AotDynamicAppendResult aot_translation_result;

@@ -61,15 +61,6 @@ bool RunGlideSetterStateCacheProbe()
     using engine::ShouldElideGlideSetterState;
     using engine::SnapshotGlideSetterStateCache;
 
-    // Absent means enabled: this is a default-on optimization with a kill switch.
-    const bool policy =
-        engine::ResolveGlideSetterElisionEnabled("") &&
-        engine::ResolveGlideSetterElisionEnabled("1") &&
-        engine::ResolveGlideSetterElisionEnabled("on") &&
-        !engine::ResolveGlideSetterElisionEnabled("0") &&
-        !engine::ResolveGlideSetterElisionEnabled("off") &&
-        !engine::ResolveGlideSetterElisionEnabled("false");
-
     const bool membership =
         ElisionListIsSubsetOfStateGates() &&
         IsGlideSetterElisionGate(go::kGrColorMask) &&
@@ -244,13 +235,11 @@ bool RunGlideSetterStateCacheProbe()
         !ShouldElideGlideSetterState(nullptr, kColorMask, OneWordKey(1U)) &&
         !SnapshotGlideSetterStateCache(*MakeCache()).enabled;
 
-    const bool all = policy && membership && texture_membership &&
+    const bool all = membership && texture_membership &&
         batch_three_membership && batch_four_membership && cold && warm &&
         differs && per_ordinal && voided && invalidation && texture_generation &&
         counters && overflow && inert;
-    std::cout << "glide_setter_state_cache_policy="
-              << (policy ? "true" : "false")
-              << "\nglide_setter_state_cache_membership="
+    std::cout << "glide_setter_state_cache_membership="
               << (membership ? "true" : "false")
               << "\nglide_setter_state_cache_texture_membership="
               << (texture_membership ? "true" : "false")

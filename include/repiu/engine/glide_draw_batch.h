@@ -95,12 +95,11 @@ struct GlideDrawBatchSnapshot
         flush_reasons = {};
 };
 
-// Task 439: on by default after a paired gameplay A/B. Unset and empty mean
-// ON; an explicit `0|off|false` restores the per-primitive rendezvous as the
-// regression control.
-bool ResolveGlideDrawBatchEnabled(const char* setting);
-bool GlideDrawBatchEnabled();
-
+// Batching is always on. Task 439 promoted it on a paired gameplay A/B: batches
+// averaged 16.02 primitives (peak 332), the Glide gate fell from 10.35% to
+// 8.40% of guest-run and per-crossing cost fell 23.7%, with no failures and no
+// visual difference.
+//
 // True for the gates whose primitives may be queued. Everything else -- state,
 // queries, swap, clear, LFB, downloads, and the polygon fans -- flushes first.
 bool IsGlideDrawBatchGate(repiu::hle::GlideGateId gate_id);

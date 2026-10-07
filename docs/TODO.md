@@ -2,8 +2,9 @@
 
 ## 현재 상태
 
-2026-08-31 기준 활성 항목은 둘입니다. **Linux x64 host 이식이 진행 중**이고, 웹 이식
+2026-10-07 기준 활성 항목은 셋입니다. **Linux x64 host 이식이 진행 중**이고, 웹 이식
 Stage 3~5는 **보류 중**입니다 — 보류 이유는 우선순위이며 아래 항목에 적혀 있습니다.
+**환경 변수 토글 정리**는 1번 묶음을 진행 중이고 나머지는 재개 조건과 함께 보류입니다.
 
 Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 history 정리는 사용자
 120초 실행으로 최종 검증됐습니다.
@@ -46,6 +47,19 @@ Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 hist
   **그리고 Stage 3은 Worker 실행을 전제로 설계합니다** — CHD가 플레이 내내 열려 있어야 하고
   브라우저에서 동기 파일 I/O는 Worker 안에서만 성립하기 때문입니다(설계 513 결정 7).
 
+- **환경 변수 토글 정리 — 1번 묶음 진행 중, 나머지 보류(2026-10-07).** 조사 결과와 전체
+  목록은 [환경 변수 토글 목록](analysis/environment-toggle-inventory.md)이 정본입니다.
+  기능 토글 약 45개 중 **1번 묶음**(오래 승격된 기능의 끄기 스위치 15개)은 issue #20에서
+  진행합니다. 남은 두 항목은 다음 조건에서 재개합니다.
+  * **2번 묶음 — 버려진 옵트인 실험 11개 묶음의 기능·스위치 삭제.** 코드가 실제로 줄어
+    효과가 크지만 위험도 큽니다. **재개 조건:** #20이 main에 머지되고, 삭제 대상을
+    참조하는 과거 A/B 스크립트(`benchmark_native_linear_span.ps1`, `task283`~`task287`,
+    `task347`, `task413`)를 함께 정리할지 정한 뒤. 검증은 16개 롬셋 스모크와 pumpitea
+    교대 측정입니다.
+  * **`REPIU_AOT_GUARDED_SEGMENT_LOAD/POP/READ` 끄기 스위치 삭제.** v0.0.206(#18)에서
+    슬롯 내부를 교체해, `=0`이 새 슬롯 문제를 가려낼 유일한 비상 수단입니다.
+    **재개 조건:** v0.0.206 이후 한 릴리스 동안 새 슬롯 관련 회귀가 보고되지 않으면.
+
 ## 이번 정리에서 닫힌 이전 항목
 
 - **Task 492 최초 live 검증:** 입력 edge와 due queue에는 유실이 없었지만 IF gate 때문에
@@ -72,8 +86,10 @@ Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 hist
 
 ## Current Status
 
-As of 2026-08-28 there is one item, Stages 3 through 5 of the web port, and it is **on hold** --
-the Linux performance axis comes first. A 120-second user run
+As of 2026-10-07 there are three items: the Linux x64 host port is in progress, Stages 3
+through 5 of the web port are **on hold** -- the Linux performance axis comes first -- and the
+**environment toggle cleanup** has group 1 in progress with the rest deferred under stated
+resume conditions. A 120-second user run
 completed final validation
 of Tasks 492 through 495: JAMMA input timing, IRQ0 replay, 2P numpad aliases, and history pruning.
 
@@ -101,6 +117,20 @@ units in [`work-orders/`](work-orders/), and completed results and verification 
   file later means writing the interpreter twice.
   **And design Stage 3 for running in a Worker**: the CHD has to stay open throughout play, and
   synchronous file I/O in a browser holds only inside a Worker (design 513, Decision 7).
+
+- **Environment toggle cleanup -- group 1 in progress, the rest deferred (2026-10-07).** The
+  survey and full list live in the [environment toggle inventory](analysis/environment-toggle-inventory.md).
+  Of about 45 feature toggles, **group 1** (15 kill switches of long-promoted features) is
+  being done in issue #20. The other two items resume under these conditions.
+  * **Group 2 -- delete the feature and switch of 11 abandoned opt-in experiments.** The
+    largest code reduction and the largest risk. **Resume condition:** #20 is merged to main
+    and it is decided whether to retire the historical A/B scripts that reference these
+    variables (`benchmark_native_linear_span.ps1`, `task283`-`task287`, `task347`,
+    `task413`). Verify with the 16-romset smoke and interleaved pumpitea runs.
+  * **Delete the `REPIU_AOT_GUARDED_SEGMENT_LOAD/POP/READ` kill switches.** v0.0.206 (#18)
+    replaced the slot internals, so `=0` is the only escape hatch for the new slots.
+    **Resume condition:** one release after v0.0.206 with no regression reported against the
+    new slots.
 
 ## Previous Entries Closed by This Cleanup
 

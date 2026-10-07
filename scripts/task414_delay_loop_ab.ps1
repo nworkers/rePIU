@@ -1,3 +1,6 @@
+# Historical (issue #20): REPIU_PORT_IO_DELAY_LOOP was removed, so the delay-loop
+# batching is always on and both conditions of this A/B run the same configuration.
+
 param(
     [ValidateRange(1, 20)]
     [int]$RunsPerCondition = 3,

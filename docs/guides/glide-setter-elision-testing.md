@@ -1,5 +1,17 @@
 # Glide setter 생략 기본값 검증 가이드 / Testing the Glide setter elision default
 
+> **종료된 절차입니다(issue #20).** 이 가이드의 A/B는 Tasks 365·439·443·444에서
+> 결론이 나 모두 기본값으로 승격되었고, 그 뒤 #20에서 `REPIU_GLIDE_SETTER_ELIDE`,
+> `_TEXTURE`, `_BATCH3`, `_BATCH4`, `REPIU_GLIDE_DRAW_BATCH` 스위치를 제거했습니다.
+> 생략과 draw batch는 항상 켜져 있으므로 아래 절차를 그대로 따라 할 수 없고, 기록으로만
+> 남깁니다. 화면 이상을 발견하면 로그와 함께 issue로 알려 주십시오.
+>
+> **A concluded procedure (issue #20).** The A/Bs here concluded in Tasks 365, 439, 443 and
+> 444 and were all promoted; #20 then removed the `REPIU_GLIDE_SETTER_ELIDE`, `_TEXTURE`,
+> `_BATCH3`, `_BATCH4` and `REPIU_GLIDE_DRAW_BATCH` switches. Elision and draw batching are
+> always on, so the steps below can no longer be followed as written and remain as a record.
+> Report any visual problem as an issue with the log.
+
 이 문서는 Task 365가 기본 ON으로 넣은 **동일 Glide 상태 생략**을 사용자가 직접 실제
 플레이 장면에서 검증하고, 기본값을 유지할지 opt-in으로 되돌릴지 판단하기 위한 절차입니다.
 

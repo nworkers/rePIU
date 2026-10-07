@@ -2376,12 +2376,10 @@ void PrintExecutionAttempt(
                 phase.alpha_blend.error_count);
             const auto& elision = attempt.glide_setter_state_cache;
             logger.info(
-                "Glide setter elision enabled/texture-state/batch-three/"
-                "batch-four/entries/elided/applied/voided/invalidations/"
-                "ordinal-overflow/texture-generation: "
-                "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
-                elision.enabled, elision.texture_state, elision.batch_three,
-                elision.batch_four, elision.active_entry_count,
+                "Glide setter elision enabled/entries/elided/applied/voided/"
+                "invalidations/ordinal-overflow/texture-generation: "
+                "{}/{}/{}/{}/{}/{}/{}/{}",
+                elision.enabled, elision.active_entry_count,
                 elision.elided_count, elision.applied_count,
                 elision.voided_count, elision.invalidation_count,
                 elision.ordinal_overflow_count, elision.texture_generation);
@@ -2862,12 +2860,8 @@ void PrintExecutionAttempt(
                 attempt.aot_code_write_count,
                 attempt.aot_page_retire_attempt_count,
                 attempt.aot_page_retire_success_count);
-    // Task 445: the A/B reads from here -- a worker count of zero means the
-    // event round trip is gone.
-    logger.info(
-        "AOT inline cache patch direct/worker: {}/{}",
-        attempt.aot_inline_cache_direct_patch_count,
-        attempt.aot_inline_cache_worker_patch_count);
+    logger.info("AOT inline cache patches: {}",
+                attempt.aot_inline_cache_direct_patch_count);
     logger.info("AOT generation publishes/quarantines: {}/{}",
                 attempt.aot_generation_publish_count,
                 attempt.aot_quarantine_count);
@@ -5638,36 +5632,17 @@ int main(int argc, char** argv)
     const bool direct_glide_dispatch_enabled =
         direct_glide_dispatch_requested && direct_glide_dispatch_capable;
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
-    // Task 424: these three were decided by the backend value alone from the
-    // day they were introduced, leaving no way to A/B them on pumpit3 -- the
-    // since-removed `aot-dynamic` could not even build that image (see the
-    // Task 424 work log). Each therefore gets its own toggle. Unset means ON;
-    // explicit false and unknown values are fail-closed opt-outs, matching the
-    // promoted-default convention established by Tasks 384, 386, and 390.
-    // Turning direct-edge dispatch off fails image construction on images that
-    // have direct edges outside the cache, which is why that failure is loud.
-    aot_build_options.enable_dbt_return_miss_dispatch =
-        use_dynamic_backend &&
-        repiu::runtime::ResolvePromotedToggle(
-            std::getenv("REPIU_AOT_DBT_RETURN_MISS_DISPATCH"));
-    aot_build_options.enable_dbt_direct_edge_dispatch =
-        use_dynamic_backend &&
-        repiu::runtime::ResolvePromotedToggle(
-            std::getenv("REPIU_AOT_DBT_DIRECT_EDGE_DISPATCH"));
-    aot_build_options.enable_timer_safe_points =
-        use_dynamic_backend &&
-        repiu::runtime::ResolvePromotedToggle(
-            std::getenv("REPIU_AOT_DBT_TIMER_SAFE_POINTS"));
-    // Task 499 promoted this after a controlled A/B: three alternating pairs of
-    // 60-second pumpit8 runs measured 37,385 against 59,586 frames, +59.38%,
-    // with the two groups not overlapping and triangles per frame agreeing to
-    // 2.84%. Explicit false and unknown values remain fail-closed opt-outs for
-    // diagnosis, matching Tasks 384, 386, and 390. While off nothing is
-    // emitted, so the control side stays a byte-for-byte control.
-    aot_build_options.enable_direct_return_table =
-        use_dynamic_backend &&
-        repiu::runtime::ResolvePromotedToggle(
-            std::getenv("REPIU_AOT_DIRECT_RETURN_TABLE"));
+    // Always on for the dynamic backend. Return-miss and direct-edge dispatch
+    // and timer safe points were promoted in Task 424, the direct return table
+    // in Task 499 (pumpit8 +59.38% frames over three alternating 60-second
+    // pairs); Task i020 removed their environment kill switches. The fields
+    // stay because the legacy backend and the probes' control images build
+    // with them off. Direct-edge dispatch was never optional in practice:
+    // without it, images with direct edges outside the cache fail to build.
+    aot_build_options.enable_dbt_return_miss_dispatch = use_dynamic_backend;
+    aot_build_options.enable_dbt_direct_edge_dispatch = use_dynamic_backend;
+    aot_build_options.enable_timer_safe_points = use_dynamic_backend;
+    aot_build_options.enable_direct_return_table = use_dynamic_backend;
     aot_build_options.direct_return_table_bits =
         repiu::runtime::ResolveAotDirectReturnTableBits(
             std::getenv("REPIU_AOT_DIRECT_RETURN_TABLE_BITS"));
@@ -5682,12 +5657,9 @@ int main(int argc, char** argv)
         repiu::runtime::ResolvePromotedToggle(
             std::getenv("REPIU_AOT_DBT_SUPERBLOCK"));
     // Task 386 promoted the isolated Port-I/O dispatch after a Music Select
-    // capture confirmed lower per-frame exception and HLE costs. Explicit
-    // false and unknown values remain fail-closed opt-outs for diagnosis.
-    aot_build_options.enable_dbt_port_io_dispatch =
-        use_dynamic_backend &&
-        repiu::runtime::ResolvePromotedToggle(
-            std::getenv("REPIU_AOT_DBT_PORT_IO_DISPATCH"));
+    // capture confirmed lower per-frame exception and HLE costs; Task i020
+    // removed its kill switch.
+    aot_build_options.enable_dbt_port_io_dispatch = use_dynamic_backend;
     aot_build_options.enable_dbt_segment_override_dispatch =
         use_dynamic_backend &&
         repiu::runtime::ResolveOptInToggle(

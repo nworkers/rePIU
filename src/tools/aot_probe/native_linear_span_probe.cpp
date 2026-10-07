@@ -456,19 +456,9 @@ bool RunNativeLinearSpanProbe()
         !engine::ResolveNativeLinearSpanCacheEnabled("0") &&
         !engine::ResolveNativeLinearSpanCacheEnabled("invalid") &&
         engine::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kDynamic, "") &&
+            runtime::ExecutionBackend::kDynamic) &&
         !engine::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kLegacy, "") &&
-        engine::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kDynamic, "1") &&
-        engine::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kDynamic, "on") &&
-        engine::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kLegacy, "true") &&
-        !engine::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kDynamic, "0") &&
-        !engine::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kDynamic, "invalid") &&
+            runtime::ExecutionBackend::kLegacy) &&
         !engine::ResolveRetiredTrapNativeSpanEnabled(
             runtime::ExecutionBackend::kDynamic, "") &&
         engine::ResolveRetiredTrapNativeSpanEnabled(

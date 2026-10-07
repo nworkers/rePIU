@@ -66,22 +66,7 @@ bool RunGlideDrawBatchProbe()
     using engine::FlushGlideDrawBatch;
     using engine::IsGlideDrawBatchGate;
     using engine::kGlideDrawBatchVertexCapacity;
-    using engine::ResolveGlideDrawBatchEnabled;
     using engine::SnapshotGlideDrawBatch;
-
-    // Task 439: promoted, so unset and empty are ON and only an explicit
-    // `0|off|false` opts out. An unrecognised spelling stays fail-closed OFF,
-    // matching every other promoted switch.
-    const bool policy =
-        ResolveGlideDrawBatchEnabled(nullptr) &&
-        ResolveGlideDrawBatchEnabled("") &&
-        ResolveGlideDrawBatchEnabled("1") &&
-        ResolveGlideDrawBatchEnabled("on") &&
-        ResolveGlideDrawBatchEnabled("true") &&
-        !ResolveGlideDrawBatchEnabled("0") &&
-        !ResolveGlideDrawBatchEnabled("off") &&
-        !ResolveGlideDrawBatchEnabled("false") &&
-        !ResolveGlideDrawBatchEnabled("yes");
 
     // Only the independent-primitive draw gates may queue. Everything else must
     // flush first, and the polygon fans are excluded because two fans inside one
@@ -208,12 +193,11 @@ bool RunGlideDrawBatchProbe()
                                  nullptr) &&
         !SnapshotGlideDrawBatch(GlideDrawBatch{}).enabled;
 
-    const bool all = policy && membership && queued && flushed &&
+    const bool all = membership && queued && flushed &&
         empty_flush && primitive_change && capacity && failure_counted &&
         inert;
 
-    std::cout << "glide_draw_batch_policy=" << (policy ? "true" : "false")
-              << "\nglide_draw_batch_membership="
+    std::cout << "glide_draw_batch_membership="
               << (membership ? "true" : "false")
               << "\nglide_draw_batch_queue=" << (queued ? "true" : "false")
               << "\nglide_draw_batch_order=" << (flushed ? "true" : "false")

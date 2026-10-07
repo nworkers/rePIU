@@ -18,8 +18,7 @@ bool ResolveNativeLinearSpanEnabled(
     std::string_view setting);
 bool ResolveNativeLinearSpanCacheEnabled(std::string_view setting);
 bool ResolveNativeLinearSpanRejectCacheEnabled(
-    runtime::ExecutionBackend execution_backend,
-    std::string_view setting);
+    runtime::ExecutionBackend execution_backend);
 bool ResolveRetiredTrapNativeSpanEnabled(
     runtime::ExecutionBackend execution_backend,
     std::string_view setting);
