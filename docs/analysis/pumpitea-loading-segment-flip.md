@@ -392,6 +392,23 @@ ISR 진입 헬퍼의 네이티브 폴트와 memcpy `mov ax, ds`의 read 폴백�
 I/O)가 1/5.7로 줄었다. 남은 세그먼트 트랩은 far strcmp 그룹(2,530/90초)
 뿐이다.
 
+### 두 번째 정지의 원인과 해소 (2026-10-07)
+
+* 두 번째 정지(이 날 47~50초 부근, 2.5~3.8초) 동안 게스트는 멈추지
+  않는다: HLE 디스패치가 초당 857 → 12,500~19,000회로 폭증하고
+  `last_eip`가 lseek 래퍼(AH=42h)다 — 데모 데이터를 ~45,000번의
+  seek/read로 읽는 파일 I/O가 VEH 왕복 비용으로 늘어진 것이다.
+* `REPIU_AOT_DBT_SUPERBLOCK` 호스트 디스패치는 발화하지만
+  `RequiresVehMediatedHle`가 모든 INT를 일괄 제외해 90초에 222,309건이
+  `veh-required`로 폴백했다. 화이트리스트 없는 토글 on은 이중
+  디스패치 오버헤드로 두 번째 정지를 오히려 악화시킨다(3.1~3.2 →
+  4.5~4.7초).
+* `INT 0x21` + AH ∈ {0x2C, 0x3F, 0x42} 허용 예외를 넣은 뒤(90초 교대
+  2쌍): 1차 공백 4.26~6.24 → **2.53~2.68초**, 2차 정지 4.38~6.53 →
+  **1.37~2.14초**, 디스패치 성공 767k~900k, `veh-required` 9.6천,
+  예외 0. 1차 공백은 이슈 접수 시점(29초)의 1/11이다. 기능은
+  옵트인 뒤에 있고 승격은 별도 판단이다.
+
 ## 다음 방향
 
 1. **모드 분기 규명이 최우선이다.** 빠른 모드를 안정적으로 선택하게
@@ -639,6 +656,20 @@ window visible, default vsync (2026-10-06, Intel HD 620 laptop).
   memcpy's read fallbacks are gone, and the ISR's native port I/O no
   longer raises privileged exceptions. The far-strcmp group (2,530 per
   90 s) is the only segment trap left.
+
+* **The second stall's cause and cure (2026-10-07).** During the stall
+  the guest keeps running: HLE dispatches burst from 857/s to
+  12.5k–19k/s with `last_eip` at the AH=42h lseek wrapper — demo-data
+  file I/O (~45k calls) stretched by VEH round trips. The
+  `REPIU_AOT_DBT_SUPERBLOCK` host dispatch fires but
+  `RequiresVehMediatedHle` blanket-rejected every INT (222,309
+  `veh-required` per 90 s; the bare toggle even worsens the stall via
+  double dispatch). With an `INT 0x21` allowlist for AH 0x2C/0x3F/0x42:
+  first gap 4.26–6.24 → **2.53–2.68 s**, second stall 4.38–6.53 →
+  **1.37–2.14 s**, dispatch successes 767k–900k, `veh-required` ~9.6k,
+  zero exceptions — the first gap is one-eleventh of the issue's
+  original 29 s. The feature stays opt-in; promotion is a separate
+  decision.
 
 ## Next directions
 
