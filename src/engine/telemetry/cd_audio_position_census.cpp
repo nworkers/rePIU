@@ -128,8 +128,7 @@ bool WriteCdAudioPositionCensusDump(
         << " regressions=" << census.regression_count << "\n"
         << "# wall_ms current_lba queued_lba stream_bytes start_lba end_lba "
            "worker_iterations underruns generation playing paused "
-           "delta_lba ticks_due ticks_injected tick_lag_ms safe_point_traps "
-           "ticks_coalesced ticks_coalesced_in_gate\n";
+           "delta_lba ticks_due ticks_injected tick_lag_ms safe_point_traps\n";
     std::uint32_t previous_lba = 0;
     std::uint64_t cumulative_due = 0;
     std::uint64_t cumulative_injected = 0;
@@ -166,8 +165,7 @@ bool WriteCdAudioPositionCensusDump(
             << entry.generation << ' ' << (entry.playing ? 1 : 0) << ' '
             << (entry.paused ? 1 : 0) << ' ' << delta << ' '
             << entry.timer_ticks_due << ' ' << entry.timer_ticks_injected
-            << ' ' << lag_milliseconds << ' ' << entry.safe_point_traps << ' '
-            << entry.ticks_coalesced << ' ' << entry.ticks_coalesced_in_gate
+            << ' ' << lag_milliseconds << ' ' << entry.safe_point_traps
             << '\n';
     }
     out.flush();

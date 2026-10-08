@@ -106,8 +106,8 @@ foreach ($condition in $order)
         ("exception census single-step/breakpoint/access-violation/" +
          "other/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)")
     $ticks = Get-LastMatch $text `
-        ("timer tick delivery backlog-enabled/due/injected/coalesced/" +
-         "dropped/deferred/max-backlog/remaining: \w+/(\d+)/(\d+)/(\d+)/(\d+)")
+        ("timer tick delivery due/injected/dropped/deferred/max-backlog/" +
+         "remaining: (\d+)/(\d+)/(\d+)/(\d+)")
     $batch = Get-LastMatch $text `
         ("port I/O delay loop enabled/attempts/batches/skipped/max: " +
          "(\w+)/(\d+)/(\d+)/(\d+)/(\d+)")

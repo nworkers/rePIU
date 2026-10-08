@@ -4,8 +4,8 @@
 
 2026-10-08 기준 활성 항목은 셋입니다. **Linux x64 host 이식이 진행 중**이고, 웹 이식
 Stage 3~5는 **보류 중**입니다 — 보류 이유는 우선순위이며 아래 항목에 적혀 있습니다.
-**환경 변수 토글 정리**는 1번(#20)·2번(#22) 묶음을 마쳤고, 2차 조사에서 찾은 3번 묶음(#24)과
-일회성 진단 삭제(#25)가 열려 있으며, 남은 한 항목은 재개 조건과 함께 보류입니다.
+**환경 변수 토글 정리**는 1번(#20)·2번(#22) 묶음을 마쳤고, 2차 조사에서 찾은 3번 묶음(#24)은
+삭제를 마치고 머지를 기다리며, 일회성 진단 삭제(#25)가 열려 있고, 남은 한 항목은 재개 조건과 함께 보류입니다.
 
 Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 history 정리는 사용자
 120초 실행으로 최종 검증됐습니다.
@@ -55,8 +55,9 @@ Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 hist
   2026-10-09 2차 조사에서 진단 이름 뒤에 숨은 토글을 더 찾았습니다.
   * **3번 묶음 — issue #24.** 끄기 스위치 3개(`REPIU_GLIDE_DRAW_ENTRY_POINTS`,
     `REPIU_TIMER_TICK_BACKLOG`, `REPIU_JAMMA_SNAPSHOT`)와 실험 2개
-    (`REPIU_DOS4GW_MEMORY_PATH_PROBE`, `REPIU_DPMI_1E7F_PROBE_SUCCESS`). 1E7F는 현재 롬셋이
-    `AX=1E7Fh`에 도달하는지 먼저 확인합니다.
+    (`REPIU_DOS4GW_MEMORY_PATH_PROBE`, `REPIU_DPMI_1E7F_PROBE_SUCCESS`와 같은 블록의
+    `_TRACE`). 브랜치 `task/i024-hidden-toggle-cleanup`에서 삭제와 probe 검증을 마쳤고
+    머지를 기다립니다. 1E7F는 Task 606에서 원인이 스택 손상으로 확정돼 실행 없이 지웠습니다.
   * **일회성 진단 — issue #25.** 이미 답이 나온 질문을 위한 진단 11개와 판단이 필요한 2개.
   보류 항목은 다음 조건에서 재개합니다.
   * **`REPIU_AOT_GUARDED_SEGMENT_LOAD/POP/READ` 끄기 스위치 삭제.** v0.0.206(#18)에서
@@ -91,8 +92,8 @@ Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 hist
 
 As of 2026-10-08 there are three items: the Linux x64 host port is in progress, Stages 3
 through 5 of the web port are **on hold** -- the Linux performance axis comes first -- and the
-**environment toggle cleanup** has finished groups 1 (#20) and 2 (#22), has group 3 (#24) and
-the one-off diagnostics (#25) from a second survey open, and keeps one item
+**environment toggle cleanup** has finished groups 1 (#20) and 2 (#22), has finished group 3
+(#24) from a second survey on a branch awaiting merge, has the one-off diagnostics (#25) open, and keeps one item
 deferred under a stated resume condition. A 120-second user run
 completed final validation
 of Tasks 492 through 495: JAMMA input timing, IRQ0 replay, 2P numpad aliases, and history pruning.
@@ -129,8 +130,9 @@ units in [`work-orders/`](work-orders/), and completed results and verification 
   in issue #22. A second survey on 2026-10-09 found more toggles behind diagnostic names.
   * **Group 3 -- issue #24.** Three kill switches (`REPIU_GLIDE_DRAW_ENTRY_POINTS`,
     `REPIU_TIMER_TICK_BACKLOG`, `REPIU_JAMMA_SNAPSHOT`) and two experiments
-    (`REPIU_DOS4GW_MEMORY_PATH_PROBE`, `REPIU_DPMI_1E7F_PROBE_SUCCESS`); for 1E7F, first check
-    whether current romsets reach `AX=1E7Fh`.
+    (`REPIU_DOS4GW_MEMORY_PATH_PROBE`, `REPIU_DPMI_1E7F_PROBE_SUCCESS` with the block's
+    `_TRACE`), deleted and probe-verified on branch `task/i024-hidden-toggle-cleanup`, awaiting
+    merge. 1E7F went without a run because Task 606 traced the call to stack corruption.
   * **One-off diagnostics -- issue #25.** Eleven diagnostics for answered questions, plus two
     undecided ones.
   The deferred item resumes under this condition.

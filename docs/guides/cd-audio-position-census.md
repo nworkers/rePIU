@@ -44,7 +44,7 @@ CD audio position census entries/regressions: <기록수>/<역행수>
 각 행은 다음과 같습니다.
 
 ```
-wall_ms current_lba queued_lba stream_bytes start_lba end_lba worker_iterations underruns generation playing paused delta_lba ticks_due ticks_injected tick_lag_ms safe_point_traps ticks_coalesced_in_gate
+wall_ms current_lba queued_lba stream_bytes start_lba end_lba worker_iterations underruns generation playing paused delta_lba ticks_due ticks_injected tick_lag_ms safe_point_traps
 ```
 
 * `current_lba` — **게임이 보는 값 그 자체**
@@ -57,12 +57,9 @@ wall_ms current_lba queued_lba stream_bytes start_lba end_lba worker_iterations 
   정확하므로(Task 421), 이 값이 곧 음악 대비 게스트 시간의 어긋남입니다
 * `safe_point_traps` — **(Task 431)** 그 구간에서 게스트가 AOT 타이머 안전점을 밟은
   횟수. 주입의 99%가 여기서 나오므로 **기회의 수** 그 자체입니다
-* `ticks_coalesced` · `ticks_coalesced_in_gate` — **(Task 431)** 그 구간에서 버려진
-  틱과, 그중 게스트가 **Glide 게이트에 블록돼 있던** 동안 발생한 몫. 그 구간은 게스트
-  코드를 실행하지 않아 안전점 자체가 도달 불가입니다.
-  **비율의 분모로 `ticks_due − ticks_injected`를 쓰지 마십시오** — 이번 구간의 주입이
-  직전 구간에 armed된 틱을 소비할 수 있어 분모가 과소평가되고 비율이 100%를 넘습니다
-  (스모크 404행 중 47행에서 실제로 그랬습니다). 분모는 `ticks_coalesced`입니다
+* 예전의 `ticks_coalesced` · `ticks_coalesced_in_gate` 열은 issue #24에서 없앴습니다.
+  Task 432부터 밀린 틱을 backlog로 보존해 버려지는 틱이 없어 항상 0이었습니다.
+  게이트 안에서 밀린 틱의 총계는 최종 로그의 `timer tick in-gate due` 줄에 남습니다
 
 ## 4. 판정 — 측정 전에 고정된 규칙
 
@@ -75,9 +72,7 @@ wall_ms current_lba queued_lba stream_bytes start_lba end_lba worker_iterations 
 | `underruns`가 함께 증가 | 음악 자체가 끊긴 것이므로 위치만의 문제가 아님 |
 | **(Task 430)** gameplay 구간 `ticks_injected/ticks_due` ≥ **99.5%**, `tick_lag_ms` 증가 곡 전체 **< 50 ms** | **틱 손실 아님.** 노트 점프는 다른 축 |
 | **(Task 430)** gameplay 구간 `ticks_injected/ticks_due` ≤ **96%**, `tick_lag_ms` 단조 증가해 곡 끝 **> 1,000 ms** | **틱 손실 확정.** 음악은 실시간인데 게스트 시계가 뒤처짐 |
-
-| **(Task 431)** 본곡 구간 `ticks_coalesced_in_gate / ticks_coalesced` ≥ **80%** | **게이트 블록이 원인.** 수정 축은 게이트 경계에서의 밀린 틱 배출 |
-| **(Task 431)** 같은 비율 ≤ **20%** | 게이트가 아님. arena·HLE 체류나 안전점 배치로 이동 |
+| **(Task 431)** `ticks_injected/ticks_due`가 낮은데 최종 로그의 `dropped`가 0 | 손실이 아니라 **지연.** backlog가 상한(64)에 닿지 않았으므로 안전점 도달 빈도를 봅니다 |
 | **(검산)** `safe_point_traps` ≈ `ticks_injected` | 기회 = 안전점이라는 전제 재확인. 어긋나면 해석부터 다시 |
 
 **틱 열은 gameplay 구간만 보십시오.** 부팅·attract 표본을 섞으면 평균이 흐려집니다 —
@@ -128,19 +123,15 @@ at that rate — and the series lands in `build/cd_audio_position_census.txt`
 
 The log prints `CD audio position census entries/regressions`, and each row is
 `wall_ms current_lba queued_lba stream_bytes start_lba end_lba worker_iterations underruns
-generation playing paused delta_lba ticks_due ticks_injected tick_lag_ms safe_point_traps
-ticks_coalesced_in_gate`. `current_lba` is what the game sees and `delta_lba` is where to look.
+generation playing paused delta_lba ticks_due ticks_injected tick_lag_ms safe_point_traps`. `current_lba` is what the game sees and `delta_lba` is where to look.
 **Task 430** adds `ticks_due` and `ticks_injected` over that interval, whose difference is the
 guest time lost in it, and `tick_lag_ms`, the guest clock's accumulated lag — which, since the
 music is exact (Task 421), is also its drift against the music. **Task 431** adds the
 opportunity side: `safe_point_traps`, how often the guest reached an AOT timer safe point
-(where 99% of injections happen, so it *is* the opportunity count), and
-`ticks_coalesced` with `ticks_coalesced_in_gate`, the loss in that interval and the share of it
-that fell while the guest was blocked in the Glide gate — a window that runs no guest code and
-so reaches no safe point at all. **Do not use `ticks_due − ticks_injected` as the denominator**:
-an injection in this interval can consume a tick armed in the previous one, which understates
-it and pushes the share above 100% (it did so in 47 of a smoke run's 404 rows). The denominator
-is `ticks_coalesced`.
+(where 99% of injections happen, so it *is* the opportunity count). The former
+`ticks_coalesced` and `ticks_coalesced_in_gate` columns went in issue #24: since Task 432 owed
+ticks are kept in the backlog, so nothing was coalesced and both were always zero. The run total
+of ticks owed inside the Glide gate stays in the final log's `timer tick in-gate due` line.
 
 ## Interpreting
 
@@ -155,10 +146,9 @@ device buffer (A) or the pregap and logical-LBA mapping (E), told apart by size.
 or above **99.5%** with `tick_lag_ms` growing under **50 ms** across the song means tick loss
 is **not** the cause and the jumping lies on another axis; at or below **96%** with
 `tick_lag_ms` rising monotonically past **1,000 ms** confirms the guest clock falling behind
-real time while the music holds it. **Task 431's attribution** then splits that loss:
-`ticks_coalesced_in_gate / ticks_coalesced` at or above **80%** puts the cause in
-the Glide gate block, at or below **20%** puts it elsewhere (arena and HLE residency, or
-safe-point placement), and `safe_point_traps` tracking `ticks_injected` is the cross-check that
+real time while the music holds it. A low `ticks_injected/ticks_due` with zero `dropped` in the
+final log is delay rather than loss — the backlog never reached its cap of 64 — so look at how
+often safe points are reached. `safe_point_traps` tracking `ticks_injected` is the cross-check that
 the opportunity really is the safe point — if it does not hold, re-read the premise before the
 conclusion. **Read these columns over gameplay only** — mixing in boot
 and attract blurs the average, since Task 366's 11.9% loss was measured in attract and a

@@ -765,32 +765,6 @@ bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, Thre
         return true;
     }
 
-    if (ax == 0x1E7FU)
-    {
-        const bool trace_1e7f = std::getenv("REPIU_DPMI_1E7F_TRACE") != nullptr;
-        const bool probe_success =
-            std::getenv("REPIU_DPMI_1E7F_PROBE_SUCCESS") != nullptr;
-        if (trace_1e7f || probe_success)
-        {
-            std::fprintf(
-                stderr,
-                "[repiu-dpmi-1e7f] eip=0x%08X eax=0x%08X ebx=0x%08X "
-                "ecx=0x%08X edx=0x%08X esi=0x%08X edi=0x%08X "
-                "esp=0x%08X eflags=0x%08X probe-success=%u\n",
-                win32_context->Eip, win32_context->Eax, win32_context->Ebx,
-                win32_context->Ecx, win32_context->Edx, win32_context->Esi,
-                win32_context->Edi, win32_context->Esp, win32_context->EFlags,
-                probe_success ? 1U : 0U);
-        }
-        if (probe_success)
-        {
-            RecordHandledDosInterrupt(context, 0x31, ax);
-            win32_context->EFlags &= ~1U;
-            win32_context->Eip += 2;
-            return true;
-        }
-    }
-
     // DPMI 1.0 defines 8001h as the error for an undefined or unsupported
     // function. Return that error to the guest instead of executing the raw
     // INT 31h in a host long-mode process.

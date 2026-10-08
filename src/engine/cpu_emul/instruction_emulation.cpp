@@ -3512,10 +3512,6 @@ bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
             RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax =
                 (win32_context->Eax & 0xFFFF0000U) | 0x0007U;
-            if (Dos4gwPharlapMemoryPathProbeEnabled())
-            {
-                win32_context->Eax |= 0x44580000U;
-            }
             win32_context->Ebx = 0;
             win32_context->Ecx = 0;
             win32_context->EFlags &= ~1U;

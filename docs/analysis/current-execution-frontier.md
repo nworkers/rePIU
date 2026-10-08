@@ -428,6 +428,7 @@ timer tick delivery due/injected/coalesced/dropped/deferred: 10942/5661/5256/25/
 일어납니다(판정 T3). Tasks 414·415·417·419 이후 backlog가 게이트 사이에 비워지므로
 trap이 틱당 1회로 최소이고, 짝 A/B는 프레임 2,243 → 2,216(**−1.2%**, 편차 내)입니다.
 **backlog는 Task 432에서 기본값이 됐고 `REPIU_TIMER_TICK_BACKLOG=0`이 대조군입니다.**
+(issue #24에서 대조군 스위치와 bool 경로를 없앴습니다. backlog는 항상 켜져 있습니다.)
 
 **미측정으로 남은 것:** 본곡 구간의 짝 프레임 측정(위 A/B는 attract 구간), pumpit3 회귀.
 
@@ -1619,25 +1620,22 @@ wall의 20.59%에 LFB 0회인데, 측정에 쓴 자동 장면은 setter 약 5.6%
 
 ### 지금 켜져 있는/꺼져 있는 것
 
+2026-10-09(issue #24) 기준으로 고쳤습니다. 이 표가 처음 쓰인 뒤 #20·#22·#24에서 지운
+변수는 맨 아래 줄에 모았고, 전체 목록은
+[환경 변수 토글 목록](environment-toggle-inventory.md)이 정본입니다.
+
 | 환경 변수 | 기본값 | 의미 |
 |---|---|---|
-| `REPIU_GLIDE_SETTER_ELIDE` | **ON** | 동일 상태 생략(Task 365). `0`으로 복원 |
 | `REPIU_GLIDE_SETTER_CENSUS` | OFF | setter 반복률 census(Task 364) |
 | `REPIU_GLIDE_SETTER_PHASE` | OFF | GL phase 분해(Task 364) |
-| `REPIU_TIMER_TICK_BACKLOG` | OFF | **성능 목적으로 켜지 말 것**(Task 366: -16.4%) |
-| `REPIU_AOT_DBT_SUPERBLOCK` | OFF | 렌더링 중단. 예외 없는 dispatch가 여기 묶여 있음 |
-| `REPIU_JAMMA_SNAPSHOT` | **ON** | 입력 스냅샷(Task 403). `0`으로 매 읽기 조회 복원 |
-| `REPIU_JAMMA_SNAPSHOT_US` | 500 | 스냅샷 갱신 주기(µs). 게스트 폴링 4.8ms의 1/10 |
+| `REPIU_AOT_DBT_SUPERBLOCK` | **ON** | 이후 승격됐습니다. `0`이면 INT3 경계만 씁니다 |
+| `REPIU_JAMMA_SNAPSHOT_US` | 500 | 입력 스냅샷 갱신 주기(µs, Task 403). 게스트 폴링 4.8ms의 1/10. `0`이면 매 읽기 조회 |
 | `REPIU_PORT_IO_CENSUS_MAPPING` | OFF | port I/O census의 `mapped`/`reentry`(Task 406). 켜면 호출당 `FindAotCacheAddress`가 붙어 약 5.8% 느려지므로 **그 실행의 wall·프레임은 인용 금지** |
 | `REPIU_GUEST_POSITION_CENSUS` | OFF | 시간 기준 게스트 위치 census(Task 411). 예외와 무관하게 표본하므로 캐시 실행도 보입니다. **켠 실행의 wall·프레임은 인용 금지** |
 | `REPIU_GUEST_POSITION_CENSUS_MS` | 10 | 위 census의 표본 간격(ms, 1~1000). tick 주기와 서로소로 두십시오 |
 | `REPIU_GUEST_POSITION_CENSUS_DUMP` | 없음 | `1`이면 `build/guest_position_census.txt`, 그 외 값은 경로 |
-| `REPIU_AOT_PATCH_WIDE_PROTECT` | OFF | 켜면 inline-cache patch가 예전처럼 **캐시 전체**의 보호를 바꿉니다(Task 413 A/B용). 기본값은 쓰는 페이지만 |
-| `REPIU_PORT_IO_DELAY_LOOP` | **ON** | 결과를 버리는 포트 지연 루프를 2회로 줄입니다(Task 414). `0`이면 예전 동작. **pumpit3 멈춤 해소의 본체** |
-| `REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE` | OFF | 켜면 세대 실패가 예전처럼 **페이지 전체를 영구 격리**합니다(Task 415 A/B용). 기본값은 실패한 **주소만** 억제 |
-| `REPIU_AOT_STRICT_SPANNING_ENTRY` | OFF | 켜면 요청 항목이 retired 이웃 페이지에 걸칠 때 예전처럼 **활성화를 거부**합니다(Task 417 A/B용). **켜면 pumpit3 멈춤이 돌아옵니다** |
-| `REPIU_GLIDE_DRAW_ENTRY_POINTS` | **ON** | point·AA·polygon draw 진입점 7종을 실제로 그립니다(Task 420). `0`이면 예전처럼 요청만 받고 그리지 않습니다(A/B용) |
 | `REPIU_GLIDE_RENDEZVOUS_SPIN_US` | **20** | Glide 왕복 대기를 조건변수 전에 이만큼(µs) 스핀합니다(Task 419). `0`이면 예전 동작이며 **pumpit3 프레임이 약 24% 떨어집니다**(3,063 → 2,399). 코어가 부족한 환경에서는 `0`이 나을 수 있습니다 |
+| 지운 변수 | — | 항상 켜짐: `REPIU_GLIDE_SETTER_ELIDE`·`REPIU_PORT_IO_DELAY_LOOP`(#20), `REPIU_TIMER_TICK_BACKLOG`·`REPIU_JAMMA_SNAPSHOT`·`REPIU_GLIDE_DRAW_ENTRY_POINTS`(#24). 기능째 삭제: `REPIU_AOT_PATCH_WIDE_PROTECT`·`REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE`·`REPIU_AOT_STRICT_SPANNING_ENTRY`(#22) |
 
 timer tick 전달 counter와 boundary opcode census는 **상시 ON**이며 동작을 바꾸지
 않습니다.
@@ -1665,12 +1663,14 @@ axis, settle the Task 365 elision default with the
 [elision testing guide](../guides/glide-setter-elision-testing.md), and from there
 either resume batch two, decompose LFB/triangle, or move to the guest-execution axis.
 
-Currently on by default: `REPIU_GLIDE_SETTER_ELIDE` (Task 365 elision; `0` restores),
-plus always-on timer-tick and boundary-opcode counters that change no behaviour. Off:
-the setter census and GL phase profiles, `REPIU_TIMER_TICK_BACKLOG` (**must not be
-enabled for performance** — Task 366 measured -16.4%), and
-`REPIU_AOT_DBT_SUPERBLOCK` (breaks rendering, and exception-free dispatch is bolted
-to it).
+Current state (corrected 2026-10-09, issue #24; the full list lives in the
+[environment toggle inventory](environment-toggle-inventory.md)): the setter census and GL
+phase profiles are off; `REPIU_AOT_DBT_SUPERBLOCK` was promoted later and is on (`0` keeps only
+INT3 boundaries); the timer-tick and boundary-opcode counters are always on and change no
+behaviour. Since this table was written, the Task 365 elision switch `REPIU_GLIDE_SETTER_ELIDE`
+and `REPIU_PORT_IO_DELAY_LOOP` lost their kill switches in #20, three rollback switches went
+with their code in #22, and `REPIU_TIMER_TICK_BACKLOG`, `REPIU_JAMMA_SNAPSHOT` and
+`REPIU_GLIDE_DRAW_ENTRY_POINTS` lost theirs in #24.
 
 ## 현재 최상위 결론 / Active top-level conclusion
 

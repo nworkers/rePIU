@@ -78,7 +78,9 @@
 바꾸는 실험 스위치**가 섞여 있었다. 기본 켜기 판정은 `value == nullptr ||` 형태의 직접
 `getenv`와 `ResolvePromotedToggle` 호출을 모두 훑어 확인했다.
 
-#### 3번 묶음 — issue #24
+#### 3번 묶음 — issue #24에서 삭제(2026-10-09)
+
+설계는 `docs/design/20261009-i024-retire-hidden-toggles.md`.
 
 끄기 스위치(기능 유지, 1번 묶음과 같은 형태):
 
@@ -93,7 +95,7 @@
 | 변수 | 근거 |
 |---|---|
 | `REPIU_DOS4GW_MEMORY_PATH_PROBE=pharlap` | Task 611 판정 "AH=4Ah까지 가지만 할당은 풀지 못함". 두 곳에서 게스트 경로를 바꾼다 |
-| `REPIU_DPMI_1E7F_PROBE_SUCCESS` | Task 599. 진단용으로 CF만 지워 가짜 성공을 돌려준다. 사설 ABI는 미확정으로 남아 있으므로 **현재 롬셋이 `AX=1E7Fh`에 도달하는지 확인한 뒤** 삭제하고, 도달하면 보류 |
+| `REPIU_DPMI_1E7F_PROBE_SUCCESS`(같은 블록의 `REPIU_DPMI_1E7F_TRACE`와 함께) | Task 599. 진단용으로 CF만 지워 가짜 성공을 돌려줬다. Task 606이 이 호출을 x64 word 스택 lowering 결함의 반환 주소 손상으로 확정했고 수정 뒤 기본 실행에서 사라졌으므로(`EXE_DESIGN.ko.md` 첫 절) 실행 없이 삭제했다 |
 
 #### 일회성 진단 — issue #25
 
@@ -113,9 +115,10 @@
 #### 함께 찾은 낡은 기록
 
 * `current-execution-frontier.md`의 "지금 켜져 있는/꺼져 있는 것" 표에 #20·#22에서 지운
-  변수 6개가 남아 있고 `REPIU_TIMER_TICK_BACKLOG`를 OFF로 적었다(#24에서 고친다).
+  변수 5개가 남아 있고 `REPIU_TIMER_TICK_BACKLOG`와 이후 승격된 `REPIU_AOT_DBT_SUPERBLOCK`을
+  OFF로 적었다(#24에서 고쳤다).
 * README가 코드가 읽지 않는 `REPIU_DUMP_TEXTURE_BMP`를 설명한다. 실제 변수는
-  `REPIU_GLIDE_TEX_DUMP`다(#24에서 고친다).
+  `REPIU_GLIDE_TEX_DUMP`다(#24에서 고쳤다).
 
 ### 유지
 
@@ -140,7 +143,6 @@
 
 * 2차 조사가 다루지 않은 나머지 진단(2026-08 중순 이후 언급된 것들)의 사용 여부. 위
   일회성 진단은 언급 날짜가 이른 것부터 읽어 고른 것이고 전수 판정이 아니다.
-* `AX=1E7Fh`가 현재 롬셋에서 도달되는지(#24 선결).
 
 ---
 
@@ -197,15 +199,16 @@ candidates; only some historical A/B scripts reference them (listed per group).
   that remain (every direct `getenv` of the form `value == nullptr ||` and every
   `ResolvePromotedToggle`) found **default-on kill switches** and **experiment switches that
   change guest behavior** among them.
-  * **Group 3, issue #24.** Kill switches (keep the feature): `REPIU_GLIDE_DRAW_ENTRY_POINTS`
+  * **Group 3, deleted in issue #24 (2026-10-09).** Kill switches (keep the feature): `REPIU_GLIDE_DRAW_ENTRY_POINTS`
     (Task 420, 08-05; off stops drawing seven point/AA/polygon entry points),
     `REPIU_TIMER_TICK_BACKLOG` (Task 432 made it default-on on 08-06),
     `REPIU_JAMMA_SNAPSHOT` (Task 403, 08-02; `REPIU_JAMMA_SNAPSHOT_US=0` is a second off
     switch, so `_US` stays only as the interval). Experiments (delete with the feature):
     `REPIU_DOS4GW_MEMORY_PATH_PROBE=pharlap` (Task 611: "reaches AH=4Ah but does not solve
-    allocation"), `REPIU_DPMI_1E7F_PROBE_SUCCESS` (Task 599: clears only CF to fake success)
-    — the private ABI is still unresolved, so **check whether current romsets reach
-    `AX=1E7Fh` first** and hold the item if they do.
+    allocation"), `REPIU_DPMI_1E7F_PROBE_SUCCESS` with `REPIU_DPMI_1E7F_TRACE` (Task 599: cleared
+    only CF to fake success) — deleted without a run, because Task 606 traced the call to a
+    return address corrupted by the x64 word-stack lowering defect and the default run no
+    longer makes it.
   * **One-off diagnostics, issue #25.** For questions already answered: the Glide bring-up
     probes (07-22 to 08-01) `REPIU_GLIDE_CALL_AUDIT`, `_TEX_CENSUS`, `_DRAW_CENSUS`,
     `_TRI_CENSUS`, `_FRAME_DUMP`, `REPIU_DUMP_LFB_BMP`, `REPIU_GLIDE_VERTEX_DEPTH_CENSUS`;
@@ -215,9 +218,10 @@ candidates; only some historical A/B scripts reference them (listed per group).
     `REPIU_GLIDE_SETTER_CENSUS`/`_PHASE` (Task 364), which measured the now always-on setter
     elision.
   * **Stale records found.** The "currently on/off" table in `current-execution-frontier.md`
-    still lists six variables deleted in #20/#22 and shows `REPIU_TIMER_TICK_BACKLOG` as off;
+    still lists five variables deleted in #20/#22 and shows `REPIU_TIMER_TICK_BACKLOG` and the
+    later-promoted `REPIU_AOT_DBT_SUPERBLOCK` as off;
     README describes `REPIU_DUMP_TEXTURE_BMP`, which the code does not read (it reads
-    `REPIU_GLIDE_TEX_DUMP`). Both are fixed in #24.
+    `REPIU_GLIDE_TEX_DUMP`). Both were fixed in #24.
 * **Keep**: from the second survey, `REPIU_GLIDE_SWAP_WAIT_TICKS` (10-05, recent),
   `REPIU_AOT_INDIRECT_CACHE_SLOTS` (used in a 09-26 crash bisect),
   `REPIU_GLIDE_RENDEZVOUS_SPIN_US` (a setting for machines with few cores),
@@ -239,4 +243,3 @@ candidates; only some historical A/B scripts reference them (listed per group).
 * Whether the diagnostics the second survey did not cover (those mentioned from mid-2026-08 on)
   are still used. The one-off list above was picked by reading the earliest-mentioned ones
   first; it is not an exhaustive verdict.
-* Whether current romsets reach `AX=1E7Fh` (a precondition of #24).

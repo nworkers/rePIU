@@ -1,19 +1,12 @@
 #include "repiu/engine/timer_tick_delivery.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <thread>
 
 namespace repiu::engine
 {
 namespace
 {
-
-bool ReadTimerTickBacklogSetting()
-{
-    return ResolveTimerTickBacklogEnabled(
-        std::getenv("REPIU_TIMER_TICK_BACKLOG"));
-}
 
 void RaiseMaximum(std::atomic<std::uint32_t>* maximum, std::uint32_t value)
 {
@@ -54,30 +47,9 @@ void TimerTickDeliveryGuard::Release()
     }
 }
 
-bool ResolveTimerTickBacklogEnabled(const char* setting)
-{
-    // Task 432: on by default. Only an explicit off disables it, so an unset or
-    // unrecognised value keeps the accurate behaviour rather than silently
-    // reverting to the boolean that loses ticks.
-    if (setting == nullptr)
-    {
-        return true;
-    }
-    const std::string_view value(setting);
-    return !(value == "0" || value == "off" || value == "false");
-}
-
-bool TimerTickBacklogEnabled()
-{
-    static const bool enabled = ReadTimerTickBacklogSetting();
-    return enabled;
-}
-
 std::uint32_t RecordTimerTicksDue(
     TimerTickDeliveryCounters* counters,
     std::uint32_t due,
-    bool already_pending,
-    bool backlog_enabled,
     bool in_gate)
 {
     if (counters == nullptr || due == 0U)
@@ -90,28 +62,9 @@ std::uint32_t RecordTimerTicksDue(
         counters->due_in_gate_total.fetch_add(due, std::memory_order_relaxed);
     }
 
-    if (!backlog_enabled)
-    {
-        // Stage one accounting for the shipping behaviour: arming delivery
-        // publishes a single boolean, so one owed tick becomes the pending
-        // injection and the rest are gone. An already-pending flag means even
-        // that one is a duplicate of a tick not yet taken.
-        const std::uint32_t retained = already_pending ? 0U : 1U;
-        counters->coalesced_total.fetch_add(due - retained,
-                                            std::memory_order_relaxed);
-        if (in_gate)
-        {
-            counters->coalesced_in_gate_total.fetch_add(
-                due - retained, std::memory_order_relaxed);
-        }
-        counters->backlog.store(1U, std::memory_order_relaxed);
-        RaiseMaximum(&counters->max_backlog, 1U);
-        return retained;
-    }
-
-    // Stage two: keep the owed ticks, bounded. Beyond the cap the guest would be
-    // parked ever further in the past, so the excess is counted and dropped
-    // rather than delivered late enough to be meaningless.
+    // Keep the owed ticks, bounded. Beyond the cap the guest would be parked
+    // ever further in the past, so the excess is counted and dropped rather
+    // than delivered late enough to be meaningless.
     std::uint32_t backlog = counters->backlog.load(std::memory_order_relaxed);
     const std::uint32_t room = kTimerTickBacklogCapacity > backlog
         ? kTimerTickBacklogCapacity - backlog
@@ -128,8 +81,7 @@ std::uint32_t RecordTimerTicksDue(
     return accepted;
 }
 
-bool RecordTimerTickInjected(TimerTickDeliveryCounters* counters,
-                             bool backlog_enabled)
+bool RecordTimerTickInjected(TimerTickDeliveryCounters* counters)
 {
     if (counters == nullptr)
     {
@@ -143,9 +95,7 @@ bool RecordTimerTickInjected(TimerTickDeliveryCounters* counters,
         --backlog;
         counters->backlog.store(backlog, std::memory_order_relaxed);
     }
-    // Only the backlog mode keeps delivery armed. Without it the caller's
-    // existing "clear the flag after one injection" behaviour is unchanged.
-    return backlog_enabled && backlog != 0U;
+    return backlog != 0U;
 }
 
 void RecordTimerTickDeferred(TimerTickDeliveryCounters* counters)
@@ -176,20 +126,15 @@ TimerTickDeliverySnapshot SnapshotTimerTickDelivery(
     const TimerTickDeliveryCounters& counters)
 {
     TimerTickDeliverySnapshot snapshot;
-    snapshot.backlog_enabled = TimerTickBacklogEnabled();
     snapshot.due_total = counters.due_total.load(std::memory_order_relaxed);
     snapshot.injected_total =
         counters.injected_total.load(std::memory_order_relaxed);
-    snapshot.coalesced_total =
-        counters.coalesced_total.load(std::memory_order_relaxed);
     snapshot.dropped_total =
         counters.dropped_total.load(std::memory_order_relaxed);
     snapshot.deferred_total =
         counters.deferred_total.load(std::memory_order_relaxed);
     snapshot.due_in_gate_total =
         counters.due_in_gate_total.load(std::memory_order_relaxed);
-    snapshot.coalesced_in_gate_total =
-        counters.coalesced_in_gate_total.load(std::memory_order_relaxed);
     snapshot.max_backlog =
         counters.max_backlog.load(std::memory_order_relaxed);
     snapshot.backlog = counters.backlog.load(std::memory_order_relaxed);

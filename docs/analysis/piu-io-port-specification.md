@@ -436,7 +436,8 @@ per-read side effects and must not be.
 ### 5.3 스냅샷 도입 결과 (Task 403 구현 + A/B)
 
 `ReadJammaPort8`을 `ScanJammaPort8`(실제 조회)과 스냅샷 조회로 분리하고, 갱신 주기를
-기본 500µs로 제한했습니다. `REPIU_JAMMA_SNAPSHOT=0`이면 매 읽기 조회로 되돌아갑니다.
+기본 500µs로 제한했습니다. 끄기 스위치 `REPIU_JAMMA_SNAPSHOT`은 issue #24에서 없앴고,
+주기 `REPIU_JAMMA_SNAPSHOT_US=0`이면 매 읽기 조회가 됩니다.
 
 pumpit3 45초 각 6회, `REPIU_EEPROM_PATH`로 EEPROM을 격리한 A/B입니다.
 
@@ -465,7 +466,8 @@ pumpit3 45초 각 6회, `REPIU_EEPROM_PATH`로 EEPROM을 격리한 A/B입니다.
 ### 5.3 Snapshot result (Task 403 implementation and A/B)
 
 `ReadJammaPort8` was split into `ScanJammaPort8` (the real query) and a snapshot lookup with a
-default 500 µs refresh bound; `REPIU_JAMMA_SNAPSHOT=0` restores per-read querying.
+default 500 µs refresh bound. The `REPIU_JAMMA_SNAPSHOT` kill switch went in issue #24;
+`REPIU_JAMMA_SNAPSHOT_US=0` gives per-read querying.
 
 Six 45-second pumpit3 runs per arm with the EEPROM isolated through `REPIU_EEPROM_PATH`:
 

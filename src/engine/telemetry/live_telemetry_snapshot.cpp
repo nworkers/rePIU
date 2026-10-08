@@ -445,8 +445,6 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
     // cannot say whether the loss was in gameplay or in the attract demo.
     std::uint32_t last_cd_audio_ticks_due = 0;
     std::uint32_t last_cd_audio_ticks_injected = 0;
-    std::uint32_t last_cd_audio_ticks_coalesced = 0;
-    std::uint32_t last_cd_audio_ticks_in_gate = 0;
     std::uint32_t last_cd_audio_safe_point_traps = 0;
     // Task 740. The PIU10 MP3 pipeline on its own cadence, for the same reason
     // as the CD census: what the guest feeds, what the decoder has played and
@@ -522,22 +520,17 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                     elapsed_nanoseconds);
             if (due_interrupts != 0U)
             {
-                // Task 366: recorded before arming, because whether a tick was
-                // still outstanding is exactly what separates a clean handoff
-                // from an owed tick being discarded.
+                // Task 366: recorded before arming, so the timestamp queue
+                // below mirrors what the backlog accepted.
                 // Task 431: whether the guest thread is inside the Glide gate
-                // right now decides whether a coalesced tick was merely late or
-                // could not have been delivered at all -- that window runs no
-                // guest code, so no safe point is reachable.
+                // right now -- that window runs no guest code, so no safe point
+                // is reachable until the gate returns.
                 {
                     TimerTickDeliveryGuard timer_guard(
                         &progress_context->timer_tick_delivery_lock);
                     const std::uint32_t accepted = RecordTimerTicksDue(
                         &progress_context->timer_tick_delivery,
                         static_cast<std::uint32_t>(due_interrupts),
-                        progress_context->timer_interrupt_pending.load(
-                            std::memory_order_acquire),
-                        TimerTickBacklogEnabled(),
                         host_context != nullptr &&
                             host_context->glide_backend.guest_in_glide_gate());
                     for (std::uint32_t index = 0; index < accepted; ++index)
@@ -819,14 +812,7 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
             last_cd_audio_ticks_due = ticks.due_total;
             last_cd_audio_ticks_injected = ticks.injected_total;
             // Task 431: the opportunity side, differenced the same way. The
-            // trap count is where the injections come from, so the two read
-            // together say whether the ticks were refused or never offered.
-            entry.ticks_coalesced =
-                ticks.coalesced_total - last_cd_audio_ticks_coalesced;
-            last_cd_audio_ticks_coalesced = ticks.coalesced_total;
-            entry.ticks_coalesced_in_gate =
-                ticks.coalesced_in_gate_total - last_cd_audio_ticks_in_gate;
-            last_cd_audio_ticks_in_gate = ticks.coalesced_in_gate_total;
+            // trap count is where the injections come from.
             const std::uint32_t safe_point_traps =
                 progress_context->aot_placement != nullptr
                     ? progress_context->aot_placement
