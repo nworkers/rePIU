@@ -71,8 +71,59 @@
 * `VehExitSite`의 세 값(`kCallStepProbe`, `kNativeRegionReturn`, `kNativeRegionSensitive`)은
   번호를 지키기 위해 퇴역 자리로 남겼다.
 
+### 진단 이름 뒤의 토글 — 2차 조사(2026-10-09, 기준 `2855b3e` v0.0.208)
+
+1차 조사는 이름만 보고 진단용 105개를 뺐다. 2차 조사에서 남은 162개를 다시 뽑아
+판정식을 읽었더니, 진단처럼 보이는 이름 안에 **기본 켜기 스위치**와 **게스트 동작을
+바꾸는 실험 스위치**가 섞여 있었다. 기본 켜기 판정은 `value == nullptr ||` 형태의 직접
+`getenv`와 `ResolvePromotedToggle` 호출을 모두 훑어 확인했다.
+
+#### 3번 묶음 — issue #24
+
+끄기 스위치(기능 유지, 1번 묶음과 같은 형태):
+
+| 변수 | 승격 | 끄면 |
+|---|---|---|
+| `REPIU_GLIDE_DRAW_ENTRY_POINTS` | Task 420, 08-05 | point·AA·polygon 진입점 7종을 요청만 받고 그리지 않음 |
+| `REPIU_TIMER_TICK_BACKLOG` | Task 432, 08-06 기본 켜기 전환 | tick을 합쳐 버림(Task 432 이전 동작) |
+| `REPIU_JAMMA_SNAPSHOT` | Task 403, 08-02 | 매 읽기 조회. `REPIU_JAMMA_SNAPSHOT_US=0`도 같은 효과라 끄는 길이 둘이다. `_US`는 주기 설정으로만 남긴다 |
+
+실험(기능과 스위치 함께, 2번 묶음과 같은 형태):
+
+| 변수 | 근거 |
+|---|---|
+| `REPIU_DOS4GW_MEMORY_PATH_PROBE=pharlap` | Task 611 판정 "AH=4Ah까지 가지만 할당은 풀지 못함". 두 곳에서 게스트 경로를 바꾼다 |
+| `REPIU_DPMI_1E7F_PROBE_SUCCESS` | Task 599. 진단용으로 CF만 지워 가짜 성공을 돌려준다. 사설 ABI는 미확정으로 남아 있으므로 **현재 롬셋이 `AX=1E7Fh`에 도달하는지 확인한 뒤** 삭제하고, 도달하면 보류 |
+
+#### 일회성 진단 — issue #25
+
+이미 답이 나온 질문을 위해 넣은 진단이다. 비용은 거의 없지만 대부분 본문에 끼워 넣은
+블록이다.
+
+* Glide 렌더 초기 작업(07-22~08-01): `REPIU_GLIDE_CALL_AUDIT`, `REPIU_GLIDE_TEX_CENSUS`,
+  `REPIU_GLIDE_DRAW_CENSUS`, `REPIU_GLIDE_TRI_CENSUS`, `REPIU_GLIDE_FRAME_DUMP`,
+  `REPIU_DUMP_LFB_BMP`, `REPIU_GLIDE_VERTEX_DEPTH_CENSUS`
+* `REPIU_LOWMEM_TRACE`: v0.0.81 저지대 수정용. 언급 문서 0건이고 `RecordLowMemoryAccess`가
+  같은 정보를 기록한다
+* 7월 AOT 조사: `REPIU_AOT_PROBE_GUEST`, `REPIU_AOT_DBT_CALL_TRACE`(Task 284, 쓰던
+  스크립트는 #22에서 삭제), `REPIU_AOT_RETIRED_TRAP_PROFILE`(Task 306, 전용 probe 포함)
+* 판단 필요: `REPIU_GLIDE_SETTER_CENSUS`/`_PHASE`(Task 364). 상시 켜진 setter 생략을 재던
+  도구다
+
+#### 함께 찾은 낡은 기록
+
+* `current-execution-frontier.md`의 "지금 켜져 있는/꺼져 있는 것" 표에 #20·#22에서 지운
+  변수 6개가 남아 있고 `REPIU_TIMER_TICK_BACKLOG`를 OFF로 적었다(#24에서 고친다).
+* README가 코드가 읽지 않는 `REPIU_DUMP_TEXTURE_BMP`를 설명한다. 실제 변수는
+  `REPIU_GLIDE_TEX_DUMP`다(#24에서 고친다).
+
 ### 유지
 
+* **2차 조사에서 유지로 판정**: `REPIU_GLIDE_SWAP_WAIT_TICKS`(10-05, 최근),
+  `REPIU_AOT_INDIRECT_CACHE_SLOTS`(09-26 크래시 bisect에 사용),
+  `REPIU_GLIDE_RENDEZVOUS_SPIN_US`(코어가 적은 환경용 설정), `REPIU_NATIVE_SAMPLING`,
+  `REPIU_LINUX_X64_GUEST_ESP_TRACE`(fault 핸들러가 읽는 Linux x64 도구, 문서는 없음),
+  `REPIU_EXECUTION_TRACE_*`·`REPIU_EXECUTION_PROBE_DUMP_*` 계열.
 * **최근 승격, 롤백 보험 필요**: `REPIU_AOT_DBT_SUPERBLOCK`,
   `REPIU_TIMER_HANDLER_CACHE_ENTRY`(10-07), `REPIU_TIMER_RETURN_PAD`,
   `REPIU_GLIDE_LFB_HIGH_PRECISION`, `REPIU_PIC_TIMER_IN_SERVICE`, `REPIU_GUEST_CLI_HOLD`,
@@ -87,7 +138,9 @@
 
 ## 미확정
 
-* 진단용 105개 중 더 이상 쓰지 않는 것. 런타임 비용이 거의 없어 이번 조사에서 뺐다.
+* 2차 조사가 다루지 않은 나머지 진단(2026-08 중순 이후 언급된 것들)의 사용 여부. 위
+  일회성 진단은 언급 날짜가 이른 것부터 읽어 고른 것이고 전수 판정이 아니다.
+* `AX=1E7Fh`가 현재 롬셋에서 도달되는지(#24 선결).
 
 ---
 
@@ -139,7 +192,38 @@ candidates; only some historical A/B scripts reference them (listed per group).
   because an implicit stack write such as `push` passes the explicit-write check and can fault
   on a watched page; and `VehExitSite`'s three unused values keep their slots so later numbers
   do not move.
-* **Keep**: recent promotions whose rollback insurance still matters
+* **Toggles behind diagnostic names — second survey (2026-10-09 at `2855b3e`, v0.0.208).**
+  The first survey dropped 105 variables by name alone. Re-reading the resolvers of the 162
+  that remain (every direct `getenv` of the form `value == nullptr ||` and every
+  `ResolvePromotedToggle`) found **default-on kill switches** and **experiment switches that
+  change guest behavior** among them.
+  * **Group 3, issue #24.** Kill switches (keep the feature): `REPIU_GLIDE_DRAW_ENTRY_POINTS`
+    (Task 420, 08-05; off stops drawing seven point/AA/polygon entry points),
+    `REPIU_TIMER_TICK_BACKLOG` (Task 432 made it default-on on 08-06),
+    `REPIU_JAMMA_SNAPSHOT` (Task 403, 08-02; `REPIU_JAMMA_SNAPSHOT_US=0` is a second off
+    switch, so `_US` stays only as the interval). Experiments (delete with the feature):
+    `REPIU_DOS4GW_MEMORY_PATH_PROBE=pharlap` (Task 611: "reaches AH=4Ah but does not solve
+    allocation"), `REPIU_DPMI_1E7F_PROBE_SUCCESS` (Task 599: clears only CF to fake success)
+    — the private ABI is still unresolved, so **check whether current romsets reach
+    `AX=1E7Fh` first** and hold the item if they do.
+  * **One-off diagnostics, issue #25.** For questions already answered: the Glide bring-up
+    probes (07-22 to 08-01) `REPIU_GLIDE_CALL_AUDIT`, `_TEX_CENSUS`, `_DRAW_CENSUS`,
+    `_TRI_CENSUS`, `_FRAME_DUMP`, `REPIU_DUMP_LFB_BMP`, `REPIU_GLIDE_VERTEX_DEPTH_CENSUS`;
+    `REPIU_LOWMEM_TRACE` (v0.0.81, undocumented, duplicated by `RecordLowMemoryAccess`); the
+    July AOT probes `REPIU_AOT_PROBE_GUEST`, `REPIU_AOT_DBT_CALL_TRACE` (Task 284; its scripts
+    went in #22), `REPIU_AOT_RETIRED_TRAP_PROFILE` (Task 306, with its probe). Undecided:
+    `REPIU_GLIDE_SETTER_CENSUS`/`_PHASE` (Task 364), which measured the now always-on setter
+    elision.
+  * **Stale records found.** The "currently on/off" table in `current-execution-frontier.md`
+    still lists six variables deleted in #20/#22 and shows `REPIU_TIMER_TICK_BACKLOG` as off;
+    README describes `REPIU_DUMP_TEXTURE_BMP`, which the code does not read (it reads
+    `REPIU_GLIDE_TEX_DUMP`). Both are fixed in #24.
+* **Keep**: from the second survey, `REPIU_GLIDE_SWAP_WAIT_TICKS` (10-05, recent),
+  `REPIU_AOT_INDIRECT_CACHE_SLOTS` (used in a 09-26 crash bisect),
+  `REPIU_GLIDE_RENDEZVOUS_SPIN_US` (a setting for machines with few cores),
+  `REPIU_NATIVE_SAMPLING`, `REPIU_LINUX_X64_GUEST_ESP_TRACE` (an undocumented Linux x64 tool the
+  fault handler reads) and the `REPIU_EXECUTION_TRACE_*`/`REPIU_EXECUTION_PROBE_DUMP_*` family;
+  recent promotions whose rollback insurance still matters
   (`REPIU_AOT_DBT_SUPERBLOCK`, `REPIU_TIMER_HANDLER_CACHE_ENTRY`, `REPIU_TIMER_RETURN_PAD`,
   `REPIU_GLIDE_LFB_HIGH_PRECISION`, `REPIU_PIC_TIMER_IN_SERVICE`, `REPIU_GUEST_CLI_HOLD`,
   `REPIU_EVENT_CLOCK`, `REPIU_AOT_REENTRY_MEMO`, `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH`,
@@ -152,5 +236,7 @@ candidates; only some historical A/B scripts reference them (listed per group).
 
 ## Unresolved
 
-* Which of the 105 diagnostics are no longer used. They cost almost nothing at run time and
-  were left out of this survey.
+* Whether the diagnostics the second survey did not cover (those mentioned from mid-2026-08 on)
+  are still used. The one-off list above was picked by reading the earliest-mentioned ones
+  first; it is not an exhaustive verdict.
+* Whether current romsets reach `AX=1E7Fh` (a precondition of #24).
