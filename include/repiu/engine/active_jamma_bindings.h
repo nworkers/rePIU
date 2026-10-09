@@ -30,6 +30,13 @@ const input::ResolvedJammaBindings& ActiveJammaBindings();
 // thread and the SDL window exist.
 void ResolveActiveJammaScancodes();
 
+// Issue #34. The inputs connected gamepads and joysticks are holding, as
+// JammaInputKeyMask bits. Written by the SDL host thread whenever a pad
+// changes and read by the guest thread's port polling, hence atomic; zero
+// when no pad is attached, so a run without one reads exactly what it did.
+void PublishJammaPadMask(std::uint16_t mask);
+std::uint16_t PublishedJammaPadMask();
+
 }  // namespace repiu::engine
 
 #endif  // REPIU_ENGINE_ACTIVE_JAMMA_BINDINGS_H_

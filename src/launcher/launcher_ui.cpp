@@ -34,6 +34,7 @@ struct SdlContext
     SDL_Window* window = nullptr;
     SDL_GLContext gl_context = nullptr;
     bool video_initialized = false;
+    bool gamepad_initialized = false;
 };
 
 void DestroySdlContext(SdlContext* context)
@@ -47,6 +48,11 @@ void DestroySdlContext(SdlContext* context)
     {
         SDL_DestroyWindow(context->window);
         context->window = nullptr;
+    }
+    if (context->gamepad_initialized)
+    {
+        SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+        context->gamepad_initialized = false;
     }
     if (context->video_initialized)
     {
@@ -65,6 +71,10 @@ bool CreateSdlContext(SdlContext* context, std::string* message)
         return false;
     }
     context->video_initialized = true;
+    // Issue #34: without the gamepad subsystem ImGui's SDL3 backend finds no
+    // gamepad and NavEnableGamepad does nothing. A cabinet may have only a
+    // pad, so a failure here is not fatal: the keyboard still works.
+    context->gamepad_initialized = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
     // #15: resizable, with text and spacing that follow the window height.

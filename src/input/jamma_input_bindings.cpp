@@ -1,6 +1,7 @@
 #include "repiu/input/jamma_input_bindings.h"
 
 #include "repiu/config/config_name.h"
+#include "repiu/input/host_pad_binding.h"
 
 #include <SDL3/SDL_keyboard.h>
 
@@ -45,22 +46,129 @@ static_assert(kJammaPortBitCount == kJammaInputKeyCount,
 // Indexed by JammaInputKey. The P2 aliases are the NumLock-off keypad plus the
 // editing keys Windows reports for those positions when NumLock is off, which
 // is the pairing the hardcoded mapping used before this table existed.
+//
+// Issue #34 adds the standard gamepad after the keys: Pad1 for P1 and Pad2 for
+// P2. The panels are diagonal, so the D-pad is turned 45 degrees clockwise --
+// up is up-right, right is down-right, down is down-left, left is up-left --
+// and A is the center. TEST and CLEAR sit on the stick clicks, which are hard
+// to press by accident.
 constexpr std::string_view kDefaultBindingText[] = {
-    "Q",
-    "E",
-    "Z",
-    "C",
-    "S",
-    "F5",
-    "F1",
-    "F2",
-    "F3",
-    "Keypad7, Home",
-    "Keypad9, PageUp",
-    "Keypad1, End",
-    "Keypad3, PageDown",
-    "Keypad5, Clear",
+    "Q, Pad1_DpadLeft",
+    "E, Pad1_DpadUp",
+    "Z, Pad1_DpadDown",
+    "C, Pad1_DpadRight",
+    "S, Pad1_A",
+    "F5, Pad1_Start, Pad2_Start",
+    "F1, Pad1_LeftStick",
+    "F2, Pad1_Back",
+    "F3, Pad1_RightStick",
+    "Keypad7, Home, Pad2_DpadLeft",
+    "Keypad9, PageUp, Pad2_DpadUp",
+    "Keypad1, End, Pad2_DpadDown",
+    "Keypad3, PageDown, Pad2_DpadRight",
+    "Keypad5, Clear, Pad2_A",
 };
+
+std::string_view TrimBlanks(std::string_view text)
+{
+    std::size_t begin = 0;
+    std::size_t end = text.size();
+    while (begin < end && (text[begin] == ' ' || text[begin] == '\t'))
+    {
+        ++begin;
+    }
+    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t'))
+    {
+        --end;
+    }
+    return text.substr(begin, end - begin);
+}
+
+// One config value, split into the binding's two alias lists. Each item is a
+// pad control when it has the Pad<N>/Joy<N> shape and a host key otherwise.
+// Unparsable items are reported and skipped, and items past either list's cap
+// are reported once per list; an empty value leaves both lists empty, which is
+// how an input is turned off.
+void ParseBindingValue(std::string_view text, JammaInputBinding* binding,
+                       std::vector<std::string>* errors)
+{
+    binding->alias_count = 0;
+    binding->pad_alias_count = 0;
+    bool keys_overflowed = false;
+    bool pads_overflowed = false;
+
+    std::size_t offset = 0;
+    while (offset <= text.size())
+    {
+        const std::size_t separator = text.find(',', offset);
+        const std::string_view element =
+            separator == std::string_view::npos
+                ? text.substr(offset)
+                : text.substr(offset, separator - offset);
+        offset = separator == std::string_view::npos ? text.size() + 1
+                                                     : separator + 1;
+        const std::string_view item = TrimBlanks(element);
+        if (item.empty())
+        {
+            continue;
+        }
+
+        std::string error;
+        if (LooksLikeHostPadAlias(item))
+        {
+            HostPadAlias pad;
+            if (!ParseHostPadAlias(item, &pad, &error))
+            {
+                if (errors != nullptr)
+                {
+                    errors->push_back(std::move(error));
+                }
+                continue;
+            }
+            if (binding->pad_alias_count == kMaxAliasesPerInput)
+            {
+                pads_overflowed = true;
+                continue;
+            }
+            binding->pad_aliases[binding->pad_alias_count++] = pad;
+            continue;
+        }
+
+        HostKeyAlias key;
+        if (!ParseHostKeyAlias(item, &key, &error))
+        {
+            if (errors != nullptr)
+            {
+                errors->push_back(std::move(error));
+            }
+            continue;
+        }
+        if (binding->alias_count == kMaxAliasesPerInput)
+        {
+            keys_overflowed = true;
+            continue;
+        }
+        binding->aliases[binding->alias_count++] = key;
+    }
+
+    if (errors != nullptr)
+    {
+        if (keys_overflowed)
+        {
+            std::ostringstream stream;
+            stream << "more than " << kMaxAliasesPerInput
+                   << " keys; the extra ones are ignored";
+            errors->push_back(stream.str());
+        }
+        if (pads_overflowed)
+        {
+            std::ostringstream stream;
+            stream << "more than " << kMaxAliasesPerInput
+                   << " pad controls; the extra ones are ignored";
+            errors->push_back(stream.str());
+        }
+    }
+}
 
 static_assert(sizeof(kDefaultBindingText) / sizeof(kDefaultBindingText[0]) ==
                   kJammaInputKeyCount,
@@ -89,18 +197,8 @@ ResolvedJammaBindings DefaultJammaBindings()
     ResolvedJammaBindings bindings;
     for (std::uint32_t index = 0; index < kJammaInputKeyCount; ++index)
     {
-        const std::vector<HostKeyAlias> aliases =
-            ParseHostKeyBinding(kDefaultBindingText[index], nullptr);
-        JammaInputBinding& binding = bindings.inputs[index];
-        binding.alias_count = 0;
-        for (const HostKeyAlias& alias : aliases)
-        {
-            if (binding.alias_count == kMaxAliasesPerInput)
-            {
-                break;
-            }
-            binding.aliases[binding.alias_count++] = alias;
-        }
+        ParseBindingValue(kDefaultBindingText[index], &bindings.inputs[index],
+                          nullptr);
     }
     FinalizeJammaBindings(&bindings);
     return bindings;
@@ -143,39 +241,24 @@ void ApplyJammaInputSection(const config::IniDocument& document,
             continue;
         }
 
+        // The entry replaces the input's whole alias lists rather than
+        // adding to them, so the written value is the complete answer for
+        // that input -- keys and pad controls alike.
+        //
+        // That includes an empty value: `TEST =` leaves the input with no key
+        // at all and the guest never sees it pressed. Turning an input off is
+        // the point of writing an empty value, so it is applied like any other
+        // value rather than skipped.
         std::vector<std::string> parse_errors;
-        const std::vector<HostKeyAlias> aliases =
-            ParseHostKeyBinding(entry.value, &parse_errors);
+        ParseBindingValue(entry.value,
+                          &bindings->inputs[static_cast<std::uint32_t>(key)],
+                          &parse_errors);
         for (std::string& error : parse_errors)
         {
             std::ostringstream stream;
             stream << entry.key << " on line " << entry.line_number << ": "
                    << error;
             warn(stream.str());
-        }
-
-        // The entry replaces the input's whole alias list rather than adding
-        // to it, so the written value is the complete answer for that input.
-        //
-        // That includes an empty value: `TEST =` leaves the input with no key
-        // at all and the guest never sees it pressed. Turning an input off is
-        // the point of writing an empty value, so it is applied like any other
-        // value rather than skipped.
-        JammaInputBinding& binding =
-            bindings->inputs[static_cast<std::uint32_t>(key)];
-        binding.alias_count = 0;
-        for (const HostKeyAlias& alias : aliases)
-        {
-            if (binding.alias_count == kMaxAliasesPerInput)
-            {
-                std::ostringstream stream;
-                stream << entry.key << " on line " << entry.line_number
-                       << ": more than " << kMaxAliasesPerInput
-                       << " keys; the extra ones are ignored";
-                warn(stream.str());
-                break;
-            }
-            binding.aliases[binding.alias_count++] = alias;
         }
     }
 }
@@ -240,6 +323,19 @@ std::string FormatJammaBinding(const ResolvedJammaBindings& bindings,
         }
         text.append(alias);
     }
+    for (std::uint32_t slot = 0; slot < binding.pad_alias_count; ++slot)
+    {
+        const std::string alias = FormatHostPadAlias(binding.pad_aliases[slot]);
+        if (alias.empty())
+        {
+            continue;
+        }
+        if (!text.empty())
+        {
+            text.append(", ");
+        }
+        text.append(alias);
+    }
     return text;
 }
 
@@ -263,6 +359,27 @@ void ResolveJammaHostScancodes(ResolvedJammaBindings* bindings)
             alias.scancode = SDL_GetScancodeFromKey(alias.keycode, nullptr);
         }
     }
+}
+
+std::uint16_t ComputeJammaPadMask(const ResolvedJammaBindings& bindings,
+                                  const HostPadState& state)
+{
+    std::uint16_t mask = 0U;
+    for (std::uint32_t index = 0; index < kJammaInputKeyCount; ++index)
+    {
+        const JammaInputBinding& binding = bindings.inputs[index];
+        for (std::uint32_t slot = 0; slot < binding.pad_alias_count; ++slot)
+        {
+            if (IsHostPadAliasDown(binding.pad_aliases[slot], state))
+            {
+                mask = static_cast<std::uint16_t>(
+                    mask |
+                    JammaInputKeyMask(static_cast<JammaInputKey>(index)));
+                break;
+            }
+        }
+    }
+    return mask;
 }
 
 }  // namespace repiu::input

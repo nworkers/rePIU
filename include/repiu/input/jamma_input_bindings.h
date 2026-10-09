@@ -3,6 +3,7 @@
 
 #include "repiu/config/ini_document.h"
 #include "repiu/input/host_key_binding.h"
+#include "repiu/input/host_pad_state.h"
 #include "repiu/input/jamma_input_key.h"
 
 #include <cstdint>
@@ -37,6 +38,10 @@ struct JammaInputBinding
 {
     HostKeyAlias aliases[kMaxAliasesPerInput];
     std::uint32_t alias_count = 0;
+    // Issue #34. Gamepad and joystick controls, capped separately so a pad
+    // never costs an input one of its keys.
+    HostPadAlias pad_aliases[kMaxAliasesPerInput];
+    std::uint32_t pad_alias_count = 0;
 };
 
 // The resolved configuration the input paths read. Fixed storage with no
@@ -57,7 +62,8 @@ struct ResolvedJammaBindings
     }
 };
 
-// The config-file text of an input's built-in default, e.g. "Keypad7, Home".
+// The config-file text of an input's built-in default, e.g.
+// "Keypad7, Home, Pad2_DpadLeft".
 // The defaults are stored as text and parsed through the same path a file
 // takes, so a default can never mean something the equivalent file would not.
 std::string_view DefaultJammaBindingText(JammaInputKey key);
@@ -66,7 +72,9 @@ std::string_view DefaultJammaBindingText(JammaInputKey key);
 ResolvedJammaBindings DefaultJammaBindings();
 
 // Overlays the `[Input]` section onto `bindings`, replacing an input's alias
-// list whenever the file names it.
+// lists -- keys and pad controls alike -- whenever the file names it. Each
+// comma-separated item is a host key name or, when it starts with Pad<N> or
+// Joy<N>, a pad control name (repiu/input/host_pad_binding.h).
 //
 // An empty value is applied, not skipped: it leaves the input with no key, so
 // the guest never sees it pressed. That is how a config file turns an input
@@ -92,11 +100,17 @@ void FinalizeJammaBindings(ResolvedJammaBindings* bindings);
 // of the port I/O handler body, and a per-read lookup would put the cost back.
 void ResolveJammaHostScancodes(ResolvedJammaBindings* bindings);
 
-// Renders an input's current binding as config-file text. Returns an empty
-// string when the input has no key bound, which round trips: reading that back
-// leaves the input off again.
+// Renders an input's current binding as config-file text, keys first and pad
+// controls after them. Returns an empty string when the input has nothing
+// bound, which round trips: reading that back leaves the input off again.
 std::string FormatJammaBinding(const ResolvedJammaBindings& bindings,
                                JammaInputKey key);
+
+// Issue #34. The inputs some bound pad control is holding in `state`. Pure, so
+// the probe checks it without a device; the SDL adapter calls it whenever a
+// pad changes.
+std::uint16_t ComputeJammaPadMask(const ResolvedJammaBindings& bindings,
+                                  const HostPadState& state);
 
 }  // namespace repiu::input
 

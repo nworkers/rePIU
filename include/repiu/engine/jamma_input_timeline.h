@@ -140,6 +140,9 @@ private:
 bool ResolveJammaReplayFrameEnd(const char* value);
 bool JammaReplayFrameEndEnabled();
 
+// The inputs held right now: the keyboard part alone, and (issue #34) the
+// keyboard together with the published gamepad and joystick mask.
+std::uint16_t CaptureKeyboardJammaPressedMask();
 std::uint16_t CaptureCurrentJammaPressedMask();
 
 }  // namespace repiu::engine

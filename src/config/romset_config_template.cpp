@@ -1,6 +1,7 @@
 #include "repiu/config/romset_config_template.h"
 
 #include "repiu/input/host_key_names.h"
+#include "repiu/input/host_pad_binding.h"
 
 #include <algorithm>
 #include <vector>
@@ -128,6 +129,47 @@ void WriteGroupNames(LineWriter* writer, HostKeyGroup group,
     }
 }
 
+// Issue #34: the gamepad button names, wrapped like a key group and generated
+// from the same table the parser reads.
+void WritePadButtonNames(LineWriter* writer)
+{
+    std::uint32_t count = 0;
+    const input::HostPadButtonName* table =
+        input::HostPadButtonNameTable(&count);
+    std::vector<std::string_view> names;
+    for (std::uint32_t index = 0; index < count; ++index)
+    {
+        names.push_back(table[index].name);
+    }
+    names.push_back("LeftTrigger");
+    names.push_back("RightTrigger");
+
+    std::string line = ";   Buttons";
+    while (line.size() < kListIndent.size())
+    {
+        line.push_back(' ');
+    }
+    bool first_on_line = true;
+    for (const std::string_view name : names)
+    {
+        const std::size_t addition = name.size() + (first_on_line ? 0 : 2);
+        if (!first_on_line && line.size() + addition > kCommentWidth)
+        {
+            line.push_back(',');
+            writer->Line(line);
+            line.assign(kListIndent);
+            first_on_line = true;
+        }
+        if (!first_on_line)
+        {
+            line.append(", ");
+        }
+        line.append(name);
+        first_on_line = false;
+    }
+    writer->Line(line);
+}
+
 void WriteHeader(LineWriter* writer, std::string_view rom_set_id)
 {
     std::string title = "; rePIU configuration for ROM set \"";
@@ -170,6 +212,18 @@ void WriteHeader(LineWriter* writer, std::string_view rom_set_id)
     {
         WriteGroupNames(writer, entry.group, entry.label);
     }
+    writer->Line(";");
+    writer->Line("; Gamepads and joysticks, numbered in connection order;"
+                 " mix them with keys");
+    writer->Line(";   Pad<N>_<Button>     N = 1..4, a gamepad SDL knows"
+                 " (A = bottom button)");
+    WritePadButtonNames(writer);
+    writer->Line(";   Joy<N>_Button<K>    N = 1..8, K = 1..32: any joystick"
+                 " or dance pad");
+    writer->Line(";   Joy<N>_Hat<H><Dir>  H = 1..4, Dir = Up, Down, Left,"
+                 " Right");
+    writer->Line(";   Example             P1_CENTER = S, Pad1_A,"
+                 " Joy1_Button5");
     writer->Line(";");
     writer->Line("; Full reference: docs/guides/romset-config-files.md");
 }

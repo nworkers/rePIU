@@ -140,11 +140,19 @@ ScanJammaPort8(std::uint16_t port,
   // from any thread, so the pointer is taken once and the guest thread indexes
   // it directly. SDL_PumpEvents on the host thread is what refreshes it.
   static const bool *const key_state = SDL_GetKeyboardState(nullptr);
+  // Issue #34: what the pads hold, published by the host thread. One atomic
+  // load per port byte; zero with no pad attached, and it adds nothing to the
+  // host key query count.
+  const std::uint16_t pad_mask =
+      replay_pressed_mask == nullptr ? PublishedJammaPadMask() : 0U;
 
-  auto is_pressed = [replay_pressed_mask, &bindings,
-                     modifier_state](JammaInputKey key) -> bool {
+  auto is_pressed = [replay_pressed_mask, &bindings, modifier_state,
+                     pad_mask](JammaInputKey key) -> bool {
     if (replay_pressed_mask != nullptr) {
       return (*replay_pressed_mask & JammaInputKeyMask(key)) != 0U;
+    }
+    if ((pad_mask & JammaInputKeyMask(key)) != 0U) {
+      return true;
     }
     const repiu::input::JammaInputBinding &binding = bindings.Get(key);
     for (std::uint32_t slot = 0; slot < binding.alias_count; ++slot) {

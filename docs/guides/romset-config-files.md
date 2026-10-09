@@ -98,22 +98,26 @@ SERVICE =
 
 ### 5. 입력 이름
 
-| 키 이름 | 설명 | 기본값 |
-|---|---|---|
-| `P1_UP_LEFT` | 1P 좌상단 발판 | `Q` |
-| `P1_UP_RIGHT` | 1P 우상단 발판 | `E` |
-| `P1_CENTER` | 1P 가운데 발판 | `S` |
-| `P1_DOWN_LEFT` | 1P 좌하단 발판 | `Z` |
-| `P1_DOWN_RIGHT` | 1P 우하단 발판 | `C` |
-| `P2_UP_LEFT` | 2P 좌상단 발판 | `Keypad7, Home` |
-| `P2_UP_RIGHT` | 2P 우상단 발판 | `Keypad9, PageUp` |
-| `P2_CENTER` | 2P 가운데 발판 | `Keypad5, Clear` |
-| `P2_DOWN_LEFT` | 2P 좌하단 발판 | `Keypad1, End` |
-| `P2_DOWN_RIGHT` | 2P 우하단 발판 | `Keypad3, PageDown` |
-| `TEST` | 테스트 버튼 | `F1` |
-| `SERVICE` | 서비스 버튼 | `F2` |
-| `CLEAR` | CLEAR 버튼 | `F3` |
-| `COIN1` | 코인 투입 | `F5` |
+| 키 이름 | 설명 | 기본값(키) | 기본값(게임패드) |
+|---|---|---|---|
+| `P1_UP_LEFT` | 1P 좌상단 발판 | `Q` | `Pad1_DpadLeft` |
+| `P1_UP_RIGHT` | 1P 우상단 발판 | `E` | `Pad1_DpadUp` |
+| `P1_CENTER` | 1P 가운데 발판 | `S` | `Pad1_A` |
+| `P1_DOWN_LEFT` | 1P 좌하단 발판 | `Z` | `Pad1_DpadDown` |
+| `P1_DOWN_RIGHT` | 1P 우하단 발판 | `C` | `Pad1_DpadRight` |
+| `P2_UP_LEFT` | 2P 좌상단 발판 | `Keypad7, Home` | `Pad2_DpadLeft` |
+| `P2_UP_RIGHT` | 2P 우상단 발판 | `Keypad9, PageUp` | `Pad2_DpadUp` |
+| `P2_CENTER` | 2P 가운데 발판 | `Keypad5, Clear` | `Pad2_A` |
+| `P2_DOWN_LEFT` | 2P 좌하단 발판 | `Keypad1, End` | `Pad2_DpadDown` |
+| `P2_DOWN_RIGHT` | 2P 우하단 발판 | `Keypad3, PageDown` | `Pad2_DpadRight` |
+| `TEST` | 테스트 버튼 | `F1` | `Pad1_LeftStick` |
+| `SERVICE` | 서비스 버튼 | `F2` | `Pad1_Back` |
+| `CLEAR` | CLEAR 버튼 | `F3` | `Pad1_RightStick` |
+| `COIN1` | 코인 투입 | `F5` | `Pad1_Start, Pad2_Start` |
+
+게임패드 기본값은 발판이 대각선이라 D-pad를 시계 방향으로 45° 돌려 붙였다(위 → 우상, 오른쪽 →
+우하, 아래 → 좌하, 왼쪽 → 좌상). 입력을 설정 파일에 직접 적으면 그 줄이 키와 게임패드 기본값을
+**모두** 대신한다. 키만 바꾸고 게임패드는 그대로 쓰려면 `P1_CENTER = M, Pad1_A`처럼 함께 적는다.
 
 2P 기본값에 숫자패드와 편집키가 둘 다 있는 이유는 NumLock 상태 때문이다. NumLock이 꺼져
 있으면 Windows가 숫자패드 7을 `Home`으로 보고한다. 둘 다 걸어 두면 NumLock 상태와 무관하게
@@ -139,6 +143,40 @@ SERVICE =
 
 Windows 키는 지원하지 않는다. 대부분의 조합을 운영체제가 먼저 가로채므로 설정해도 실제로
 게임에 도달하지 않는다.
+
+### 6.1 게임패드와 조이스틱
+
+키 이름과 같은 자리에 게임패드·조이스틱 이름을 섞어 쓸 수 있다. 장치는 **연결된 순서대로**
+번호를 받고, 분리될 때까지 그 번호를 유지한다.
+
+```ini
+[Input]
+P1_CENTER   = S, Pad1_A, Joy1_Button5
+P1_UP_LEFT  = Q, Joy1_Hat1Up
+COIN1       = F5, Pad1_Start
+```
+
+| 형식 | 뜻 |
+|---|---|
+| `Pad<N>_<버튼>` | SDL이 아는 표준 게임패드(Xbox·PlayStation·Switch Pro 등). N = 1~4 |
+| `Pad<N>_LeftTrigger`, `Pad<N>_RightTrigger` | 트리거를 절반 이상 당김 |
+| `Joy<N>_Button<K>` | 아무 조이스틱의 K번 버튼(1부터). 발판형 USB 컨트롤러는 대개 이렇게 보인다. N = 1~8, K = 1~32 |
+| `Joy<N>_Hat<H><방향>` | 조이스틱 hat의 `Up`, `Down`, `Left`, `Right`. H = 1~4. 대각선은 두 방향 모두 눌린 것으로 본다 |
+
+`<버튼>`: `A`, `B`, `X`, `Y`, `Back`, `Guide`, `Start`, `LeftStick`, `RightStick`, `LeftShoulder`,
+`RightShoulder`, `DpadUp`, `DpadDown`, `DpadLeft`, `DpadRight`, `Misc1`, `Touchpad`. 이름은 위치
+기준이다(`A`는 아래쪽 면 버튼 — PlayStation의 ×, Nintendo의 B 자리). `South`, `East`, `West`,
+`North`로도 쓸 수 있다.
+
+* 표준 게임패드는 `Pad`와 `Joy` 번호를 **둘 다** 받는다. 어느 이름으로 걸어도 된다.
+* 발판 장치의 버튼 번호를 모르면 rePIU를 실행한 채 버튼을 눌러 본다. 연결될 때 stderr에
+  `[repiu-pad] Joy1 connected: <장치 이름>`이 찍힌다. 버튼 번호는 장치 설명서나 OS의 게임 컨트롤러
+  설정 화면에서 확인할 수 있다.
+* 입력 하나에 키 4개와 게임패드·조이스틱 4개까지 걸 수 있다.
+* 키와 게임패드로 같은 입력을 함께 누르고 있으면, 둘 다 뗄 때까지 눌린 상태로 남는다.
+* 창이 포커스를 잃으면 키와 같이 게임패드 입력도 모두 뗀 것으로 처리한다.
+* 아날로그 스틱 방향과 조이스틱 축은 지원하지 않는다.
+* 런처(롬셋 선택 화면)는 게임패드로도 조작할 수 있다. D-pad로 옮기고 `A`로 고른다.
 
 ### 7. 조합키
 
@@ -294,22 +332,27 @@ partly invalid value (`TEST = F9, NoSuchKey`) applies its valid half.
 
 ### 5. Input names
 
-| Key name | Meaning | Default |
-|---|---|---|
-| `P1_UP_LEFT` | P1 upper-left panel | `Q` |
-| `P1_UP_RIGHT` | P1 upper-right panel | `E` |
-| `P1_CENTER` | P1 center panel | `S` |
-| `P1_DOWN_LEFT` | P1 lower-left panel | `Z` |
-| `P1_DOWN_RIGHT` | P1 lower-right panel | `C` |
-| `P2_UP_LEFT` | P2 upper-left panel | `Keypad7, Home` |
-| `P2_UP_RIGHT` | P2 upper-right panel | `Keypad9, PageUp` |
-| `P2_CENTER` | P2 center panel | `Keypad5, Clear` |
-| `P2_DOWN_LEFT` | P2 lower-left panel | `Keypad1, End` |
-| `P2_DOWN_RIGHT` | P2 lower-right panel | `Keypad3, PageDown` |
-| `TEST` | Test button | `F1` |
-| `SERVICE` | Service button | `F2` |
-| `CLEAR` | Clear button | `F3` |
-| `COIN1` | Coin insert | `F5` |
+| Key name | Meaning | Default (keys) | Default (gamepad) |
+|---|---|---|---|
+| `P1_UP_LEFT` | P1 upper-left panel | `Q` | `Pad1_DpadLeft` |
+| `P1_UP_RIGHT` | P1 upper-right panel | `E` | `Pad1_DpadUp` |
+| `P1_CENTER` | P1 center panel | `S` | `Pad1_A` |
+| `P1_DOWN_LEFT` | P1 lower-left panel | `Z` | `Pad1_DpadDown` |
+| `P1_DOWN_RIGHT` | P1 lower-right panel | `C` | `Pad1_DpadRight` |
+| `P2_UP_LEFT` | P2 upper-left panel | `Keypad7, Home` | `Pad2_DpadLeft` |
+| `P2_UP_RIGHT` | P2 upper-right panel | `Keypad9, PageUp` | `Pad2_DpadUp` |
+| `P2_CENTER` | P2 center panel | `Keypad5, Clear` | `Pad2_A` |
+| `P2_DOWN_LEFT` | P2 lower-left panel | `Keypad1, End` | `Pad2_DpadDown` |
+| `P2_DOWN_RIGHT` | P2 lower-right panel | `Keypad3, PageDown` | `Pad2_DpadRight` |
+| `TEST` | Test button | `F1` | `Pad1_LeftStick` |
+| `SERVICE` | Service button | `F2` | `Pad1_Back` |
+| `CLEAR` | Clear button | `F3` | `Pad1_RightStick` |
+| `COIN1` | Coin insert | `F5` | `Pad1_Start, Pad2_Start` |
+
+The panels are diagonal, so the gamepad defaults turn the D-pad 45 degrees clockwise (up is
+up-right, right is down-right, down is down-left, left is up-left). Writing an input in a config
+file replaces **both** its key and gamepad defaults; to change only the key and keep the gamepad,
+write both, as in `P1_CENTER = M, Pad1_A`.
 
 The P2 defaults list both a keypad key and an editing key because of NumLock: with
 NumLock off, Windows reports keypad 7 as `Home`. Binding both makes the panel work
@@ -337,6 +380,39 @@ input.
 
 The Windows key is not supported: the operating system intercepts most of its
 combinations, so a binding would never reach the game.
+
+### 6.1 Gamepads and joysticks
+
+Gamepad and joystick names mix freely with key names. Devices are numbered **in the order
+they connect** and keep their number until removed.
+
+```ini
+[Input]
+P1_CENTER   = S, Pad1_A, Joy1_Button5
+P1_UP_LEFT  = Q, Joy1_Hat1Up
+COIN1       = F5, Pad1_Start
+```
+
+| Form | Meaning |
+|---|---|
+| `Pad<N>_<Button>` | A standard gamepad SDL knows (Xbox, PlayStation, Switch Pro and so on). N = 1–4 |
+| `Pad<N>_LeftTrigger`, `Pad<N>_RightTrigger` | A trigger pulled past half |
+| `Joy<N>_Button<K>` | Button K (from 1) of any joystick; USB dance pads usually look like this. N = 1–8, K = 1–32 |
+| `Joy<N>_Hat<H><Dir>` | `Up`, `Down`, `Left` or `Right` on a joystick hat. H = 1–4; a diagonal counts as both directions |
+
+`<Button>`: `A`, `B`, `X`, `Y`, `Back`, `Guide`, `Start`, `LeftStick`, `RightStick`,
+`LeftShoulder`, `RightShoulder`, `DpadUp`, `DpadDown`, `DpadLeft`, `DpadRight`, `Misc1`, `Touchpad`.
+The names are positional (`A` is the bottom face button — PlayStation's ×, Nintendo's B), and
+`South`, `East`, `West` and `North` work too.
+
+* A standard gamepad gets **both** a `Pad` and a `Joy` number; either name works.
+* rePIU prints `[repiu-pad] Joy1 connected: <device name>` to stderr when a device connects. A dance
+  pad's button numbers are in its manual or the operating system's game controller settings.
+* An input takes up to four keys and four gamepad or joystick controls.
+* An input held by both a key and a gamepad stays held until both are released.
+* Losing window focus releases gamepad input as it does keys.
+* Analog stick directions and joystick axes are not supported.
+* The launcher (the ROM set picker) works with a gamepad too: move with the D-pad, choose with `A`.
 
 ### 7. Key combinations
 

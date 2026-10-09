@@ -391,8 +391,10 @@ void ProbeLayeringAndGeneration(const std::filesystem::path& root)
     Check(input::FormatJammaBinding(layered.bindings, JammaInputKey::kTest) ==
               "F10",
           "the child overrides the parent");
+    // Issue #34: the default carries the gamepad after the key.
     Check(input::FormatJammaBinding(layered.bindings,
-                                    JammaInputKey::kP1UpLeft) == "Q",
+                                    JammaInputKey::kP1UpLeft) ==
+              "Q, Pad1_DpadLeft",
           "inputs no layer names keep the built-in default");
 
     // 9. Generation must not defeat layering. After the child file is created,

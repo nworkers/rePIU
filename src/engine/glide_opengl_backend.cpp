@@ -15,6 +15,7 @@
 #include "repiu/platform/build_identity.h"
 #include "sdl_bios_keyboard_adapter.h"
 #include "sdl_input_script.h"
+#include "sdl_pad_input.h"
 #include "repiu/platform/host_gpu_driver.h"
 
 
@@ -1357,6 +1358,13 @@ void GlideOpenGlBackend::PumpEvents() {
     glide_swap_interval_policy_.clock_worst_window_ppm =
         clocks.worst_window_ppm;
   }
+  // Issue #34: opened here, on the thread that pumps events, so device events
+  // and the state they update stay on one thread. A failure leaves input
+  // keyboard only and is not retried.
+  if (pad_input_ == nullptr) {
+    pad_input_ = std::make_unique<SdlPadInput>();
+    pad_input_->Initialize();
+  }
   SDL_Event event{};
   while (SDL_PollEvent(&event)) {
     // Task 761: Tab belongs to the OSD alone; it never reaches game input.
@@ -1392,6 +1400,36 @@ void GlideOpenGlBackend::PumpEvents() {
     if (osd_ != nullptr && osd_->visible()) {
       osd_->ProcessEvent(&event);
     }
+    // Issue #34: a pad change becomes edges for exactly the inputs whose
+    // pad state changed. A release is held back while the keyboard still
+    // holds the same input, so letting go of one source never drops an input
+    // the other is pressing.
+    if (pad_input_ != nullptr) {
+      const SdlPadInput::Change change = pad_input_->HandleEvent(event);
+      if (change.handled) {
+        const std::uint16_t changed =
+            static_cast<std::uint16_t>(change.before ^ change.after);
+        if (changed != 0U && jamma_input_timeline_ != nullptr) {
+          const std::uint64_t changed_at =
+              EventTimestampNanoseconds(event.common.timestamp);
+          const std::uint16_t keyboard = CaptureKeyboardJammaPressedMask();
+          for (std::uint32_t index = 0;
+               index < repiu::input::kJammaInputKeyCount; ++index) {
+            const auto key = static_cast<JammaInputKey>(index);
+            const std::uint16_t bit = JammaInputKeyMask(key);
+            if ((changed & bit) == 0U) {
+              continue;
+            }
+            const bool pressed = (change.after & bit) != 0U;
+            if (!pressed && (keyboard & bit) != 0U) {
+              continue;
+            }
+            jamma_input_timeline_->RecordKeyEdge(changed_at, key, pressed);
+          }
+        }
+        continue;
+      }
+    }
     if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
       HandleSdlBiosKeyboardEvent(event.key, bios_keyboard_);
     }
@@ -1404,7 +1442,10 @@ void GlideOpenGlBackend::PumpEvents() {
               EventTimestampNanoseconds(event.key.timestamp), key, true);
         }
       } else {
-        const std::uint16_t released = JammaInputMaskForKeycode(event.key.key);
+        // Issue #34: an input a pad still holds stays pressed.
+        const std::uint16_t released = static_cast<std::uint16_t>(
+            JammaInputMaskForKeycode(event.key.key) &
+            ~(pad_input_ != nullptr ? pad_input_->pressed_mask() : 0U));
         const std::uint64_t released_at =
             EventTimestampNanoseconds(event.key.timestamp);
         for (std::uint32_t index = 0;
@@ -1419,6 +1460,11 @@ void GlideOpenGlBackend::PumpEvents() {
                jamma_input_timeline_ != nullptr) {
       jamma_input_timeline_->RecordAllReleased(
           EventTimestampNanoseconds(event.common.timestamp));
+    }
+    // Issue #34: SDL sends no pad events to a background window, so pads let
+    // go with the focus as keys do.
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST && pad_input_ != nullptr) {
+      pad_input_->ReleaseAll();
     }
     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
       HandleSdlBiosKeyboardFocusLost(bios_keyboard_);
@@ -3034,6 +3080,8 @@ void GlideOpenGlBackend::Close() {
                 input_script_->player.pushed_events()));
     input_script_.reset();
   }
+  // Issue #34: close the pads with the window.
+  pad_input_.reset();
   // **No `notify_all` here.** The timeout path terminates the guest thread,
   // and that thread waits on `host_command_cv_` inside every synchronous gate.
   // A thread killed while waiting leaves its wait block linked into the

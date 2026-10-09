@@ -3908,6 +3908,50 @@ The user-facing guide is [docs/guides/romset-config-files.md](docs/guides/romset
 
 ---
 
+
+## 게임패드·조이스틱 입력 / Gamepad and joystick input
+
+issue #34부터 `[Input]` 값에 키 이름과 함께 게임패드·조이스틱 이름을 쓸 수 있습니다.
+`Pad<N>_<버튼>`은 SDL이 표준 게임패드로 인식한 장치의 위치 기준 버튼(`A`는 아래쪽 면 버튼)과
+트리거, `Joy<N>_Button<K>`·`Joy<N>_Hat<H><방향>`은 표준 매핑이 없는 장치(USB 발판 등)의 번호입니다.
+기본값은 표준 게임패드만 두며, Pad1이 1P, Pad2가 2P입니다(D-pad를 45° 돌린 대각선 발판, `A`가 가운데).
+
+```mermaid
+flowchart LR
+    subgraph host["SDL host 스레드"]
+        E["gamepad/joystick 이벤트"] --> A["SdlPadInput<br/>번호 배정 · HostPadState"]
+        A --> M["ComputeJammaPadMask"]
+        M -->|바뀐 비트| T["JammaInputTimeline edge"]
+        M --> P["PublishJammaPadMask<br/>(atomic)"]
+    end
+    subgraph guest["게스트 스레드"]
+        S["ScanJammaPort8"] --> P
+    end
+```
+
+* 이름 파서(`repiu/input/host_pad_binding.h`)와 상태(`repiu/input/host_pad_state.h`)는 장치 없이
+  검사할 수 있는 순수 데이터이고, `JammaInputBinding`은 키 별칭과 별도로 패드 별칭 4개를 갖습니다.
+* 엔진의 `SdlPadInput`은 이벤트를 펌프하는 host 스레드에서 `SDL_INIT_GAMEPAD`를 켜고 장치를 연결
+  순서대로 번호 매겨 엽니다. 상태가 바뀌면 바뀐 입력만 타임라인 edge로 기록하고 마스크를 atomic으로
+  게시합니다. 폴링 경로는 그 마스크를 atomic load 한 번으로 OR하므로 Task 403의 키 질의 수는 그대로입니다.
+* 같은 입력을 키와 패드가 함께 누르면, 한쪽을 떼도 다른 쪽이 누르는 동안 release edge를 남기지 않습니다.
+  SDL은 배경 창에 패드 이벤트를 보내지 않으므로, 포커스를 잃으면 키와 같이 패드 상태도 모두 뗍니다.
+* 런처도 `SDL_INIT_GAMEPAD`를 켜 ImGui SDL3 백엔드가 게임패드 내비게이션을 쓸 수 있게 합니다.
+
+From issue #34 an `[Input]` value mixes key names with gamepad and joystick names:
+`Pad<N>_<Button>` for a device SDL recognizes as a standard gamepad (positional buttons, `A` the
+bottom face button, and the triggers), and `Joy<N>_Button<K>`/`Joy<N>_Hat<H><Dir>` by number for
+devices without a standard mapping, such as USB dance pads. Defaults cover standard gamepads only,
+Pad1 for P1 and Pad2 for P2 (the D-pad turned 45 degrees for the diagonal panels, `A` the center).
+The name parser and state are plain data testable without a device, and `JammaInputBinding` keeps
+four pad aliases beside its keys. The engine's `SdlPadInput`, on the host thread that pumps events,
+initializes `SDL_INIT_GAMEPAD`, numbers devices in connection order, records only the inputs whose
+pad state changed as timeline edges, and publishes the mask atomically; the polling path ORs it in
+with one atomic load, so Task 403's key query count is unchanged. An input held by a key and a pad
+stays held until both release, and losing focus releases pads as it does keys, since SDL sends no
+pad events to a background window. The launcher initializes `SDL_INIT_GAMEPAD` too, so ImGui's
+SDL3 backend can navigate with a gamepad.
+
 ## 롬셋별 NVRAM 저장 / Per-ROM-set NVRAM storage
 
 Task 498부터 93C46 EEPROM 이미지는 MAME와 같이 롬셋별 디렉터리에 저장됩니다.
