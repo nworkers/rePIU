@@ -63,7 +63,8 @@ flowchart TB
   `.beatbar` 요소 추가.
 * **주사선**: `body::after`로 화면 고정 `repeating-linear-gradient` 오버레이를 아주
   약하게(검정 알파 ≤ 0.14) 깐다. 포인터 이벤트 없음. 애니메이션이 아니므로
-  `prefers-reduced-motion` 예외는 불필요.
+  `prefers-reduced-motion` 예외는 불필요. **issue #40에서 제거:** 오버레이가 이미지 위에도
+  덮여 화질 비교 스크린샷에 원본에 없는 줄이 보였다.
 * **선택 영역**: `::selection`을 시안에서 마젠타 배경으로 바꾼다.
 * `h3::before`의 `■` 마커를 마젠타 계열로 바꿔 포인트를 준다.
 
@@ -140,7 +141,8 @@ scanline overlay. (The diagram in the Korean section shows the two layers.)
   in `base.html`.
 * **Scanlines**: a fixed `repeating-linear-gradient` overlay on `body::after`, very faint
   (black alpha ≤ 0.14), no pointer events. It is static, so no `prefers-reduced-motion`
-  branch is needed.
+  branch is needed. **Removed in issue #40:** the overlay covered images too, so screenshots
+  comparing picture quality showed lines that were not in the captures.
 * **Selection**: `::selection` moves from cyan to a magenta background.
 * The `■` marker of `h3::before` turns magenta.
 
