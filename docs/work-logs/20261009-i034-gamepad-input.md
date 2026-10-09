@@ -65,8 +65,16 @@ probe의 기본값·마스크 단언과 설정 probe의 기본값 단언을 새 
 * **빌드**: Linux i386·x64 Release, 모든 기본 타깃 통과(런처 포함), 경고는 원래 있던 것뿐.
 * **core probe**: 두 아키텍처 모두 `host_pad_input_all=true`, `launcher_all=true`,
   `core_probe_failures=0`.
-* **여전히 확인하지 않은 것**: Linux에서의 실제 장치. 이 기기에는 게임패드·조이스틱이 연결되어
-  있지 않다.
+* **실제 장치(x64)**: 사용자가 Xbox Series X 컨트롤러(USB)를 연결하고 x64 빌드로 pumpitea를 두 번
+  실행했다(창을 닫아 정상 종료, fault 0). 시작할 때 `[repiu-pad] Joy1/Pad1 connected`가 찍혔고, 게임이
+  `COIN1`과 1P 발판 다섯 개를 모두 읽었다. 둘·셋을 함께 누른 입력도 들어왔고(예: 우상+가운데+좌상
+  `0xF8`), 두 번째 실행에서는 누름 40회와 뗌 40회가 짝을 이뤄 남은 입력이 없었다. 실행 중에 패드를
+  뽑았다 꽂자 `Pad1/Joy1 disconnected` 뒤 같은 번호 1로 다시 연결되었고, 바로 입력이 들어왔다.
+  버튼별 배치는 로그로 가를 수 없어(`A`·`Start`가 같은 줄을 낸다) 사용자가 화면으로 확인했다
+  (2026-10-10).
+* **여전히 확인하지 않은 것**: Linux i386 빌드에서의 실제 장치, 누른 채로 뽑았을 때 입력이 떼어지는지
+  (뽑기 직전 입력은 이미 떼어져 있었다), 로그의 `CLEAR`(`Pad1_RightStick`, 두 실행 모두 찍히지 않음),
+  발판형 조이스틱(`Joy<N>_`).
 
 ---
 
@@ -113,5 +121,14 @@ i386 build.
 **Linux verification (2026-10-10).** In the environment and tree of the same section in #24's work
 log (Ubuntu 26.04.1, main `2809668`): Linux i386 and x64 Release builds of every default target,
 the launcher included, pass with only pre-existing warnings, and the core probe reports
-`host_pad_input_all=true`, `launcher_all=true` and `core_probe_failures=0` on both. Still not
-checked: a real device on Linux; no gamepad or joystick is connected to this machine.
+`host_pad_input_all=true`, `launcher_all=true` and `core_probe_failures=0` on both. **Real device
+(x64):** the user connected an Xbox Series X controller (USB) and ran pumpitea twice on the x64
+build (closed from the window, no faults). `[repiu-pad] Joy1/Pad1 connected` printed at start, and
+the game read `COIN1` and all five P1 panels, chords of two and three included (up-right + center +
+up-left as `0xF8`); in the second run 40 presses matched 40 releases with nothing left held.
+Unplugging and replugging the pad mid-run printed `Pad1/Joy1 disconnected`, reconnected it as
+number 1 and input resumed at once. The per-button layout cannot be told apart in the log (`A` and
+`Start` print the same line), so the user confirmed it on screen (2026-10-10). **Still not checked:**
+a real device on the Linux i386 build, whether unplugging while pressed releases the input (the last
+input before the unplug had already been released), `CLEAR` in the log (`Pad1_RightStick`, absent
+from both runs), and dance-pad joysticks (`Joy<N>_`).
