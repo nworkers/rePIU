@@ -3256,7 +3256,8 @@ Both sides of a five-second smoke using identical EEPROM copies reached a normal
 
 **확인됨:** 기준/활성 Music Select capture는 `0x030F536C=5,471`, DOS `AH=3Bh=580`으로 고정 경로가 일치했습니다. 활성 경로는 `0x030F536A` segment-read boundary를 제거했고 frame당 CPU cycle 30.14%, 전체 예외 29.70%, HLE outcome 51.52%, segment-store HLE 94.26%를 줄였습니다. 전체 평균은 21.64에서 31.00 FPS로 증가했지만 capture 길이 차이가 있으므로 FPS 변화율은 보조 증거입니다.
 
-이 결과로 `REPIU_AOT_GUARDED_SEGMENT_READ` 미지정 기본값을 `aot-dbt`에서 ON으로 승격했습니다. `0|off|false` 및 알 수 없는 값은 fail-closed opt-out이고 다른 backend는 비활성화됩니다. 기본/opt-out 1초 실행과 전체 probe가 통과했습니다.
+이 결과로 `REPIU_AOT_GUARDED_SEGMENT_READ` 미지정 기본값을 `aot-dbt`에서 ON으로 승격했습니다. `0|off|false` 및 알 수 없는 값은 fail-closed opt-out이고 다른 backend는 비활성화됩니다. 기본/opt-out 1초 실행과 전체 probe가 통과했습니다. (issue #30에서 이 끄기 스위치와 같은 형태의
+`_POP`·`_LOAD`를 없애 dynamic 백엔드에서 항상 켜집니다.)
 
 남은 frame 반복 HLE cycle hotspot `0x030334E5`, `0x030334F2`, `0x0303391A`, `0x03033927`, `0x03033D66`, `0x03033D73`, `0x0303419D`, `0x030341AA`는 원본 대조 결과 모두 `in ax, dx` 쌍입니다. 새 capture의 Port I/O는 28,713회이며 전부 handled입니다. device body는 wall의 0.45%이지만 예외와 HLE/AOT-resume 비용을 포함하지 않으므로 다음 반복 비용 후보는 Port-I/O 전용 무예외 dispatch입니다. `0x030F3BAD/3BBD`, `0x030F536C`, DOS chdir은 두 capture에서 횟수가 고정된 초기화 비용이므로 계속 후순위입니다.
 
@@ -3264,7 +3265,8 @@ Both sides of a five-second smoke using identical EEPROM copies reached a normal
 
 **Confirmed:** baseline and enabled Music Select captures followed the same fixed path (`0x030F536C=5,471`, DOS `AH=3Bh=580`). The enabled path removed the `0x030F536A` segment-read boundary and reduced per-frame CPU cycles by 30.14%, total exceptions by 29.70%, HLE outcomes by 51.52%, and segment-store HLE by 94.26%. Raw average throughput rose from 21.64 to 31.00 FPS, but the FPS ratio is supporting evidence because capture durations differ.
 
-The unset `REPIU_AOT_GUARDED_SEGMENT_READ` default is therefore ON for `aot-dbt`. `0|off|false` and unknown values are fail-closed opt-outs; other backends remain disabled. Default/opt-out one-second runs and the full probe passed.
+The unset `REPIU_AOT_GUARDED_SEGMENT_READ` default is therefore ON for `aot-dbt`. `0|off|false` and unknown values are fail-closed opt-outs; other backends remain disabled. Default/opt-out one-second runs and the full probe passed. (Issue #30 removed this kill switch and
+the matching `_POP`/`_LOAD` ones; the paths are always on for the dynamic backend.)
 
 The remaining frame-repeating HLE cycle hotspots at `0x030334E5`, `0x030334F2`, `0x0303391A`, `0x03033927`, `0x03033D66`, `0x03033D73`, `0x0303419D`, and `0x030341AA` all disassemble to pairs of `in ax, dx`. The new capture recorded 28,713 Port-I/O operations, all handled. Device-body time is only 0.45% of wall but excludes exception and HLE/AOT-resume cost, making exception-free Port-I/O-specific dispatch the next repeated-cost candidate. `0x030F3BAD/3BBD`, `0x030F536C`, and DOS chdir have fixed counts across captures and remain lower-priority initialization costs.
 ## Task 385: Port-I/O 전용 무예외 dispatch opt-in

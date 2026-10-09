@@ -2469,9 +2469,9 @@ fallback `INT3`를 확인하고 cache breakpoint provenance는 fallback을 plann
 55초 OFF/ON에서 progress는 `37,606 → 39,571`(+5.23%), triangle draw는
 `412 → 468`(+13.59%), AOT boundary는 `74,724 → 59,334`(-20.60%)였습니다. ON의
 success/fallback은 `21,011/1,593`(92.95% 성공)였고 fatal/AOT legacy fallback은 0,
-EEPROM hash는 일치했습니다. 따라서 `dynamic`에서는 기본 ON이며
-`REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false` 또는 알 수 없는 값으로 fail-closed
-비활성화합니다.
+EEPROM hash는 일치했습니다. 따라서 `dynamic`에서는 항상 켜져 있습니다. 끄기 스위치
+`REPIU_AOT_GUARDED_SEGMENT_POP`은 슬롯이 shadow 진실원 방식(v0.0.206, #18)으로 바뀐 뒤
+회귀 없이 릴리스가 이어져 issue #30에서 없앴습니다.
 
 ```mermaid
 flowchart LR
@@ -2493,9 +2493,9 @@ the slot entry as INT3. Whole-CFG validation checks the entry opcode, patch loca
 fallback INT3, while breakpoint provenance continues to classify the fallback as planner HLE.
 The 55-second comparison improved progress by 5.23% and triangle draws by 13.59%, reduced AOT
 boundaries by 20.60%, and observed a 92.95% guarded success rate with zero fatal/AOT legacy
-fallback and matching EEPROM hashes. The path is default-on for `dynamic`; setting
-`REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false`, or an unknown value, disables it
-fail-closed.
+fallback and matching EEPROM hashes. The path is always on for `dynamic`; its kill switch
+`REPIU_AOT_GUARDED_SEGMENT_POP` went in issue #30, after the slots moved onto the shadow in
+v0.0.206 (#18) and later releases showed no regression.
 
 ## i386 shadow 진실원 세그먼트 슬롯 / Shadow-authoritative i386 segment slots
 
@@ -3485,9 +3485,9 @@ While the `grBufferSwap` gate waits for the present it posted to the host thread
 
 ## Guarded segment-load fast path / Guarded segment-load fast path
 
-Win32 `dynamic`에서 `REPIU_AOT_GUARDED_SEGMENT_LOAD`가 없거나 `1|on|true`이면 register-source `MOV Sreg, r16` 중 ES/DS/FS/GS를 전용 cache slot으로 처리합니다. source selector가 실제 CPU selector와 HLE shadow에 모두 같은 경우만 selector 상태를 바꾸지 않고 fallthrough합니다. SS, ESP source, memory source, selector 불일치, patch 실패는 원래 EFLAGS/GPR을 복구한 뒤 기존 INT3/VEH HLE를 사용합니다. `0|off|false`와 알 수 없는 값은 fail-closed opt-out입니다.
+Win32 `dynamic`에서는 register-source `MOV Sreg, r16` 중 ES/DS/FS/GS를 전용 cache slot으로 처리합니다. source selector가 실제 CPU selector와 HLE shadow에 모두 같은 경우만 selector 상태를 바꾸지 않고 fallthrough합니다. SS, ESP source, memory source, selector 불일치, patch 실패는 원래 EFLAGS/GPR을 복구한 뒤 기존 INT3/VEH HLE를 사용합니다. 끄기 스위치 `REPIU_AOT_GUARDED_SEGMENT_LOAD`(와 같은 형태의 `_READ`)는 issue #30에서 없앴습니다.
 
-On Win32 `dynamic`, an unset `REPIU_AOT_GUARDED_SEGMENT_LOAD` or `1|on|true` handles register-source `MOV Sreg, r16` for ES/DS/FS/GS in a dedicated cache slot. It leaves selector state unchanged and falls through only when the source selector equals both the physical CPU selector and HLE shadow. SS, ESP sources, memory sources, selector mismatches, and patch failures restore original EFLAGS/GPRs and retain the existing INT3/VEH HLE path. `0|off|false` and unknown values are fail-closed opt-outs.
+On Win32 `dynamic`, the path handles register-source `MOV Sreg, r16` for ES/DS/FS/GS in a dedicated cache slot. It leaves selector state unchanged and falls through only when the source selector equals both the physical CPU selector and HLE shadow. SS, ESP sources, memory sources, selector mismatches, and patch failures restore original EFLAGS/GPRs and retain the existing INT3/VEH HLE path. The kill switch `REPIU_AOT_GUARDED_SEGMENT_LOAD` (and the matching `_READ`) went in issue #30.
 
 ## Hybrid segment-override dispatch (삭제됨) / Hybrid segment-override dispatch (deleted)
 

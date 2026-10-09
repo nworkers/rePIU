@@ -5,7 +5,8 @@
 2026-10-08 기준 활성 항목은 셋입니다. **Linux x64 host 이식이 진행 중**이고, 웹 이식
 Stage 3~5는 **보류 중**입니다 — 보류 이유는 우선순위이며 아래 항목에 적혀 있습니다.
 **환경 변수 토글 정리**는 1번(#20)·2번(#22) 묶음을 마쳤고, 2차 조사에서 찾은 3번 묶음(#24)과
-일회성 진단 정리(#25)도 마쳤으며, 남은 한 항목은 재개 조건과 함께 보류입니다.
+일회성 진단 정리(#25), 보류했던 guarded segment 스위치(#30)도 마쳤습니다. 남은 것은
+판정 미정 실험 2개와 아직 판정하지 않은 진단 변수입니다.
 
 Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 history 정리는 사용자
 120초 실행으로 최종 검증됐습니다.
@@ -48,7 +49,7 @@ Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 hist
   **그리고 Stage 3은 Worker 실행을 전제로 설계합니다** — CHD가 플레이 내내 열려 있어야 하고
   브라우저에서 동기 파일 I/O는 Worker 안에서만 성립하기 때문입니다(설계 513 결정 7).
 
-- **환경 변수 토글 정리 — 1~3번 묶음과 일회성 진단(#25) 완료, 한 항목 보류(2026-10-09).** 조사 결과와 전체
+- **환경 변수 토글 정리 — 1~3번 묶음, 일회성 진단(#25), guarded segment(#30) 완료(2026-10-09).** 조사 결과와 전체
   목록은 [환경 변수 토글 목록](analysis/environment-toggle-inventory.md)이 정본입니다.
   기능 토글 약 45개 중 **1번 묶음**(오래 승격된 기능의 끄기 스위치 15개)은 issue #20에서,
   **2번 묶음**(버려진 옵트인 실험 11개 묶음의 기능·스위치)은 issue #22에서 삭제했습니다.
@@ -60,10 +61,14 @@ Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 hist
   * **일회성 진단 — issue #25.** 후보 13개 중 9개를 지우고, 살아 있는 기구의 계측이거나
     가이드·스크립트가 쓰는 4개(`CALL_TRACE`, `RETIRED_TRAP_PROFILE`, `SETTER_CENSUS`/`_PHASE`)는
     근거와 함께 남겼습니다.
-  보류 항목은 다음 조건에서 재개합니다.
-  * **`REPIU_AOT_GUARDED_SEGMENT_LOAD/POP/READ` 끄기 스위치 삭제.** v0.0.206(#18)에서
-    슬롯 내부를 교체해, `=0`이 새 슬롯 문제를 가려낼 유일한 비상 수단입니다.
-    **재개 조건:** v0.0.206 이후 한 릴리스 동안 새 슬롯 관련 회귀가 보고되지 않으면.
+  * **guarded segment 끄기 스위치 — issue #30.** 보류했던 `REPIU_AOT_GUARDED_SEGMENT_LOAD/
+    POP/READ`를 v0.0.207~v0.0.210 동안 새 슬롯 회귀가 없어 지웠습니다.
+  남은 것(아직 issue 없음):
+  * **판정 미정 실험 2개.** `REPIU_GLIDE_ASYNC_PRESENT`(09-28 측정 중)와
+    `REPIU_GLIDE_LFB_STAGING_REUSE`(09-22). 채택(기본 켜기)이나 기능째 삭제 중 결론이 필요합니다.
+  * **판정하지 않은 진단 변수.** 2026-08 중순 이후 언급된 68개(`LINUX_X64_*` 추적 약 20개 포함)와
+    그 이전의 약 20개. 범위를 좁혀 필요할 때 진행합니다.
+  * **최근 승격된 끄기 스위치 11개**(목록의 "유지" 절)는 안정되면 1번 묶음처럼 정리할 후보입니다.
 
 ## 이번 정리에서 닫힌 이전 항목
 
@@ -94,8 +99,8 @@ Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 hist
 As of 2026-10-08 there are three items: the Linux x64 host port is in progress, Stages 3
 through 5 of the web port are **on hold** -- the Linux performance axis comes first -- and the
 **environment toggle cleanup** has finished groups 1 (#20) and 2 (#22), has finished group 3
-(#24) and the one-off diagnostics (#25) from a second survey, and keeps one item
-deferred under a stated resume condition. A 120-second user run
+(#24) and the one-off diagnostics (#25) from a second survey, and the deferred guarded
+segment switches (#30); two undecided experiments and unreviewed diagnostics remain. A 120-second user run
 completed final validation
 of Tasks 492 through 495: JAMMA input timing, IRQ0 replay, 2P numpad aliases, and history pruning.
 
@@ -124,7 +129,7 @@ units in [`work-orders/`](work-orders/), and completed results and verification 
   **And design Stage 3 for running in a Worker**: the CHD has to stay open throughout play, and
   synchronous file I/O in a browser holds only inside a Worker (design 513, Decision 7).
 
-- **Environment toggle cleanup -- groups 1 to 3 and the one-off diagnostics (#25) done, one item deferred (2026-10-09).** The
+- **Environment toggle cleanup -- groups 1 to 3, the one-off diagnostics (#25) and the guarded segment switches (#30) done (2026-10-09).** The
   survey and full list live in the [environment toggle inventory](analysis/environment-toggle-inventory.md).
   Of about 45 feature toggles, **group 1** (15 kill switches of long-promoted features) was
   deleted in issue #20 and **group 2** (feature and switch of 11 abandoned opt-in experiments)
@@ -136,11 +141,16 @@ units in [`work-orders/`](work-orders/), and completed results and verification 
   * **One-off diagnostics -- issue #25.** Nine of the thirteen candidates deleted; four kept
     with their reasons because they measure a live mechanism or a guide or script uses them
     (`CALL_TRACE`, `RETIRED_TRAP_PROFILE`, `SETTER_CENSUS`/`_PHASE`).
-  The deferred item resumes under this condition.
-  * **Delete the `REPIU_AOT_GUARDED_SEGMENT_LOAD/POP/READ` kill switches.** v0.0.206 (#18)
-    replaced the slot internals, so `=0` is the only escape hatch for the new slots.
-    **Resume condition:** one release after v0.0.206 with no regression reported against the
-    new slots.
+  * **Guarded segment kill switches -- issue #30.** The deferred
+    `REPIU_AOT_GUARDED_SEGMENT_LOAD/POP/READ` went after v0.0.207 to v0.0.210 showed no
+    regression against the new slots.
+  Remaining (no issue yet):
+  * **Two undecided experiments**, `REPIU_GLIDE_ASYNC_PRESENT` (being measured on 09-28) and
+    `REPIU_GLIDE_LFB_STAGING_REUSE` (09-22), need a verdict: adopt as default-on or delete.
+  * **Unreviewed diagnostics**: 68 mentioned from mid-2026-08 on (about 20 of them
+    `LINUX_X64_*` traces) and about 20 earlier ones; to be narrowed and done when needed.
+  * **Eleven recently promoted kill switches** (the inventory's "keep" list) become group-1
+    style candidates once they settle.
 
 ## Previous Entries Closed by This Cleanup
 
