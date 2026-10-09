@@ -18,85 +18,30 @@ using engine::SnapshotTimerTickDelivery;
 using engine::TimerTickDeliveryCounters;
 
 // The gate the whole decomposition rests on: every owed tick must end up in
-// exactly one of delivered, coalesced away, dropped, or still owed.
+// exactly one of delivered, dropped, or still owed.
 bool PartitionHolds(const TimerTickDeliveryCounters& counters)
 {
     const auto snapshot = SnapshotTimerTickDelivery(counters);
     return snapshot.due_total ==
-        snapshot.injected_total + snapshot.coalesced_total +
-            snapshot.dropped_total + snapshot.backlog;
+        snapshot.injected_total + snapshot.dropped_total + snapshot.backlog;
 }
 
 }  // namespace
 
 bool RunTimerTickDeliveryProbe()
 {
-    // Task 432: on by default, so only an explicit off disables it. Unset
-    // (nullptr) and unrecognised values must resolve to on -- a typo in the
-    // variable must not silently restore the tick-losing path.
-    const bool policy =
-        engine::ResolveTimerTickBacklogEnabled(nullptr) &&
-        engine::ResolveTimerTickBacklogEnabled("") &&
-        engine::ResolveTimerTickBacklogEnabled("yes") &&
-        !engine::ResolveTimerTickBacklogEnabled("0") &&
-        !engine::ResolveTimerTickBacklogEnabled("off") &&
-        !engine::ResolveTimerTickBacklogEnabled("false") &&
-        engine::ResolveTimerTickBacklogEnabled("1") &&
-        engine::ResolveTimerTickBacklogEnabled("on") &&
-        engine::ResolveTimerTickBacklogEnabled("true");
-
-    // The opt-out path, kept as the regression control: three owed ticks become
-    // one injection and two losses, because delivery is a single boolean.
-    TimerTickDeliveryCounters legacy;
-    const std::uint32_t legacy_retained_first =
-        RecordTimerTicksDue(&legacy, 3U, false, false, false);
-    const bool legacy_armed_once =
-        !RecordTimerTickInjected(&legacy, false);
-    const std::uint32_t legacy_retained_second =
-        RecordTimerTicksDue(&legacy, 2U, false, false, false);
-    const bool legacy_armed_twice =
-        !RecordTimerTickInjected(&legacy, false);
-    const auto legacy_snapshot = SnapshotTimerTickDelivery(legacy);
-    const bool coalescing =
-        legacy_retained_first == 1U && legacy_retained_second == 1U &&
-        legacy_armed_once && legacy_armed_twice &&
-        legacy_snapshot.due_total == 5U &&
-        legacy_snapshot.injected_total == 2U &&
-        legacy_snapshot.coalesced_total == 3U &&
-        legacy_snapshot.backlog == 0U &&
-        PartitionHolds(legacy);
-
-    // A poll arriving while a tick is still outstanding loses all of its own
-    // ticks, since even the one it would have kept is a duplicate of the tick
-    // not yet taken.
-    TimerTickDeliveryCounters outstanding;
-    const std::uint32_t outstanding_retained_first =
-        RecordTimerTicksDue(&outstanding, 1U, false, false, false);
-    const std::uint32_t outstanding_retained_second =
-        RecordTimerTicksDue(&outstanding, 4U, true, false, false);
-    const auto outstanding_snapshot =
-        SnapshotTimerTickDelivery(outstanding);
-    const bool already_pending =
-        outstanding_retained_first == 1U &&
-        outstanding_retained_second == 0U &&
-        outstanding_snapshot.due_total == 5U &&
-        outstanding_snapshot.coalesced_total == 4U &&
-        outstanding_snapshot.backlog == 1U &&
-        PartitionHolds(outstanding);
-
-    // Backlog mode keeps owed ticks and drains one per safe point.
+    // The backlog keeps owed ticks and drains one per safe point.
     TimerTickDeliveryCounters backlog;
     const std::uint32_t backlog_retained =
-        RecordTimerTicksDue(&backlog, 3U, false, true, false);
-    const bool drain_first = RecordTimerTickInjected(&backlog, true);
-    const bool drain_second = RecordTimerTickInjected(&backlog, true);
-    const bool drain_last = RecordTimerTickInjected(&backlog, true);
+        RecordTimerTicksDue(&backlog, 3U, false);
+    const bool drain_first = RecordTimerTickInjected(&backlog);
+    const bool drain_second = RecordTimerTickInjected(&backlog);
+    const bool drain_last = RecordTimerTickInjected(&backlog);
     const auto backlog_snapshot = SnapshotTimerTickDelivery(backlog);
     const bool draining =
         backlog_retained == 3U && drain_first && drain_second && !drain_last &&
         backlog_snapshot.due_total == 3U &&
         backlog_snapshot.injected_total == 3U &&
-        backlog_snapshot.coalesced_total == 0U &&
         backlog_snapshot.backlog == 0U &&
         backlog_snapshot.max_backlog == 3U &&
         PartitionHolds(backlog);
@@ -105,9 +50,9 @@ bool RunTimerTickDeliveryProbe()
     // excess is counted rather than delivered late.
     TimerTickDeliveryCounters capped;
     const std::uint32_t capped_retained_first = RecordTimerTicksDue(
-        &capped, kTimerTickBacklogCapacity + 10U, false, true, false);
+        &capped, kTimerTickBacklogCapacity + 10U, false);
     const std::uint32_t capped_retained_second =
-        RecordTimerTicksDue(&capped, 5U, false, true, false);
+        RecordTimerTicksDue(&capped, 5U, false);
     const auto capped_snapshot = SnapshotTimerTickDelivery(capped);
     const bool capping =
         capped_retained_first == kTimerTickBacklogCapacity &&
@@ -120,7 +65,7 @@ bool RunTimerTickDeliveryProbe()
     // Abandoning delivery must account the owed ticks, not drop them out of the
     // identity.
     TimerTickDeliveryCounters cleared;
-    RecordTimerTicksDue(&cleared, 6U, false, true, false);
+    RecordTimerTicksDue(&cleared, 6U, false);
     RecordTimerTickBacklogCleared(&cleared);
     const auto cleared_snapshot = SnapshotTimerTickDelivery(cleared);
     const bool clearing =
@@ -130,10 +75,10 @@ bool RunTimerTickDeliveryProbe()
 
     // Deferrals are delays, not losses, so they stay out of the partition.
     TimerTickDeliveryCounters deferred;
-    RecordTimerTicksDue(&deferred, 1U, false, true, false);
+    RecordTimerTicksDue(&deferred, 1U, false);
     RecordTimerTickDeferred(&deferred);
     RecordTimerTickDeferred(&deferred);
-    RecordTimerTickInjected(&deferred, true);
+    RecordTimerTickInjected(&deferred);
     const auto deferred_snapshot = SnapshotTimerTickDelivery(deferred);
     const bool deferral =
         deferred_snapshot.deferred_total == 2U &&
@@ -141,41 +86,31 @@ bool RunTimerTickDeliveryProbe()
         deferred_snapshot.backlog == 0U &&
         PartitionHolds(deferred);
 
-    // Task 431: in-gate ticks are a subset of the same partition, never a
-    // separate bucket -- a loss counted twice would overstate the gate's share,
-    // which is the whole quantity the attribution turns on.
+    // Task 431: in-gate ticks are a subset of the owed ticks, never a separate
+    // bucket of the partition.
     TimerTickDeliveryCounters gated;
-    RecordTimerTicksDue(&gated, 3U, false, false, true);
-    RecordTimerTickInjected(&gated, false);
-    RecordTimerTicksDue(&gated, 4U, false, false, false);
+    RecordTimerTicksDue(&gated, 3U, true);
+    RecordTimerTickInjected(&gated);
+    RecordTimerTicksDue(&gated, 4U, false);
     const auto gated_snapshot = SnapshotTimerTickDelivery(gated);
     const bool gate_attribution =
         gated_snapshot.due_total == 7U &&
         gated_snapshot.due_in_gate_total == 3U &&
-        gated_snapshot.coalesced_total == 5U &&
-        gated_snapshot.coalesced_in_gate_total == 2U &&
-        gated_snapshot.coalesced_in_gate_total <=
-            gated_snapshot.coalesced_total &&
-        gated_snapshot.due_in_gate_total <= gated_snapshot.due_total &&
+        gated_snapshot.injected_total == 1U &&
+        gated_snapshot.backlog == 6U &&
         PartitionHolds(gated);
 
-    RecordTimerTicksDue(nullptr, 1U, false, true, true);
+    RecordTimerTicksDue(nullptr, 1U, true);
     RecordTimerTickDeferred(nullptr);
     RecordTimerTickBacklogCleared(nullptr);
     const bool inert =
-        !RecordTimerTickInjected(nullptr, true) &&
+        !RecordTimerTickInjected(nullptr) &&
         SnapshotTimerTickDelivery(
             TimerTickDeliveryCounters{}).due_total == 0U;
 
-    const bool all = policy && coalescing && already_pending && draining &&
-        capping && clearing && deferral && gate_attribution && inert;
-    std::cout << "timer_tick_delivery_policy="
-              << (policy ? "true" : "false")
-              << "\ntimer_tick_delivery_coalescing="
-              << (coalescing ? "true" : "false")
-              << "\ntimer_tick_delivery_already_pending="
-              << (already_pending ? "true" : "false")
-              << "\ntimer_tick_delivery_draining="
+    const bool all = draining && capping && clearing && deferral &&
+        gate_attribution && inert;
+    std::cout << "timer_tick_delivery_draining="
               << (draining ? "true" : "false")
               << "\ntimer_tick_delivery_capping="
               << (capping ? "true" : "false")

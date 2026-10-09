@@ -4,7 +4,6 @@
 #include "guest_memory_access.h"
 #include "dpmi_mscdex_services.h"
 #include "repiu/hle/dos_date.h"
-#include "repiu/platform/host_environment.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -34,15 +33,6 @@ bool AssetTraceUncapped()
 
 namespace repiu::engine
 {
-
-bool Dos4gwPharlapMemoryPathProbeEnabled()
-{
-    const repiu::platform::EnvironmentSetting setting =
-        repiu::platform::ReadEnvironmentSetting(
-            "REPIU_DOS4GW_MEMORY_PATH_PROBE", 16U);
-    return setting.present && !setting.too_long &&
-           setting.value == "pharlap";
-}
 
 void RecordDosChangeDirectory(ThreadContext* context,
                               const std::string& guest_path,
@@ -1701,10 +1691,6 @@ bool HandleDosInterrupt21(repiu::platform::GuestCpuContext* win32_context, Threa
             RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax =
                 (win32_context->Eax & 0xFFFF0000U) | 0x0007U;
-            if (Dos4gwPharlapMemoryPathProbeEnabled())
-            {
-                win32_context->Eax |= 0x44580000U;
-            }
             win32_context->Ebx = 0;
             win32_context->Ecx = 0;
             break;

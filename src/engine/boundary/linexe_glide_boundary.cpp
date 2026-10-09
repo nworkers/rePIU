@@ -1876,15 +1876,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             sizeof(std::uint32_t) + signature->argument_byte_count;
         return true;
     };
-    // Task 420: the A/B switch for the newly implemented draw entry points.
-    // When disabled, each of those cases records the issue it used to record
-    // and returns without drawing, keeping the stack adjustment identical, so
-    // one binary can answer whether drawing them is what changed a run.
-    // `REPIU_GLIDE_DRAW_ENTRY_POINTS=0` restores the old behaviour.
-    static const bool draw_entry_points_enabled = [] {
-        const char* value = std::getenv("REPIU_GLIDE_DRAW_ENTRY_POINTS");
-        return value == nullptr || std::strcmp(value, "0") != 0;
-    }();
     const auto record_unimplemented =
         [context, win32_context, glide_export](
             const std::string_view reason,
@@ -3149,18 +3140,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
         case go::kGrAADrawLine: // _GRAADRAWLINE@8
         case go::kGrDrawLine: // _GRDRAWLINE@8
         {
-            // `kGrDrawLine` has always drawn, so only the antialiased variant
-            // reverts under the switch.
-            if (!draw_entry_points_enabled &&
-                glide_export->gate_id == go::kGrAADrawLine)
-            {
-                record_unimplemented("catalog-default-handler",
-                                     "ABI-preserving default return");
-                ++context->glide_gate_handled_count;
-                win32_context->Eip = return_address;
-                win32_context->Esp += 3U * sizeof(std::uint32_t);
-                return true;
-            }
             hle::GlideDrawVertex vertices[2] = {};
             for (std::size_t index = 0U; index < 2U; ++index)
             {
@@ -3202,15 +3181,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
         // geometry is drawn. Seven stack slots, unlike `_GRDRAWTRIANGLE@12`.
         case go::kGrAADrawTriangle: // _GRAADRAWTRIANGLE@24
         {
-            if (!draw_entry_points_enabled)
-            {
-                record_unimplemented("catalog-default-handler",
-                                     "ABI-preserving default return");
-                ++context->glide_gate_handled_count;
-                win32_context->Eip = return_address;
-                win32_context->Esp += 7U * sizeof(std::uint32_t);
-                return true;
-            }
             hle::GlideDrawVertex vertices[3] = {};
             for (std::size_t index = 0U; index < 3U; ++index)
             {
@@ -3254,18 +3224,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
         case go::kGrAADrawPoint: // _GRAADRAWPOINT@4
         case go::kGrDrawPoint: // _GRDRAWPOINT@4
         {
-            if (!draw_entry_points_enabled)
-            {
-                record_unimplemented(
-                    glide_export->gate_id == go::kGrDrawPoint
-                        ? "draw-point-noop"
-                        : "catalog-default-handler",
-                    "draw request accepted without rendering");
-                ++context->glide_gate_handled_count;
-                win32_context->Eip = return_address;
-                win32_context->Esp += 2U * sizeof(std::uint32_t);
-                return true;
-            }
             const auto* source = reinterpret_cast<const std::uint32_t*>(
                 static_cast<std::uintptr_t>(context->glide_gate_stack[1]));
             if (!IsGuestRangeReadable(context, source,
@@ -3865,18 +3823,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 glide_export->gate_id == go::kGrDrawPlanarPolygon ||
                 glide_export->gate_id == go::kGrDrawPolygon ||
                 glide_export->gate_id == go::kGrAADrawPolygon;
-            if (!draw_entry_points_enabled)
-            {
-                record_unimplemented(
-                    indexed ? "draw-polygon-noop"
-                            : "draw-polygon-vertex-list-noop",
-                    "draw request accepted without rendering");
-                ++context->glide_gate_handled_count;
-                win32_context->Eip = return_address;
-                win32_context->Esp +=
-                    (indexed ? 4U : 3U) * sizeof(std::uint32_t);
-                return true;
-            }
             const std::uint32_t vertex_count = context->glide_gate_stack[1];
             const std::uint32_t index_list =
                 indexed ? context->glide_gate_stack[2] : 0U;

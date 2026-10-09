@@ -4255,12 +4255,10 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
         segcs = logical_cs;
     }
 
-    // Task 366: with the backlog opt-in off this returns false and the two lines
-    // below behave exactly as before -- one injection, flag cleared. With it on,
-    // a still-owed tick keeps delivery armed so the backlog drains one interrupt
-    // per safe point rather than bursting into the guest stack.
+    // Task 366: a still-owed tick keeps delivery armed so the backlog drains
+    // one interrupt per safe point rather than bursting into the guest stack.
     const bool keep_armed = RecordTimerTickInjected(
-        &context->timer_tick_delivery, TimerTickBacklogEnabled());
+        &context->timer_tick_delivery);
     const std::uint32_t interrupt_frame_esp = win32_context->Esp - 12U;
     // Task 762. On the direct model the frame returns to the return pad, and
     // the handler runs without the interrupted code's trace state.

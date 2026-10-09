@@ -3299,41 +3299,42 @@ Task 366은 guest가 프로그램한 timer tick과 실제로 전달된 tick의 �
 ```mermaid
 flowchart TD
     P["host poll loop"] --> S["PitIrqSchedule::Poll → due"]
-    S --> R["RecordTimerTicksDue"]
+    S --> R["RecordTimerTicksDue<br/>backlog += min(due, 64 - backlog)"]
     R --> B["timer_interrupt_pending = true"]
     B --> I["InjectPendingInterrupts"]
     I --> C{"safe point 조건<br/>IF, guest EIP"}
     C -->|"불충족"| DF["deferred (지연, 손실 아님)"]
     C -->|"충족"| J["INT 8 주입"]
-    J --> K["RecordTimerTickInjected"]
+    J --> K["RecordTimerTickInjected<br/>backlog가 남으면 armed 유지"]
 ```
 
-counter는 `due`, `injected`, `coalesced`, `dropped`, `deferred`, `max_backlog`,
-`backlog`이며 **항등식 `due == injected + coalesced + dropped + backlog`** 가 분해
-경계의 근거입니다. `deferred`는 지연이지 손실이 아니므로 항등식 밖입니다.
+밀린 tick은 상한 64의 backlog에 보존되고 safe point마다 하나씩 소진됩니다. counter는
+`due`, `injected`, `dropped`, `deferred`, `due_in_gate`, `max_backlog`, `backlog`이며
+**항등식 `due == injected + dropped + backlog`** 가 분해 경계의 근거입니다. `dropped`는
+상한을 넘은 tick과 전달을 포기할 때 남아 있던 tick입니다. `deferred`는 지연이지 손실이
+아니므로 항등식 밖입니다.
 
-`REPIU_TIMER_TICK_BACKLOG=1`은 bool을 상한 64의 counter로 바꿔 밀린 tick을 safe point
-마다 하나씩 소진합니다. **기본 OFF이며 성능 목적으로 켜서는 안 됩니다** — Task 366
-측정에서 전달률은 91.8%로 올랐지만 프레임이 16.4% 떨어졌습니다. 원인은 주입 자체가
-아니라 밀린 tick이 남아 있는 동안 `ArmAotTimerSafePoint`가 상시 활성이 되어
-safe-point trap이 20% 늘기 때문입니다. 후속 설계의 대조군으로만 남깁니다.
+Task 366에서는 bool 하나로 전달해 밀린 tick을 버렸고(`coalesced`), backlog는 옵트인
+실험이었습니다. 그때는 backlog가 상한에 붙어 safe point를 상시 무장시켜 프레임이 16.4%
+떨어졌지만, 실행 속도가 오른 뒤 Task 432에서 backlog가 게이트 호출 사이에 비워짐을
+확인하고(전달률 50.6% → 99.98%, 노트·BGA 튐 해소) 기본값으로 바꿨습니다. issue #24에서
+bool 경로와 `REPIU_TIMER_TICK_BACKLOG` 스위치, 항상 0이 된 `coalesced` counter를
+없앴습니다.
 
 Task 366 accounts, with always-on counters, for the gap between the timer ticks the
-guest programmed and the ones it received. `PitIrqSchedule::Poll` returns the exact
-owed count, but `timer_interrupt_pending` is a boolean, so one `INT 8` is delivered
-regardless of how many were owed; the measured shortfall is 11.9%. The counters are
-owed, injected, coalesced, dropped, deferred, peak backlog, and outstanding
-backlog, and the identity `due == injected + coalesced + dropped + backlog` is what
-makes the decomposition trustworthy — deferrals sit outside it because they are
-delays rather than losses.
+guest programmed and the ones it received. Owed ticks are kept in a backlog capped at 64 and
+drained one per safe point. The counters are owed, injected, dropped, deferred, owed inside the
+Glide gate, peak backlog and outstanding backlog, and the identity
+`due == injected + dropped + backlog` is what makes the decomposition trustworthy; `dropped` is
+ticks past the cap or outstanding when delivery is abandoned, and deferrals sit outside the
+identity because they are delays rather than losses.
 
-`REPIU_TIMER_TICK_BACKLOG=1` replaces the boolean with a counter capped at 64 that
-drains one owed tick per safe point. It is **off by default and must not be enabled
-for performance**: it raised delivery to 91.8% while costing 16.4% of frames, not
-because injections are expensive but because an outstanding owed tick keeps
-`ArmAotTimerSafePoint` permanently active and raises safe-point traps 20%. It is
-retained only as the control arm for a future drain that does not hold the safe
-point armed.
+Task 366 delivered through a single boolean that discarded owed ticks (`coalesced`) and kept
+the backlog as an opt-in experiment, which then cost 16.4% of frames because the backlog pinned
+at its cap and kept the safe point armed. Once execution got faster, Task 432 found the backlog
+emptying between gate calls (delivery 50.6% to 99.98%, the note and BGA jumping gone) and made it
+the default. Issue #24 removed the boolean path, the `REPIU_TIMER_TICK_BACKLOG` switch and the
+`coalesced` counter that had become permanently zero.
 
 ## 동일 Glide 상태 생략 / Eliding already-applied Glide state
 

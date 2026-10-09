@@ -3198,20 +3198,13 @@ void PrintExecutionAttempt(
     {
         const auto& ticks = attempt.timer_tick_delivery;
         logger.info(
-            "timer tick delivery backlog-enabled/due/injected/coalesced/"
-            "dropped/deferred/max-backlog/remaining: {}/{}/{}/{}/{}/{}/{}/{}",
-            ticks.backlog_enabled, ticks.due_total, ticks.injected_total,
-            ticks.coalesced_total, ticks.dropped_total, ticks.deferred_total,
-            ticks.max_backlog, ticks.backlog);
-        // Task 431: how much of the loss landed while the guest was blocked in
-        // the Glide gate, where no safe point is reachable and the tick could
-        // not have been delivered at all.
-        logger.info(
-            "timer tick in-gate due/coalesced/coalesced-share: {}/{}/{}%",
-            ticks.due_in_gate_total, ticks.coalesced_in_gate_total,
-            ticks.coalesced_total != 0U
-                ? ticks.coalesced_in_gate_total * 100U / ticks.coalesced_total
-                : 0U);
+            "timer tick delivery due/injected/dropped/deferred/max-backlog/"
+            "remaining: {}/{}/{}/{}/{}/{}",
+            ticks.due_total, ticks.injected_total, ticks.dropped_total,
+            ticks.deferred_total, ticks.max_backlog, ticks.backlog);
+        // Task 431: ticks that came due while the guest was blocked in the
+        // Glide gate, where no safe point is reachable until the gate returns.
+        logger.info("timer tick in-gate due: {}", ticks.due_in_gate_total);
         // Task 735: ticks held back because IRQ0 was still in service, and how
         // each service ended -- by the ISR's EOI or by its return.
         // Task 740: the PIU10 MP3 pipeline. `stats()` existed but nothing

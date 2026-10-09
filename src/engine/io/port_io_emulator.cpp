@@ -194,12 +194,6 @@ constexpr std::uint32_t kJammaSnapshotPortCount =
 constexpr std::uint64_t kDefaultJammaSnapshotMicroseconds = 500U;
 
 std::uint64_t ReadJammaSnapshotIntervalMicroseconds() {
-  const char *value = std::getenv("REPIU_JAMMA_SNAPSHOT");
-  if (value != nullptr &&
-      (std::strcmp(value, "0") == 0 || std::strcmp(value, "off") == 0 ||
-       std::strcmp(value, "false") == 0)) {
-    return 0U;
-  }
   const char *interval = std::getenv("REPIU_JAMMA_SNAPSHOT_US");
   if (interval == nullptr || interval[0] == 0) {
     return kDefaultJammaSnapshotMicroseconds;
