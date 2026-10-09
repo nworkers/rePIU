@@ -58,6 +58,16 @@ probe의 기본값·마스크 단언과 설정 probe의 기본값 단언을 새 
   확인했다(2026-10-09). 발판형 조이스틱(`Joy<N>_`)은 확인 여부를 따로 듣지 못했다.
 * Linux i386 빌드.
 
+## Linux 검증 (2026-10-10)
+
+환경과 트리는 #24 작업 로그의 같은 절과 같다(Ubuntu 26.04.1, main `2809668`).
+
+* **빌드**: Linux i386·x64 Release, 모든 기본 타깃 통과(런처 포함), 경고는 원래 있던 것뿐.
+* **core probe**: 두 아키텍처 모두 `host_pad_input_all=true`, `launcher_all=true`,
+  `core_probe_failures=0`.
+* **여전히 확인하지 않은 것**: Linux에서의 실제 장치. 이 기기에는 게임패드·조이스틱이 연결되어
+  있지 않다.
+
 ---
 
 # Work log: gamepad and joystick input for the game and the launcher (issue #34)
@@ -99,3 +109,9 @@ to the center at the user's request, and the user confirmed the new layout on a 
 **Not checked.** Nothing could be run on a device here, but the user confirmed the feature on a real
 gamepad (2026-10-09); whether a dance-pad joystick (`Joy<N>_`) was tried was not reported. The Linux
 i386 build.
+
+**Linux verification (2026-10-10).** In the environment and tree of the same section in #24's work
+log (Ubuntu 26.04.1, main `2809668`): Linux i386 and x64 Release builds of every default target,
+the launcher included, pass with only pre-existing warnings, and the core probe reports
+`host_pad_input_all=true`, `launcher_all=true` and `core_probe_failures=0` on both. Still not
+checked: a real device on Linux; no gamepad or joystick is connected to this machine.

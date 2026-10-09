@@ -68,6 +68,20 @@
   찍혔다.
 * **확인하지 못한 것**: Linux i386 빌드.
 
+## Linux 검증 (2026-10-10)
+
+Ubuntu 26.04.1(RTX 4090, 실행은 x11)에서 main `2809668`(v0.0.213과 사이트 링크 커밋)으로
+위에서 남긴 항목을 확인했다. 이 작업 이후의 #25·#30·#31·#34·#37이 함께 들어간 트리다.
+
+* **빌드**: Linux i386(direct)·x64(cache) Release(`build/verify-i386`, `build/verify-x64`),
+  모든 기본 타깃 통과. 경고는 원래 있던 것뿐이다(`g_repiu_active_thread_context`, x64의
+  `fault_handler_arch.cpp`, i386의 minimp3).
+* **core probe**: 두 아키텍처 모두 `core_probe_failures=0`, 종료 코드 0. i386의
+  `shutdown_recovery_policy_wide_pointer=false`는 #22 기준선에도 있는 값이다.
+* **게임 실행**: #37 작업 로그의 Linux 검증 절에 적은 pumpitea·pumpit8 실행에서 새 최종 로그 줄
+  `timer tick delivery due/injected/dropped/deferred/max-backlog/remaining`이 두 아키텍처
+  모두 찍혔다(예: x64 pumpitea 90초 `20842/20780/62/5807/10/0`).
+
 ---
 
 # Work log: retire the hidden kill switches and two DOS/DPMI experiments (issue #24)
@@ -110,3 +124,13 @@ of 64 (83 dropped against 26), and the run ended about a second behind, before t
 opens. The second pair matched almost exactly (frames 3,202/3,203, ticks 14,120/14,121, 22
 dropped and a peak backlog of 19 on both sides, 23 opens each), so the first pair's gap is
 run-to-run variation. **Not done:** a Linux i386 build.
+
+**Linux verification (2026-10-10).** On Ubuntu 26.04.1 (RTX 4090, running on x11), against main
+`2809668` (v0.0.213 plus the site link commits, so #25, #30, #31, #34 and #37 are in the tree):
+Linux i386 (direct) and x64 (cache) Release builds (`build/verify-i386`, `build/verify-x64`) of
+every default target pass with only pre-existing warnings (`g_repiu_active_thread_context`, x64's
+`fault_handler_arch.cpp`, i386's minimp3). The core probe reports `core_probe_failures=0` and exits
+0 on both; i386's `shutdown_recovery_policy_wide_pointer=false` is also in the #22 baseline. The
+pumpitea and pumpit8 runs recorded in #37's Linux verification print the new
+`timer tick delivery due/injected/dropped/deferred/max-backlog/remaining` line on both
+architectures (x64 pumpitea, 90 s: `20842/20780/62/5807/10/0`).

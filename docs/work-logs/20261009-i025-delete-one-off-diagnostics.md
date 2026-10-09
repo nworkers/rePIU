@@ -42,6 +42,14 @@
 * **게임 실행 안 함**: 지운 코드는 모두 변수가 있을 때만 도는 블록이다(LFB present의
   `getenv` 한 번 제외 — 이는 호출만 사라진다).
 
+## Linux 검증 (2026-10-10)
+
+릴리스 노트(v0.0.210)에 남긴 Linux i386 빌드를 확인했다. 환경과 트리는 #24 작업 로그의 같은
+절과 같다(Ubuntu 26.04.1, main `2809668`).
+
+* **빌드**: Linux i386·x64 Release, 모든 기본 타깃 통과, 경고는 원래 있던 것뿐.
+* **core probe**: 두 아키텍처 모두 `core_probe_failures=0`, 종료 코드 0.
+
 ---
 
 # Work log: delete one-off diagnostics for answered questions (issue #25)
@@ -69,3 +77,8 @@ pre-existing warnings. The full aot_probe chain exits 0 with 539 lines, as in #2
 pass on Linux x64; on Win32 only `stack_bridge` fails (#8). Both Glide probes pass. No source reads
 the nine variables. No game run: every deleted block runs only with its variable set (the one
 `getenv` per LFB present simply stops being called).
+
+**Linux verification (2026-10-10).** The Linux i386 build left open in the v0.0.210 release notes
+was checked, in the environment and tree of the same section in #24's work log (Ubuntu 26.04.1,
+main `2809668`): Linux i386 and x64 Release builds of every default target pass with only
+pre-existing warnings, and the core probe reports `core_probe_failures=0` and exits 0 on both.
