@@ -4286,6 +4286,9 @@ void PrintExecutionAttempt(
     }
     logger.info("handled DOS close count: {}",
                 attempt.handled_dos_close_count);
+    logger.info("DOS console input chars/waits: {}/{}",
+                attempt.dos_console_input_count,
+                attempt.dos_console_input_wait_count);
     if (attempt.handled_dos_close_count > 0)
     {
         logger.info("last DOS close handle: {}",

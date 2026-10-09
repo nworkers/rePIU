@@ -2347,6 +2347,9 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_dos_write_success = context.last_dos_write_success;
     attempt->last_dos_write_error = context.last_dos_write_error;
     attempt->handled_dos_seek_count = context.handled_dos_seek_count;
+    attempt->dos_console_input_count = context.dos_console_input_count;
+    attempt->dos_console_input_wait_count =
+        context.dos_console_input_wait_count;
     attempt->last_dos_seek_handle = context.last_dos_seek_handle;
     attempt->last_dos_seek_origin = context.last_dos_seek_origin;
     attempt->last_dos_seek_offset = context.last_dos_seek_offset;

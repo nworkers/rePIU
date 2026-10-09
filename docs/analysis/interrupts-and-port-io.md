@@ -953,3 +953,42 @@ INT 21h AH values. DOS-service semantics, call locations, and original guest cod
 **Supplemental 60-second run:** `pumpipx3` kept `AH2C=356476` unchanged across live samples
 #1–#5 while falling to roughly 5 FPS at about 35.6 seconds. `pumpit1` retained `int21=906` and
 the `AH3B/4A/44/3F` distribution and did not enter a fixed 5 FPS state through about 58 seconds.
+
+## 2026-10-01 Task 764: INT 21h AH=07h/08h 에코 없는 콘솔 입력
+
+**확인됨:** Task 751이 남긴 공백이었습니다. 세 롬셋(pumpitpc·pumpitp3·pumpipx3)의 fatal 처리기
+(`0x0102D840` 계열)는 오류 화면 뒤 `mov ah,8; int 21h`(Watcom `getch`)로 키 하나를 기다리는데,
+dispatcher에 `AH=08h`가 없어 `unsupported DOS INT 21h AH=0x8`로 거절되고 실행이 이름 없는 폴트로
+끝났습니다(762의 pumpipx3 pad-off 로그가 마지막 예).
+
+**구현됨:** `HandleDosConsoleInputWithoutEcho`가 `AH=07h`·`AH=08h`를 처리합니다. BIOS 키보드 버퍼
+(`ThreadContext::bios_keyboard`, INT 16h `AH=00h`와 같은 버퍼)를 legacy 형식으로 `Pop`해 `AL`에 문자를
+돌려주고, 확장 키(`AL=0`)는 scan code를 `dos_console_pending_scan_code`에 보류했다가 다음 호출에
+돌려줍니다. 버퍼가 비면 1 ms 잔 뒤 `EIP`를 올리지 않고 `true`를 돌려주어 게스트가 같은 `int 21h`를
+다시 실행하게 합니다 — DOS의 "키가 올 때까지 기다림"을 HLE 안의 재시도로 옮긴 것입니다. 키는 호스트
+스레드의 폴 루프가 계속 펌프합니다. Ctrl-C 검사(INT 23h)는 두 기능 모두 하지 않습니다.
+`HandleTracedDosInterrupt21`의 위임 목록에도 두 기능을 더했습니다(Task 487의 `AH=3Ch` 누락과 같은
+자리). probe `dos_console_input`이 core probe와 aot probe에 있습니다.
+
+**미확정:** 게임이 INT 23h 벡터를 설정하는지는 보지 않았습니다. fatal 화면 밖에서 이 서비스를 부르는
+곳이 있는지도 확인하지 않았습니다(Task 528의 AH 계측에서는 `AH=08h`가 fatal 경로에서만 나타났습니다).
+
+## 2026-10-01 Task 764: INT 21h AH=07h/08h console input without echo
+
+**Confirmed:** the gap Task 751 left. The fatal handler of three ROM sets (pumpitpc, pumpitp3,
+pumpipx3; the `0x0102D840` family) waits for one key after its error screen with `mov ah,8; int 21h`
+(Watcom's `getch`); with no `AH=08h` in the dispatcher it was refused as `unsupported DOS INT 21h
+AH=0x8` and the run ended in a nameless fault (762's pumpipx3 pad-off log is the last example).
+
+**Implemented:** `HandleDosConsoleInputWithoutEcho` serves `AH=07h` and `AH=08h`. It pops the BIOS
+keyboard buffer (`ThreadContext::bios_keyboard`, the buffer INT 16h `AH=00h` reads) in its legacy
+form and returns the character in `AL`; an extended key (`AL=0`) has its scan code held in
+`dos_console_pending_scan_code` and returned on the next call. With the buffer empty it sleeps 1 ms
+and returns `true` without advancing `EIP`, so the guest re-executes the same `int 21h`: DOS's "wait
+for a key" turned into a retry inside the HLE. Keys keep arriving through the host thread's poll
+loop. Neither function checks Ctrl-C (INT 23h). Both are also on the delegating list of
+`HandleTracedDosInterrupt21` (the place Task 487 found `AH=3Ch` missing). The probe
+`dos_console_input` is in the core probe and the aot probe.
+
+**Unresolved:** whether the game sets an INT 23h vector was not checked, nor whether anything outside
+the fatal screen calls this service (Task 528's AH census showed `AH=08h` only on the fatal path).

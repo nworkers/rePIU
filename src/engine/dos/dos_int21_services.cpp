@@ -6,12 +6,14 @@
 #include "repiu/hle/dos_date.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/atomic_ops.h"
@@ -1646,6 +1648,48 @@ void HandleDosSetInterruptVector(repiu::platform::GuestCpuContext* win32_context
     win32_context->EFlags &= ~1U;
 }
 
+// Task 764. INT 21h AH=07h and AH=08h: one character from standard input
+// without echo. DOS console input stands on the BIOS keyboard, so this pops
+// the same buffer INT 16h AH=00h does, in its legacy form. An extended key
+// gives AL=0 and hands out its scan code on the next call, as DOS does.
+//
+// With nothing queued the service has to wait for a key. Returning false here
+// tells the dispatcher to leave EIP on the `int 21h` itself, so the guest asks
+// again; the short sleep keeps that from becoming a fault storm on the direct
+// model. Keys arrive on the host thread, whose poll loop keeps pumping events
+// while this thread sleeps. No Ctrl-C check (INT 23h) for either function.
+bool HandleDosConsoleInputWithoutEcho(
+    repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
+{
+    std::uint8_t character = 0;
+    if (context->dos_console_pending_scan_code_valid)
+    {
+        character = context->dos_console_pending_scan_code;
+        context->dos_console_pending_scan_code_valid = false;
+    }
+    else
+    {
+        std::uint16_t keystroke = 0;
+        if (!context->bios_keyboard.Pop(false, &keystroke))
+        {
+            ++context->dos_console_input_wait_count;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return false;
+        }
+        character = static_cast<std::uint8_t>(keystroke & 0xFFU);
+        if (character == 0U)
+        {
+            context->dos_console_pending_scan_code =
+                static_cast<std::uint8_t>((keystroke >> 8) & 0xFFU);
+            context->dos_console_pending_scan_code_valid = true;
+        }
+    }
+    ++context->dos_console_input_count;
+    win32_context->Eax =
+        (win32_context->Eax & 0xFFFFFF00U) | static_cast<std::uint32_t>(character);
+    return true;
+}
+
 bool HandleDosInterrupt21(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     // Task i018. The guarded load slot updates the shadow block natively, so
@@ -1658,6 +1702,15 @@ bool HandleDosInterrupt21(repiu::platform::GuestCpuContext* win32_context, Threa
 
     switch (ah)
     {
+        case 0x07:
+        case 0x08:
+            if (!HandleDosConsoleInputWithoutEcho(win32_context, context))
+            {
+                // Waiting for a key: EIP stays on the `int 21h`.
+                return true;
+            }
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            break;
         case 0x09:
         {
             RecordHandledDosInterrupt(context, 0x21, ax);

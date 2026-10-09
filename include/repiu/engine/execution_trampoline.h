@@ -1191,6 +1191,9 @@ struct MinimalExecutionAttempt
     bool last_dos_write_success = false;
     std::uint16_t last_dos_write_error = 0;
     std::uint32_t handled_dos_seek_count = 0;
+    // Task 764: INT 21h AH=07h/08h characters returned and empty-buffer waits.
+    std::uint32_t dos_console_input_count = 0;
+    std::uint32_t dos_console_input_wait_count = 0;
     std::uint16_t last_dos_seek_handle = 0;
     std::uint8_t last_dos_seek_origin = 0;
     std::int32_t last_dos_seek_offset = 0;

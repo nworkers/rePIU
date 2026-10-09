@@ -3500,6 +3500,10 @@ bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
     TraceDosInterrupt21Registers("enter", *win32_context, *context);
     switch (ah)
     {
+        // Task 764: console input without echo, implemented in the common
+        // dispatcher; listed here so the traced path does not reject it.
+        case 0x07:
+        case 0x08:
         case 0x09:
         case 0x3C:
             return HandleDosInterrupt21(win32_context, context);
