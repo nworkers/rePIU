@@ -1165,6 +1165,14 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
   lfb_high_precision_.store(repiu::runtime::ResolvePromotedToggle(
                                 std::getenv("REPIU_GLIDE_LFB_HIGH_PRECISION")),
                             std::memory_order_relaxed);
+  // Issue #37: the same rule for the full-precision texture option, applied
+  // before any texture is uploaded so nothing needs re-uploading.
+  texture_full_precision_.store(
+      repiu::runtime::ResolvePromotedToggle(
+          std::getenv("REPIU_GLIDE_TEXTURE_FULL_PRECISION")),
+      std::memory_order_relaxed);
+  texture_full_precision_applied_ =
+      texture_full_precision_.load(std::memory_order_relaxed);
   osd_ = std::make_unique<GlideOsd>();
   {
     std::string osd_message;
@@ -1358,6 +1366,8 @@ void GlideOpenGlBackend::PumpEvents() {
     glide_swap_interval_policy_.clock_worst_window_ppm =
         clocks.worst_window_ppm;
   }
+  // Issue #37: an OSD change to the texture option takes effect here.
+  ApplyTextureFullPrecision();
   // Issue #34: opened here, on the thread that pumps events, so device events
   // and the state they update stay on one thread. A failure leaves input
   // keyboard only and is not retried.
@@ -1802,7 +1812,8 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
   // and restores the GL state it touches, so the game's pipeline state
   // survives.
   if (osd_ != nullptr) {
-    osd_->Render(&lfb_high_precision_, post_process_.get());
+    osd_->Render(&lfb_high_precision_, &texture_full_precision_,
+                 post_process_.get());
   }
   const std::uint64_t present_start_cycles =
       swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;
@@ -2033,15 +2044,22 @@ bool GlideOpenGlBackend::DrawPrimitiveBatch(
 bool GlideOpenGlBackend::StoreTexture(
     std::uint32_t start_address, std::uint32_t format, std::uint32_t large_lod,
     std::uint32_t aspect_ratio, const std::uint8_t *source,
-    std::size_t source_size, const std::uint8_t *palette_rgba8) {
+    std::size_t source_size, const std::uint8_t *palette_rgba8,
+    const FullPrecisionTexture *full_precision) {
   if (!IsHostThread()) {
     bool result = false;
     InvokeOnHostThread([this, start_address, format, large_lod, aspect_ratio,
-                        source, source_size, palette_rgba8, &result]() {
+                        source, source_size, palette_rgba8, full_precision,
+                        &result]() {
       result = StoreTexture(start_address, format, large_lod, aspect_ratio,
-                            source, source_size, palette_rgba8);
+                            source, source_size, palette_rgba8,
+                            full_precision);
     });
     return result;
+  }
+  if (full_precision != nullptr) {
+    RecordGlideTextureFullPrecision(&glide_texture_census_,
+                                    full_precision->outcome);
   }
   // Task 375: the rejection paths are recorded too. A format or a geometry the
   // backend refuses is exactly the "texture silently missing from the screen"
@@ -2150,13 +2168,64 @@ bool GlideOpenGlBackend::StoreTexture(
   // equals the pixel size only when the longer edge is already 256.
   repiu::hle::CalculateGlideTextureCoordinateExtent(
       aspect_ratio, &entry.s_extent, &entry.t_extent);
+  // Issue #37: keep both images when the original was found and verified, so
+  // the option can switch between them later without the guest's help.
+  // game_rgba8 could be rebuilt by re-truncating the original (that is what
+  // the verification checked), halving this memory; see the issue #37 work
+  // log.
+  const bool has_full_precision =
+      full_precision != nullptr &&
+      full_precision->outcome == repiu::hle::MesaFxSourceOutcome::kUsed &&
+      full_precision->rgba8.size() == rgba8.size();
+  if (has_full_precision) {
+    entry.game_rgba8 = rgba8;
+    entry.full_precision_rgba8 = full_precision->rgba8;
+  } else {
+    entry.game_rgba8.clear();
+    entry.full_precision_rgba8.clear();
+  }
+  const std::uint8_t *upload =
+      has_full_precision && texture_full_precision_applied_
+          ? entry.full_precision_rgba8.data()
+          : rgba8.data();
   glBindTexture(GL_TEXTURE_2D, entry.gl_name);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
                static_cast<GLsizei>(dimensions.width),
                static_cast<GLsizei>(dimensions.height), 0, GL_RGBA,
-               GL_UNSIGNED_BYTE, rgba8.data());
+               GL_UNSIGNED_BYTE, upload);
   message_ = "Glide texture stored";
   return glGetError() == GL_NO_ERROR;
+}
+
+void GlideOpenGlBackend::ApplyTextureFullPrecision() {
+  const bool wanted =
+      texture_full_precision_.load(std::memory_order_relaxed);
+  if (wanted == texture_full_precision_applied_) {
+    return;
+  }
+  texture_full_precision_applied_ = wanted;
+  std::uint32_t uploaded = 0U;
+  for (auto &[address, entry] : textures_) {
+    (void)address;
+    if (entry.gl_name == 0U || entry.full_precision_rgba8.empty() ||
+        entry.game_rgba8.size() != entry.full_precision_rgba8.size()) {
+      continue;
+    }
+    glBindTexture(GL_TEXTURE_2D, entry.gl_name);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                    static_cast<GLsizei>(entry.width),
+                    static_cast<GLsizei>(entry.height), GL_RGBA,
+                    GL_UNSIGNED_BYTE,
+                    wanted ? entry.full_precision_rgba8.data()
+                           : entry.game_rgba8.data());
+    ++uploaded;
+  }
+  if (current_texture_ != nullptr) {
+    glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
+  }
+  fprintf(stderr,
+          "[repiu-glide] full-precision textures %s: %u re-uploaded\n",
+          wanted ? "on" : "off", uploaded);
 }
 
 bool GlideOpenGlBackend::RefreshPalettizedTextures(

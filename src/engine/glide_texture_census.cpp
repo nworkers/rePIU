@@ -109,6 +109,18 @@ void RecordGlideTextureUpload(GlideTextureCensus* census,
     existing->second = hash;
 }
 
+void RecordGlideTextureFullPrecision(GlideTextureCensus* census,
+                                     const hle::MesaFxSourceOutcome outcome)
+{
+    const auto index = static_cast<std::uint32_t>(outcome);
+    if (census == nullptr || index >= hle::kMesaFxSourceOutcomeCount)
+    {
+        return;
+    }
+    census->enabled = true;
+    ++census->full_precision_counts[index];
+}
+
 void RecordGlidePaletteDownload(GlideTextureCensus* census,
                                 const bool identical)
 {
@@ -184,6 +196,7 @@ GlideTextureCensusSnapshot SnapshotGlideTextureCensus(
     snapshot.dimension_counts = census.dimension_counts;
     snapshot.dump_written_count = census.dump_written_count;
     snapshot.dump_limit_reached = census.dump_limit_reached;
+    snapshot.full_precision_counts = census.full_precision_counts;
     return snapshot;
 }
 

@@ -51,6 +51,7 @@
 #include "dos_file_create_probe.h"
 #include "dos_console_input_probe.h"
 #include "host_pad_input_probe.h"
+#include "mesa_fx_texture_source_probe.h"
 #include "dos_date_probe.h"
 #include "glide_setter_state_cache_probe.h"
 #include "glide_gl_error_policy_probe.h"
@@ -706,6 +707,11 @@ int main(int argc, char** argv)
     {
         return repiu::tools::RunHostPadInputProbe() ? 0 : 1;
     }
+    if (argc == 2 &&
+        std::strcmp(argv[1], "--mesa-fx-texture-source") == 0)
+    {
+        return repiu::tools::RunMesaFxTextureSourceProbe() ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--pic-timer-in-service") == 0)
     {
         return repiu::tools::RunPicTimerInServiceProbe() ? 0 : 1;
@@ -793,16 +799,22 @@ int main(int argc, char** argv)
         std::strcmp(argv[2], "--xref") == 0;
     const bool dump_mode = argc == 4 &&
         std::strcmp(argv[2], "--dump") == 0;
+    // Writes every relocated object as `obj<N>_<base>.bin` under a directory,
+    // so a disassembler can read the image exactly as the guest runs it.
+    const bool dump_image_mode = argc == 4 &&
+        std::strcmp(argv[2], "--dump-image") == 0;
     const bool findstr_mode = argc == 4 &&
         std::strcmp(argv[2], "--findstr") == 0;
     const bool entry_mode = argc == 4 &&
         std::strcmp(argv[2], "--entry") == 0;
     if (argc != 2 && argc != 3 && !xref_mode && !dump_mode &&
+        !dump_image_mode &&
         !findstr_mode && !entry_mode)
     {
         std::cerr << "usage: repiu_aot_probe <DOS4GW.EXE> [guest-address]\n"
                   << "       repiu_aot_probe <DOS4GW.EXE> --xref <address>\n"
                   << "       repiu_aot_probe <DOS4GW.EXE> --dump <address>\n"
+                  << "       repiu_aot_probe <DOS4GW.EXE> --dump-image <directory>\n"
                   << "       repiu_aot_probe <DOS4GW.EXE> --findstr <text>\n"
                   << "       repiu_aot_probe <DOS4GW.EXE> --entry <address>\n";
         return 2;
@@ -858,6 +870,25 @@ int main(int argc, char** argv)
     if (findstr_mode)
     {
         ScanString(image, argv[3]);
+        return 0;
+    }
+    if (dump_image_mode)
+    {
+        std::filesystem::create_directories(argv[3]);
+        std::size_t index = 0;
+        for (const auto& object : image.objects)
+        {
+            std::ostringstream name;
+            name << "obj" << index++ << "_" << std::hex << std::setw(8)
+                 << std::setfill('0') << object.relocated_base_address
+                 << ".bin";
+            std::ofstream output(std::filesystem::path(argv[3]) / name.str(),
+                                 std::ios::binary);
+            output.write(reinterpret_cast<const char*>(object.memory.data()),
+                         static_cast<std::streamsize>(object.memory.size()));
+            std::cout << name.str() << " bytes=" << object.memory.size()
+                      << "\n";
+        }
         return 0;
     }
     if (dump_mode)
@@ -1180,6 +1211,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunHostPadInputProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunMesaFxTextureSourceProbe())
     {
         return 1;
     }

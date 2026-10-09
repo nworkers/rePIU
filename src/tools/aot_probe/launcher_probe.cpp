@@ -31,6 +31,7 @@ using repiu::launcher::SaveLauncherSettings;
 using repiu::launcher::kLauncherSwapIntervalVariable;
 using repiu::launcher::kLauncherYmzVolumeVariable;
 using repiu::launcher::kLauncherPostShaderVariable;
+using repiu::launcher::kLauncherTextureFullPrecisionVariable;
 
 std::filesystem::path MakeScratchDirectory(const std::string& name)
 {
@@ -172,6 +173,8 @@ bool ProbeSettingsRoundTrip()
     settings.last_rom_set = "pumpit8";
     settings.has_post_shader = true;
     settings.post_shader = "my_crt.glsl";
+    settings.has_texture_full_precision = true;
+    settings.texture_full_precision = false;
     const bool saved = SaveLauncherSettings(config, settings);
     const auto reloaded = LoadLauncherSettings(config);
     const bool round_trip = saved && reloaded.file_present &&
@@ -182,7 +185,9 @@ bool ProbeSettingsRoundTrip()
         reloaded.settings.ymz_volume < 0.51F &&
         reloaded.settings.last_rom_set == "pumpit8" &&
         reloaded.settings.has_post_shader &&
-        reloaded.settings.post_shader == "my_crt.glsl";
+        reloaded.settings.post_shader == "my_crt.glsl" &&
+        reloaded.settings.has_texture_full_precision &&
+        !reloaded.settings.texture_full_precision;
 
     // Absent keys stay absent rather than defaulting, so an unwritten option
     // never publishes anything.
@@ -194,18 +199,21 @@ bool ProbeSettingsRoundTrip()
         !reloaded_empty.settings.has_swap_interval &&
         !reloaded_empty.settings.has_ymz_volume &&
         !reloaded_empty.settings.has_post_shader &&
+        !reloaded_empty.settings.has_texture_full_precision &&
         reloaded_empty.settings.last_rom_set == "pumpit1";
 
     // A malformed value warns and is ignored; the rest of the file still
     // applies, matching the config-file rule the project already follows.
     WriteFile(LauncherSettingsPath(config),
               "[Video]\nswap_interval = later\n"
+              "texture_full_precision = maybe\n"
               "[Audio]\nymz_volume = loud\n"
               "[Launcher]\nlast_rom_set = pumpit3\n");
     const auto malformed = LoadLauncherSettings(config);
     const bool malformed_ok = malformed.file_present &&
-        malformed.warnings.size() == 2U &&
+        malformed.warnings.size() == 3U &&
         !malformed.settings.has_swap_interval &&
+        !malformed.settings.has_texture_full_precision &&
         !malformed.settings.has_ymz_volume &&
         malformed.settings.last_rom_set == "pumpit3";
 
@@ -223,6 +231,8 @@ bool ProbeEnvironmentPrecedence()
     settings.ymz_volume = 2.0F;
     settings.has_post_shader = true;
     settings.post_shader = "crt";
+    settings.has_texture_full_precision = true;
+    settings.texture_full_precision = false;
 
     std::vector<std::pair<std::string, std::string>> published;
     const auto publish = [&published](const char* name,
@@ -239,20 +249,26 @@ bool ProbeEnvironmentPrecedence()
         ApplyLauncherSettings(settings, free_overrides, publish);
     const bool free_ok = applied_free.swap_interval_published &&
         applied_free.ymz_volume_published &&
-        applied_free.post_shader_published && published.size() == 3U &&
+        applied_free.post_shader_published &&
+        applied_free.texture_full_precision_published &&
+        published.size() == 4U &&
         published[0].first == kLauncherSwapIntervalVariable &&
         published[0].second == "1" &&
         published[1].first == kLauncherYmzVolumeVariable &&
         published[2].first == kLauncherPostShaderVariable &&
-        published[2].second == "crt";
+        published[2].second == "crt" &&
+        published[3].first ==
+            std::string(kLauncherTextureFullPrecisionVariable) &&
+        published[3].second == "0";
 
     // An environment variable already set wins, even when empty.
     published.clear();
-    const auto held = ResolveLauncherEnvironmentOverrides("0", "", "");
+    const auto held = ResolveLauncherEnvironmentOverrides("0", "", "", "1");
     const auto applied_held = ApplyLauncherSettings(settings, held, publish);
     const bool held_ok = !applied_held.swap_interval_published &&
         !applied_held.ymz_volume_published &&
-        !applied_held.post_shader_published && published.empty();
+        !applied_held.post_shader_published &&
+        !applied_held.texture_full_precision_published && published.empty();
 
     // A partially set environment publishes only the other option.
     published.clear();
@@ -260,7 +276,7 @@ bool ProbeEnvironmentPrecedence()
     const auto applied_mixed = ApplyLauncherSettings(settings, mixed, publish);
     const bool mixed_ok = applied_mixed.swap_interval_published &&
         !applied_mixed.ymz_volume_published &&
-        applied_mixed.post_shader_published && published.size() == 2U &&
+        applied_mixed.post_shader_published && published.size() == 3U &&
         published[0].first == kLauncherSwapIntervalVariable &&
         published[1].first == kLauncherPostShaderVariable;
 

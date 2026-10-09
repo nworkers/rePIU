@@ -8,6 +8,8 @@
 #include <string_view>
 #include <unordered_map>
 
+#include "repiu/hle/mesa_fx_texture_source.h"
+
 namespace repiu::engine
 {
 
@@ -58,6 +60,10 @@ struct GlideTextureCensus
         dimension_counts = {};
     std::uint32_t dump_written_count = 0;
     bool dump_limit_reached = false;
+    // Issue #37: how each 4444/565 upload fared when looking for its
+    // full-precision original, indexed by hle::MesaFxSourceOutcome.
+    std::array<std::uint32_t, hle::kMesaFxSourceOutcomeCount>
+        full_precision_counts = {};
     // Last content hash per guest address. Not reported; it exists so a repeat
     // can be classified.
     std::unordered_map<std::uint32_t, std::uint64_t> address_hashes;
@@ -89,6 +95,8 @@ struct GlideTextureCensusSnapshot
         dimension_counts = {};
     std::uint32_t dump_written_count = 0;
     bool dump_limit_reached = false;
+    std::array<std::uint32_t, hle::kMesaFxSourceOutcomeCount>
+        full_precision_counts = {};
 };
 
 struct GlideTextureUpload
@@ -119,6 +127,8 @@ void RecordGlideTextureUpload(GlideTextureCensus* census,
 
 void RecordGlidePaletteDownload(GlideTextureCensus* census,
                                 bool identical);
+void RecordGlideTextureFullPrecision(GlideTextureCensus* census,
+                                     hle::MesaFxSourceOutcome outcome);
 void RecordGlidePaletteRefresh(GlideTextureCensus* census,
                                bool success,
                                std::size_t source_bytes,

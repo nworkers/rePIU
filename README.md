@@ -300,6 +300,10 @@ their parameters for that run. On the command line it is `repiu pumpit8 --post-s
 `REPIU_POST_SHADER=crt` and the launcher setting (Task 771). The format and
 a check procedure are in the [post-processing shader guide](docs/guides/post-process-shaders.md).*
 
+**텍스처 원본 정밀도(issue #37).** 게임에 내장된 그래픽 드라이버(Mesa 3.x)는 텍스처를 채널당 4bit(ARGB4444)·5/6bit(RGB565)로 잘라 하드웨어에 넘깁니다. rePIU는 드라이버가 들고 있는 원본 8bit 이미지를 찾아, 원본과 정확히 대응하는 것이 확인될 때만 대신 씁니다. 기본으로 켜져 있고, `Tab` OSD의 "Full-precision textures"나 런처의 같은 항목, `REPIU_GLIDE_TEXTURE_FULL_PRECISION=0`으로 끕니다. 끄면 아케이드 실기와 같은 화면입니다.
+
+*Full-precision textures (issue #37). The graphics driver built into the game (Mesa 3.x) cuts textures to 4 bits (ARGB4444) or 5/6 bits (RGB565) per channel before the hardware sees them. rePIU finds the original 8-bit image the driver still holds and uses it instead, only when it is verified to match exactly. It is on by default; turn it off with "Full-precision textures" in the `Tab` OSD or the launcher, or `REPIU_GLIDE_TEXTURE_FULL_PRECISION=0`, to see what the arcade hardware showed.*
+
 `Tab` OSD 맨 위에는 지금 화면을 그리는 OpenGL renderer, vendor, GL 버전, SDL 비디오 드라이버(`windows`,
 `x11`, `wayland`)가 나옵니다(#5). llvmpipe 같은 소프트웨어 렌더러면 빨간 글씨로 "Software rendering: no 3D
 acceleration"을 표시합니다. 게임이 유난히 느리면 먼저 여기를 보십시오. OSD는 화면 맨 위에 가로로

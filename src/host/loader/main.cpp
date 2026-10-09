@@ -3508,6 +3508,13 @@ void PrintExecutionAttempt(
             "Glide texture census dump written/limited: {}/{}",
             tex.dump_written_count,
             tex.dump_limit_reached ? "true" : "false");
+        // Issue #37: the full-precision texture path, by outcome.
+        logger.info(
+            "Glide texture full precision used/not-applicable/unreadable/"
+            "link-mismatch/data-mismatch/verify-mismatch: {}/{}/{}/{}/{}/{}",
+            tex.full_precision_counts[0], tex.full_precision_counts[1],
+            tex.full_precision_counts[2], tex.full_precision_counts[3],
+            tex.full_precision_counts[4], tex.full_precision_counts[5]);
         logger.info(
             "Glide palette downloads/changed/identical: {}/{}/{}",
             tex.palette_download_count, tex.palette_changed_count,
@@ -4813,11 +4820,12 @@ void PublishLauncherSettings(
         [](const char* name, const std::string& value) {
             repiu::platform::PublishEnvironmentSetting(name, value.c_str());
         });
-    logger->info("Launcher settings published swap-interval/volume/post-shader: "
-                 "{}/{}/{}",
+    logger->info("Launcher settings published swap-interval/volume/post-shader/"
+                 "full-precision-textures: {}/{}/{}/{}",
                  applied.swap_interval_published,
                  applied.ymz_volume_published,
-                 applied.post_shader_published);
+                 applied.post_shader_published,
+                 applied.texture_full_precision_published);
 }
 
 // Task 500 revision. The launcher has to load a GPU driver to draw anything,
@@ -4950,7 +4958,9 @@ int main(int argc, char** argv)
             repiu::launcher::ResolveLauncherEnvironmentOverrides(
                 std::getenv(repiu::launcher::kLauncherSwapIntervalVariable),
                 std::getenv(repiu::launcher::kLauncherYmzVolumeVariable),
-                std::getenv(repiu::launcher::kLauncherPostShaderVariable));
+                std::getenv(repiu::launcher::kLauncherPostShaderVariable),
+                std::getenv(
+                    repiu::launcher::kLauncherTextureFullPrecisionVariable));
         const char* const executable_path =
             argc >= 1 && argv[0] != nullptr ? argv[0] : "repiu.exe";
         bool launcher_available = true;
@@ -5025,7 +5035,9 @@ int main(int argc, char** argv)
                 repiu::launcher::ResolveLauncherEnvironmentOverrides(
                     std::getenv(repiu::launcher::kLauncherSwapIntervalVariable),
                     std::getenv(repiu::launcher::kLauncherYmzVolumeVariable),
-                    std::getenv(repiu::launcher::kLauncherPostShaderVariable));
+                    std::getenv(repiu::launcher::kLauncherPostShaderVariable),
+                    std::getenv(repiu::launcher::
+                                    kLauncherTextureFullPrecisionVariable));
             logger->info(
                 "Launcher settings read from {} for an argument run "
                 "(environment wins: swap-interval/volume {}/{})",

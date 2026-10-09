@@ -236,6 +236,7 @@ add_library(repiu_exe
     src/hle/glide_lfb_region.cpp
     src/hle/glide_texture_decode.cpp
     src/hle/glide_vertex.cpp
+    src/hle/mesa_fx_texture_source.cpp
     src/hle/hle_dispatcher.cpp
     src/hle/hle_profile.cpp
     src/hle/linexe_call_gate.cpp
@@ -799,6 +800,7 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/dos_console_device_probe.cpp
     src/tools/aot_probe/dos_console_input_probe.cpp
     src/tools/aot_probe/host_pad_input_probe.cpp
+    src/tools/aot_probe/mesa_fx_texture_source_probe.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
     src/tools/aot_probe/env_toggle_probe.cpp
     src/tools/aot_probe/far_jump_probe.cpp
@@ -1034,7 +1036,9 @@ if(WIN32)
         src/tools/aot_probe/dos_file_create_probe.cpp
         src/tools/aot_probe/dos_console_input_probe.cpp
         src/tools/aot_probe/host_pad_input_probe.cpp
+        src/tools/aot_probe/mesa_fx_texture_source_probe.cpp
     src/tools/aot_probe/host_pad_input_probe.cpp
+    src/tools/aot_probe/mesa_fx_texture_source_probe.cpp
         src/tools/aot_probe/dos_date_probe.cpp
         src/tools/aot_probe/glide_setter_state_cache_probe.cpp
         src/tools/aot_probe/glide_setter_phase_timing_probe.cpp
