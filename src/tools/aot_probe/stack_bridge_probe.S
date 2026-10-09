@@ -17,6 +17,16 @@ REPIU_STACK_BRIDGE RepiuStackBridgeProbeThunk, RepiuStackBridgeProbeResolver, g_
 // site pushed, adds the count, and returns there instead of to its caller.
 REPIU_STACK_BRIDGE RepiuStackBridgeProbeFallbackThunk, RepiuStackBridgeProbeResolver, g_repiu_bridge_context, g_repiu_bridge_host_esp, 15
 
+// Task 765. The refusal check's entry: EAX pinned before the thunk runs, so a
+// refusal that leaves the registers alone returns exactly this value.
+    .globl RepiuStackBridgeProbeRefusedCall
+    .type RepiuStackBridgeProbeRefusedCall, @function
+RepiuStackBridgeProbeRefusedCall:
+    mov eax, 0x0BADF00D
+    call RepiuStackBridgeProbeThunk
+    ret
+    .size RepiuStackBridgeProbeRefusedCall, .-RepiuStackBridgeProbeRefusedCall
+
 // The dispatch site the refusal has to land inside: it pushes an address and
 // calls, exactly as generated code does. The pushed address is fifteen bytes
 // short of the landing pad, so a correct refusal arrives there and a refusal
