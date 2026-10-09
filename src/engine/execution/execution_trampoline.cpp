@@ -843,40 +843,6 @@ int CaptureException(const repiu::platform::FaultEvent& fault,
                 }
                 context->exception_stack_dword_count = index + 1U;
             }
-            // Optional: dump the runtime (dynamic) AOT cache bytes for a configured
-            // guest address (REPIU_AOT_PROBE_GUEST). This lets a terminal fault
-            // compare the on-demand translation of a block against the static plan,
-            // to tell whether a runtime dynamic-cache divergence explains a
-            // corrupted guest value.
-            if (context->aot_placement != nullptr)
-            {
-                const char* probe_text = std::getenv("REPIU_AOT_PROBE_GUEST");
-                if (probe_text != nullptr && *probe_text != '\0')
-                {
-                    context->aot_probe_guest_address =
-                        static_cast<std::uint32_t>(
-                            std::strtoul(probe_text, nullptr, 0));
-                    std::uint32_t cache_address = 0;
-                    if (context->aot_probe_guest_address != 0 &&
-                        FindAotCacheAddress(*context->aot_placement,
-                                            context->aot_probe_guest_address,
-                                            &cache_address))
-                    {
-                        context->aot_probe_cache_address = cache_address;
-                        std::size_t copied = 0;
-                        if (repiu::platform::ReadMemoryForFaultReport(
-                                reinterpret_cast<const void*>(
-                                    static_cast<std::uintptr_t>(cache_address)),
-                                context->aot_probe_cache_bytes,
-                                sizeof(context->aot_probe_cache_bytes),
-                                &copied) &&
-                            copied == sizeof(context->aot_probe_cache_bytes))
-                        {
-                            context->aot_probe_cache_valid = 1;
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -2333,13 +2299,6 @@ bool HandleGuestLowMemoryReadFault(repiu::platform::GuestCpuContext* win32_conte
 
     WriteRegisterFromZydis(win32_context, operands[0].reg.value, final_val);
 
-    // Diagnostic (env-gated): this path permanently rewrites the guest
-    // instruction as NOPs below. That is safe only if the instruction belongs
-    // to code that never legitimately reads a non-zero address -- and the known
-    // caller is `mov al,[ebx]` inside a *shared* stricmp, where NOPing the byte
-    // load would break every later comparison, not just the null one. Log which
-    // instruction is being destroyed and how often so the blast radius is
-    // measurable before changing the strategy.
     // Step over the emulated load instead of rewriting it. The previous version
     // overwrote the instruction with NOPs, which resumed execution but did so by
     // destroying guest code permanently. The only observed site is
@@ -2347,40 +2306,6 @@ bool HandleGuestLowMemoryReadFault(repiu::platform::GuestCpuContext* win32_conte
     // removed the byte load for every later call -- silently corrupting every
     // filename-extension comparison in the game rather than crashing.
     win32_context->Eip = execute_eip + instruction.length;
-
-    {
-        static const bool low_mem_trace_enabled =
-            std::getenv("REPIU_LOWMEM_TRACE") != nullptr;
-        if (low_mem_trace_enabled)
-        {
-            static long low_mem_trace_count = 0;
-            static std::uint32_t seen_eips[32] = {};
-            static long seen_count = 0;
-            const long index = repiu::platform::AtomicIncrement(&low_mem_trace_count);
-            bool first_for_eip = true;
-            for (long i = 0; i < seen_count; ++i)
-            {
-                if (seen_eips[i] == execute_eip)
-                {
-                    first_for_eip = false;
-                    break;
-                }
-            }
-            if (first_for_eip && seen_count < 32)
-            {
-                seen_eips[seen_count++] = execute_eip;
-            }
-            if (first_for_eip || index <= 40)
-            {
-                fprintf(stderr,
-                        "[repiu-lowmem] #%ld %s guest_eip=0x%08X exec_eip=0x%08X"
-                        " fault_va=0x%08X len=%u value=0x%X -> stepped over\n",
-                        index, first_for_eip ? "NEW-SITE" : "repeat",
-                        decode_eip, execute_eip, calculated_address,
-                        instruction.length, final_val);
-            }
-        }
-    }
 
     context->debug_emulate_stage = 100; // Success
     context->debug_emulate_decode_result = instruction.length;
@@ -7774,12 +7699,6 @@ bool RunExecutionThread(
         context.exception_stack_dword_count;
     attempt->unhandled_breakpoint_evidence =
         context.unhandled_breakpoint_evidence;
-    attempt->aot_probe_guest_address = context.aot_probe_guest_address;
-    attempt->aot_probe_cache_address = context.aot_probe_cache_address;
-    attempt->aot_probe_cache_valid = context.aot_probe_cache_valid;
-    std::memcpy(attempt->aot_probe_cache_bytes,
-                context.aot_probe_cache_bytes,
-                sizeof(attempt->aot_probe_cache_bytes));
     WriteExecutionProbeDump(context.execution_probe_dump_request,
                                  &context.execution_probe_dump_result);
     CopyThreadObservationToAttempt(context, attempt);

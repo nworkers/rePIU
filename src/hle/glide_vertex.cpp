@@ -1,12 +1,19 @@
 #include "repiu/hle/glide_vertex.h"
 
-#include "repiu/hle/glide_vertex_depth_census.h"
-
 #include <cmath>
 #include <cstring>
 
 namespace repiu::hle
 {
+namespace
+{
+
+// A field the guest never writes still reads back as denormal garbage rather
+// than a clean zero, so `!= 0` cannot separate "populated" from "left alone".
+// Task 433 settled this floor while finding which field carries depth.
+constexpr float kGlideVertexDepthMeaningfulMagnitude = 1.0e-6F;
+
+}  // namespace
 
 bool DecodeGlideProducerVertex(const std::uint32_t* producer_dwords,
                                const std::size_t dword_count,
@@ -39,14 +46,6 @@ bool DecodeGlideProducerVertex(const std::uint32_t* producer_dwords,
             std::fabs(fields[6]) > kGlideVertexDepthMeaningfulMagnitude
         ? fields[6]
         : 0.0F;
-    // Task 433: this is the only place all three depth candidates are still
-    // visible -- `z`, `ooz` and `oow` -- so the census that decides which one
-    // the guest populates is taken here, before they are discarded.
-    if (GlideVertexDepthCensusEnabled())
-    {
-        RecordGlideVertexDepthSample(ActiveGlideVertexDepthCensus(),
-                                     fields[2], fields[6], fields[8]);
-    }
     return true;
 }
 

@@ -24,8 +24,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <filesystem>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -749,176 +747,6 @@ void RecordGlideTextureGateTrace(ThreadContext* context, const repiu::platform::
     }
 }
 
-// Task 332 frame dump. Enabled by REPIU_GLIDE_FRAME_DUMP, which names how many
-// swaps to skip between dumped frames; every draw of a dumped frame is logged.
-bool GlideFrameDumpEnabled()
-{
-    static const bool enabled =
-        std::getenv("REPIU_GLIDE_FRAME_DUMP") != nullptr;
-    return enabled;
-}
-
-long g_frame_dump_swap_index = 0;
-long g_frame_dump_frames_done = 0;
-bool g_frame_dump_active = false;
-
-void GlideAdvanceFrameDump()
-{
-    constexpr long kMaxDumpedFrames = 4;
-    const char* value = std::getenv("REPIU_GLIDE_FRAME_DUMP");
-    long interval = value != nullptr ? std::atol(value) : 0;
-    if (interval <= 0)
-    {
-        interval = 60;
-    }
-    ++g_frame_dump_swap_index;
-    if (g_frame_dump_active)
-    {
-        g_frame_dump_active = false;
-        ++g_frame_dump_frames_done;
-    }
-    if (g_frame_dump_frames_done < kMaxDumpedFrames &&
-        g_frame_dump_swap_index % interval == 0)
-    {
-        g_frame_dump_active = true;
-        fprintf(stderr, "[repiu-frame-dump] begin swap=%ld\n",
-                g_frame_dump_swap_index);
-    }
-}
-
-// Task 375: this used to serve the texture download path as well, which meant a
-// second decode of every texture purely for the dump and a 24-bit file that
-// dropped alpha -- the one channel the sprite investigation needed. Textures now
-// dump through the backend's TGA writer, and this remains for the LFB surface
-// alone.
-void DumpLfbSurfaceToBmp(std::uint32_t start_address, std::uint32_t format, std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& rgba)
-{
-    static std::uint32_t s_dump_counter = 0;
-    try
-    {
-        std::filesystem::path dump_dir = "build/texture_dumps";
-        std::filesystem::create_directories(dump_dir);
-
-        std::ostringstream filename_stream;
-        filename_stream << "tex_0x" << std::uppercase << std::hex << start_address
-                        << "_fmt" << std::dec << format
-                        << "_" << width << "x" << height
-                        << "_" << ++s_dump_counter << ".bmp";
-
-        std::filesystem::path filepath = dump_dir / filename_stream.str();
-        std::ofstream file(filepath, std::ios::binary);
-        if (!file)
-        {
-            return;
-        }
-
-        #pragma pack(push, 1)
-        struct BmpFileHeader
-        {
-            std::uint16_t bfType = 0x4D42;
-            std::uint32_t bfSize = 0;
-            std::uint16_t bfReserved1 = 0;
-            std::uint16_t bfReserved2 = 0;
-            std::uint32_t bfOffBits = 54;
-        };
-
-        struct BmpInfoHeader
-        {
-            std::uint32_t biSize = 40;
-            std::int32_t biWidth = 0;
-            std::int32_t biHeight = 0;
-            std::uint16_t biPlanes = 1;
-            std::uint16_t biBitCount = 32;
-            std::uint32_t biCompression = 0;
-            std::uint32_t biSizeImage = 0;
-            std::int32_t biXPelsPerMeter = 3780;
-            std::int32_t biYPelsPerMeter = 3780;
-            std::uint32_t biClrUsed = 0;
-            std::uint32_t biClrImportant = 0;
-        };
-        #pragma pack(pop)
-
-        // Write 24-bit bottom-up BI_RGB, the one BMP form every viewer handles.
-        // The previous 32-bit top-down form is legal but fragile: the fourth
-        // byte of a 32-bit BI_RGB pixel is officially reserved, so viewers
-        // disagree on whether it is alpha, and negative biHeight is uncommon
-        // enough that some refuse the file outright -- which reads as "the dump
-        // never happened" even though the bytes are correct.
-        const std::size_t row_padding = (4U - ((width * 3U) % 4U)) % 4U;
-        const std::size_t row_bytes = width * 3U + row_padding;
-        std::vector<std::uint8_t> bgr(row_bytes * height, 0U);
-        for (std::uint32_t y = 0; y < height; ++y)
-        {
-            // Bottom-up: BMP row 0 is the image's last row.
-            const std::uint32_t source_row = height - 1U - y;
-            std::uint8_t* out = bgr.data() + static_cast<std::size_t>(y) *
-                row_bytes;
-            for (std::uint32_t x = 0; x < width; ++x)
-            {
-                const std::size_t i =
-                    (static_cast<std::size_t>(source_row) * width + x) * 4U;
-                out[x * 3U + 0U] = rgba[i + 2U]; // B
-                out[x * 3U + 1U] = rgba[i + 1U]; // G
-                out[x * 3U + 2U] = rgba[i + 0U]; // R
-            }
-        }
-
-        BmpFileHeader file_header;
-        BmpInfoHeader info_header;
-        info_header.biBitCount = 24;
-        info_header.biWidth = static_cast<std::int32_t>(width);
-        info_header.biHeight = static_cast<std::int32_t>(height);
-        info_header.biSizeImage = static_cast<std::uint32_t>(bgr.size());
-        file_header.bfSize = sizeof(BmpFileHeader) + sizeof(BmpInfoHeader) +
-            info_header.biSizeImage;
-
-        file.write(reinterpret_cast<const char*>(&file_header), sizeof(file_header));
-        file.write(reinterpret_cast<const char*>(&info_header), sizeof(info_header));
-        file.write(reinterpret_cast<const char*>(bgr.data()), bgr.size());
-
-        // Alpha is where a texture "not showing" usually hides, and dropping it
-        // from the colour dump would lose that. Emit it as a separate grayscale
-        // image for formats that carry one.
-        const bool has_alpha = format == 8U || format == 11U || format == 12U ||
-            format == 13U || format == 14U || format == 2U || format == 4U;
-        if (has_alpha)
-        {
-            std::filesystem::path alpha_path = dump_dir /
-                (filename_stream.str().substr(
-                     0, filename_stream.str().size() - 4U) + "_alpha.bmp");
-            std::ofstream alpha_file(alpha_path, std::ios::binary);
-            if (alpha_file)
-            {
-                std::vector<std::uint8_t> mono(row_bytes * height, 0U);
-                for (std::uint32_t y = 0; y < height; ++y)
-                {
-                    const std::uint32_t source_row = height - 1U - y;
-                    std::uint8_t* out = mono.data() +
-                        static_cast<std::size_t>(y) * row_bytes;
-                    for (std::uint32_t x = 0; x < width; ++x)
-                    {
-                        const std::uint8_t a = rgba[(static_cast<std::size_t>(
-                            source_row) * width + x) * 4U + 3U];
-                        out[x * 3U + 0U] = a;
-                        out[x * 3U + 1U] = a;
-                        out[x * 3U + 2U] = a;
-                    }
-                }
-                alpha_file.write(reinterpret_cast<const char*>(&file_header),
-                                 sizeof(file_header));
-                alpha_file.write(reinterpret_cast<const char*>(&info_header),
-                                 sizeof(info_header));
-                alpha_file.write(reinterpret_cast<const char*>(mono.data()),
-                                 mono.size());
-            }
-        }
-    }
-    catch (...)
-    {
-        // Fail-safe to avoid crashing the loader on diagnostics
-    }
-}
-
 } // namespace
 
 void RecordAllocatorControlFlowException(
@@ -1638,27 +1466,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             std::copy(std::begin(context->glide_gate_stack),
                       std::end(context->glide_gate_stack),
                       context->glide_first_stacks[ordinal].begin());
-            // Audit diagnostic (env-gated, off by default): emit one line the
-            // first time each ordinal is ever called. Bounded by the export
-            // count (<=97 lines), so it survives both the 96-entry gate-entry
-            // log cap and the timeout path that skips the exit summary --
-            // the only way to enumerate the reached API set on a timed run.
-            static const bool call_audit_enabled =
-                std::getenv("REPIU_GLIDE_CALL_AUDIT") != nullptr;
-            if (call_audit_enabled)
-            {
-                fprintf(stderr,
-                        "[repiu-glide-audit] first-call ordinal=%u name=%s"
-                        " args=%08X %08X %08X %08X %08X %08X %08X\n",
-                        glide_export->ordinal, glide_export->name.c_str(),
-                        context->glide_gate_stack[1],
-                        context->glide_gate_stack[2],
-                        context->glide_gate_stack[3],
-                        context->glide_gate_stack[4],
-                        context->glide_gate_stack[5],
-                        context->glide_gate_stack[6],
-                        context->glide_gate_stack[7]);
-            }
             if (context->shared_live_telemetry != nullptr)
             {
                 using go = repiu::hle::GlideGateId;
@@ -2204,46 +2011,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             {
                 return decline_gate("texture-memory-required-invalid-info");
             }
-            // Task 332: the guest lays out its own TMU address space from this
-            // answer, so the declared GrTexInfo and the bytes returned are the
-            // other half of the size question the download arguments raise.
-            {
-                static const bool tex_census_enabled =
-                    std::getenv("REPIU_GLIDE_TEX_CENSUS") != nullptr;
-                static long mem_required_log_count = 0;
-                if (tex_census_enabled &&
-                    repiu::platform::AtomicIncrement(&mem_required_log_count) <= 24)
-                {
-                    // Every field decoded as zero while the pointer looks like a
-                    // real guest address, so the raw bytes decide between "the
-                    // guest really passes a zeroed struct" and "the struct is
-                    // packed differently than this 5x32-bit reading assumes".
-                    // Watcom sizes enums to the smallest type that fits, which
-                    // would make GrTexInfo four bytes of enum plus a pointer.
-                    char raw[3 * 24] = {};
-                    const auto* raw_bytes =
-                        reinterpret_cast<const std::uint8_t*>(info_address);
-                    int written = 0;
-                    if (IsGuestRangeReadable(context, info_address, 24U))
-                    {
-                        for (std::size_t i = 0; i < 24U; ++i)
-                        {
-                            written += std::snprintf(
-                                raw + written,
-                                sizeof(raw) - static_cast<std::size_t>(written),
-                                "%02X ", raw_bytes[i]);
-                        }
-                    }
-                    fprintf(stderr,
-                            "[repiu-tex-args] memrequired evenOdd=%u ptr=0x%08X"
-                            " smallLod=%u largeLod=%u aspect=%u format=%u"
-                            " data=0x%08X -> bytes=%u raw=%s\n",
-                            context->glide_gate_stack[1],
-                            context->glide_gate_stack[2], info.small_lod,
-                            info.large_lod, info.aspect_ratio, info.format,
-                            info.data, required_bytes, raw);
-                }
-            }
             ++context->glide_gate_handled_count;
             win32_context->Eax = required_bytes;
             win32_context->Eip = return_address;
@@ -2332,56 +2099,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 const bool dimensions_ok =
                     repiu::hle::CalculateGlideTextureDimensions(
                         large_lod, aspect_ratio, &dimensions);
-                static const bool format_census_enabled =
-                    std::getenv("REPIU_GLIDE_TEX_CENSUS") != nullptr;
-                // Format census (env-gated): count every download per format and
-                // record why one was dropped. Palette formats (P_8, AP_88) use the
-                // last downloaded palette when available, and the NCC formats are
-                // refused outright -- this separates "the
-                // game never uses that format" from "we silently drop it".
-                // Task 332: the raw arguments, because two readings of this run
-                // conflict. The font atlas decodes correctly as 256x256, yet the
-                // guest packs its textures 0x2000 apart, which is exactly one
-                // 64x64 16-bit map. Only the values the game actually passes can
-                // settle which size it means, so log every argument rather than
-                // the derived dimensions.
-                if (format_census_enabled)
-                {
-                    // Logging only the opening downloads missed the sprites
-                    // under investigation, which arrive with the select screen.
-                    // There are well under two hundred in a run.
-                    static long download_log_count = 0;
-                    if (repiu::platform::AtomicIncrement(&download_log_count) <= 200)
-                    {
-                        fprintf(stderr,
-                                "[repiu-tex-args] download tmu=%u addr=0x%08X"
-                                " thisLod=%u largeLod=%u aspect=%u format=%u"
-                                " evenOdd=%u data=0x%08X -> dims=%s%ux%u\n",
-                                args[1], start_address, args[3], large_lod,
-                                aspect_ratio, format, args[7], args[8],
-                                dimensions_ok ? "" : "INVALID ",
-                                dimensions_ok ? dimensions.width : 0U,
-                                dimensions_ok ? dimensions.height : 0U);
-                    }
-                }
-                if (format_census_enabled && format < 16U)
-                {
-                    static long format_counts[16] = {};
-                    const long seen = repiu::platform::AtomicIncrement(&format_counts[format]);
-                    if (seen <= 3)
-                    {
-                        fprintf(stderr,
-                                "[repiu-tex-census] format=%u lod=%u aspect=%u"
-                                " dims=%s%ux%u acceptable=%d addr=0x%08X seen=%ld\n",
-                                format, large_lod, aspect_ratio,
-                                dimensions_ok ? "" : "INVALID ",
-                                dimensions_ok ? dimensions.width : 0U,
-                                dimensions_ok ? dimensions.height : 0U,
-                                repiu::hle::IsGlideTextureFormatAcceptable(format)
-                                    ? 1 : 0,
-                                start_address, seen);
-                    }
-                }
                 if (dimensions_ok)
                 {
                     const std::size_t bytes_per_texel = format >= 8U ? 2U : 1U;
@@ -2427,19 +2144,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                                 record_backend_failure(
                                     "texture-download-backend-failure",
                                     context->glide_backend_message);
-                            }
-                        }
-                        if (format_census_enabled && !stored)
-                        {
-                            static long store_fail_log = 0;
-                            if (repiu::platform::AtomicIncrement(&store_fail_log) <= 12)
-                            {
-                                fprintf(stderr,
-                                        "[repiu-tex-census] STORE FAILED format=%u"
-                                        " %ux%u addr=0x%08X reason=%s\n",
-                                        format, dimensions.width, dimensions.height,
-                                        start_address,
-                                        context->glide_backend_message.c_str());
                             }
                         }
                     }
@@ -2929,15 +2633,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 }
                 return ContinueGlideSwapWait(win32_context, context,
                                              return_address);
-            }
-            // Task 332: every filter tried so far (quad size, texture size)
-            // spent its sample budget on other geometry, so dump whole frames
-            // instead. One complete frame of the screen in question lists the
-            // dot draws next to everything else and needs no guess about what
-            // distinguishes them.
-            if (GlideFrameDumpEnabled())
-            {
-                GlideAdvanceFrameDump();
             }
             // Task 511: the one place the attribution can be read on a host
             // where the guest thread never stops.
@@ -3521,189 +3216,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                     }
                 }
             }
-            // Task 332 draw census (env-gated): the reported symptom is that the
-            // small difficulty-level dots are missing while everything around
-            // them draws. Three causes produce that and need different fixes --
-            // the game never submits those quads, it submits them with a
-            // texture address that was never downloaded (so the draw is
-            // untextured), or it submits them textured and something later
-            // covers them. Bucketing every draw by bounding-box size and
-            // recording what each had bound separates the three. Small quads
-            // are sampled individually because they are the ones in question.
-            {
-                static const bool draw_census_enabled =
-                    std::getenv("REPIU_GLIDE_DRAW_CENSUS") != nullptr;
-                if (draw_census_enabled || GlideFrameDumpEnabled())
-                {
-                    const float width = max_x - min_x;
-                    const float height = max_y - min_y;
-                    // `small` is a windows.h macro, so the flag is named
-                    // explicitly.
-                    const bool is_small_quad =
-                        width <= 48.0F && height <= 48.0F;
-                    const bool textured =
-                        context->glide_backend.has_current_texture();
-                    static long small_draws = 0;
-                    static long small_untextured = 0;
-                    static long total_draws = 0;
-                    static long small_samples = 0;
-                    ++total_draws;
-                    // A texture smaller than the 256-texel Glide coordinate
-                    // space is where the two readings of the coordinate
-                    // convention diverge, and it is what the dots and the
-                    // arrows use, so those draws are sampled whatever their
-                    // size.
-                    const bool small_texture = textured &&
-                        (context->glide_backend.current_texture_width() <
-                             256U ||
-                         context->glide_backend.current_texture_height() <
-                             256U);
-                    // The symptom itself: the dots reach the screen as a few
-                    // pixels where the original draws roughly fourteen. Nothing
-                    // else on this screen is that small, so filtering on it
-                    // samples exactly the draws in question instead of spending
-                    // the budget on text and fading panels.
-                    if (g_frame_dump_active)
-                    {
-                        fprintf(stderr,
-                                "[repiu-frame-dump] draw bbox=%.2fx%.2f"
-                                " xy=(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f)"
-                                " st=(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f)"
-                                " textured=%d tex=0x%08X texdim=%ux%u"
-                                " const=0x%08X combine=%u/%u/%u/%u"
-                                " blend=%u/%u\n",
-                                width, height,
-                                vertices[0].x, vertices[0].y,
-                                vertices[1].x, vertices[1].y,
-                                vertices[2].x, vertices[2].y,
-                                vertices[0].s, vertices[0].t,
-                                vertices[1].s, vertices[1].t,
-                                vertices[2].s, vertices[2].t,
-                                textured ? 1 : 0,
-                                context->glide_backend.current_texture_address(),
-                                context->glide_backend.current_texture_width(),
-                                context->glide_backend.current_texture_height(),
-                                context->glide_state.constant_color,
-                                context->glide_state.color_combine.function,
-                                context->glide_state.color_combine.factor,
-                                context->glide_state.color_combine.local,
-                                context->glide_state.color_combine.other,
-                                context->glide_state.alpha_blend.rgb_source,
-                                context->glide_state.alpha_blend.rgb_destination);
-                    }
-                    const bool is_tiny_quad = width <= 8.0F && height <= 8.0F;
-                    static long tiny_samples = 0;
-                    if (draw_census_enabled && is_tiny_quad &&
-                        repiu::platform::AtomicIncrement(&tiny_samples) <= 40)
-                    {
-                        fprintf(stderr,
-                                "[repiu-draw-census] tiny #%ld bbox=%.2fx%.2f"
-                                " xy=(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f)"
-                                " st=(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f)"
-                                " textured=%d tex=0x%08X texdim=%ux%u"
-                                " const=0x%08X combine=%u/%u/%u/%u\n",
-                                tiny_samples, width, height,
-                                vertices[0].x, vertices[0].y,
-                                vertices[1].x, vertices[1].y,
-                                vertices[2].x, vertices[2].y,
-                                vertices[0].s, vertices[0].t,
-                                vertices[1].s, vertices[1].t,
-                                vertices[2].s, vertices[2].t,
-                                textured ? 1 : 0,
-                                context->glide_backend.current_texture_address(),
-                                context->glide_backend.current_texture_width(),
-                                context->glide_backend.current_texture_height(),
-                                context->glide_state.constant_color,
-                                context->glide_state.color_combine.function,
-                                context->glide_state.color_combine.factor,
-                                context->glide_state.color_combine.local,
-                                context->glide_state.color_combine.other);
-                    }
-                    if (draw_census_enabled && (is_small_quad || small_texture))
-                    {
-                        if (is_small_quad)
-                        {
-                            ++small_draws;
-                            if (!textured)
-                            {
-                                ++small_untextured;
-                            }
-                        }
-                        // The first draws of a run are the title text, so a
-                        // first-N sample never reaches the screen elements under
-                        // investigation. Sample the opening burst and then keep
-                        // sampling periodically, which reaches later screens
-                        // regardless of when they arrive.
-                        ++small_samples;
-                        static long printed_samples = 0;
-                        static long small_texture_samples = 0;
-                        const bool sample_this =
-                            ((small_texture &&
-                              repiu::platform::AtomicIncrement(&small_texture_samples) <=
-                                  30) ||
-                             small_samples <= 20 ||
-                             small_samples % 500 == 0) &&
-                            printed_samples < 160;
-                        if (sample_this)
-                        {
-                            ++printed_samples;
-                            fprintf(stderr,
-                                    "[repiu-draw-census] small #%ld bbox=%.1fx%.1f"
-                                    " xy=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f)"
-                                    " st=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f)"
-                                    " textured=%d texcombine=%d tex=0x%08X"
-                                    " texdim=%ux%u rgba0=(%.2f,%.2f,%.2f,%.2f)"
-                                    " const=0x%08X combine=%u/%u/%u/%u"
-                                    " alphatest=%u/%u blend=%u/%u/%u/%u\n",
-                                    small_samples, width, height,
-                                    vertices[0].x, vertices[0].y,
-                                    vertices[1].x, vertices[1].y,
-                                    vertices[2].x, vertices[2].y,
-                                    vertices[0].s, vertices[0].t,
-                                    vertices[1].s, vertices[1].t,
-                                    vertices[2].s, vertices[2].t,
-                                    textured ? 1 : 0,
-                                    context->glide_backend
-                                        .is_texture_combine_enabled() ? 1 : 0,
-                                    context->glide_backend
-                                        .current_texture_address(),
-                                    context->glide_backend
-                                        .current_texture_width(),
-                                    context->glide_backend
-                                        .current_texture_height(),
-                                    vertices[0].r, vertices[0].g,
-                                    vertices[0].b, vertices[0].a,
-                                    context->glide_state.constant_color,
-                                    context->glide_state.color_combine.function,
-                                    context->glide_state.color_combine.factor,
-                                    context->glide_state.color_combine.local,
-                                    context->glide_state.color_combine.other,
-                                    context->glide_state.alpha_test_function,
-                                    context->glide_state.alpha_test_reference,
-                                    context->glide_state.alpha_blend.rgb_source,
-                                    context->glide_state.alpha_blend
-                                        .rgb_destination,
-                                    context->glide_state.alpha_blend
-                                        .alpha_source,
-                                    context->glide_state.alpha_blend
-                                        .alpha_destination);
-                        }
-                    }
-                    if (total_draws % 500 == 0)
-                    {
-                        fprintf(stderr,
-                                "[repiu-draw-census] after %ld draws: small=%ld"
-                                " small-untextured=%ld stored-textures=%u"
-                                " missing-sources=%u last-missing=0x%08X\n",
-                                total_draws, small_draws, small_untextured,
-                                context->glide_backend.stored_texture_count(),
-                                context->glide_backend
-                                    .missing_texture_source_count(),
-                                context->glide_backend
-                                    .last_missing_texture_address());
-                    }
-                }
-            }
             if (!QueueGlideDrawForBatch(context, draw_batch, vertices, 3U,
                                         GlideBatchPrimitive::kTriangles) &&
                 !context->glide_backend.DrawTriangle(vertices[0], vertices[1], vertices[2]))
@@ -3740,67 +3252,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                         context->glide_state.color_combine.other,
                         context->glide_backend.is_texture_combine_enabled() ? 1 : 0,
                         before_non_black, after_non_black);
-            }
-            {
-                // Triangle census (env-gated): aggregate every draw by the combine mode
-                // and size bucket it used. The first-N sample cannot answer "why is the
-                // background missing" because the background may be many small tiles
-                // submitted after the UI text -- a histogram over all draws can.
-                static const bool tri_census_enabled =
-                    std::getenv("REPIU_GLIDE_TRI_CENSUS") != nullptr;
-                if (tri_census_enabled)
-                {
-                    struct Bucket
-                    {
-                        std::uint32_t function;
-                        std::uint32_t other;
-                        bool textured;
-                        long count;
-                        float max_w;
-                        float max_h;
-                    };
-                    static Bucket buckets[16] = {};
-                    static long bucket_count = 0;
-                    static long census_draws = 0;
-                    const std::uint32_t fn =
-                        context->glide_state.color_combine.function;
-                    const std::uint32_t ot = context->glide_state.color_combine.other;
-                    const bool textured =
-                        context->glide_backend.is_texture_combine_enabled();
-                    bool found = false;
-                    for (long b = 0; b < bucket_count; ++b)
-                    {
-                        if (buckets[b].function == fn && buckets[b].other == ot &&
-                            buckets[b].textured == textured)
-                        {
-                            ++buckets[b].count;
-                            buckets[b].max_w = std::max(buckets[b].max_w, max_x - min_x);
-                            buckets[b].max_h = std::max(buckets[b].max_h, max_y - min_y);
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found && bucket_count < 16)
-                    {
-                        buckets[bucket_count] = {fn, ot, textured, 1,
-                                                 max_x - min_x, max_y - min_y};
-                        ++bucket_count;
-                    }
-                    if (++census_draws % 400 == 0 && census_draws <= 4000)
-                    {
-                        fprintf(stderr,
-                                "[repiu-tri-census] after %ld draws:\n", census_draws);
-                        for (long b = 0; b < bucket_count; ++b)
-                        {
-                            fprintf(stderr,
-                                    "    combine fn=%u other=%u textured=%d"
-                                    " count=%ld max=%.0fx%.0f\n",
-                                    buckets[b].function, buckets[b].other,
-                                    buckets[b].textured ? 1 : 0, buckets[b].count,
-                                    buckets[b].max_w, buckets[b].max_h);
-                        }
-                    }
-                }
             }
             ++context->glide_gate_handled_count;
             win32_context->Eip = return_address;
@@ -4201,16 +3652,6 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                         context->glide_lfb_surface.height(),
                         context->glide_state.lfb_write_color_format, &rgba8))
                 {
-                    const char* lfb_dump = std::getenv("REPIU_DUMP_LFB_BMP");
-                    if (lfb_dump != nullptr && lfb_dump[0] == '1')
-                    {
-                        DumpLfbSurfaceToBmp(
-                            0x1FB,
-                            0,
-                            context->glide_lfb_surface.width(),
-                            context->glide_lfb_surface.height(),
-                            rgba8);
-                    }
                     const bool flip_v =
                         context->glide_lfb_surface.lock_origin() ==
                         repiu::hle::kGlideOriginLowerLeft;

@@ -529,10 +529,6 @@ struct MinimalExecutionAttempt
     std::uint32_t exception_stack_dwords[kExceptionStackDwordCapacity] = {};
     std::uint32_t exception_stack_dword_count = 0;
     UnhandledBreakpointEvidence unhandled_breakpoint_evidence;
-    std::uint32_t aot_probe_guest_address = 0;
-    std::uint32_t aot_probe_cache_address = 0;
-    std::uint32_t aot_probe_cache_valid = 0;
-    std::uint8_t aot_probe_cache_bytes[32] = {};
     std::uint32_t handled_fatal_breakpoint_count = 0;
     std::uint32_t last_fatal_breakpoint_address = 0;
     std::uint32_t last_fatal_message_address = 0;

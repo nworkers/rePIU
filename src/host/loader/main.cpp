@@ -2,7 +2,6 @@
 #include "repiu/assets/piu_chd_mount.h"
 #include "repiu/exe/dos16m_bound_module.h"
 #include "repiu/hle/dos_file_system.h"
-#include "repiu/hle/glide_vertex_depth_census.h"
 #include "repiu/hle/hle_dispatcher.h"
 #include "repiu/hle/privileged_instruction.h"
 #include "repiu/config/romset_config.h"
@@ -871,30 +870,6 @@ void PrintExecutionAttempt(
                 Hex32(breakpoint.stack_dwords[1]),
                 Hex32(breakpoint.stack_dwords[2]),
                 Hex32(breakpoint.stack_dwords[3]));
-        }
-        if (attempt.aot_probe_guest_address != 0)
-        {
-            logger.error(
-                "AOT runtime cache probe guest/cache/valid: {}/{}/{}",
-                Hex32(attempt.aot_probe_guest_address),
-                Hex32(attempt.aot_probe_cache_address),
-                attempt.aot_probe_cache_valid);
-            for (std::uint32_t base = 0;
-                 base < sizeof(attempt.aot_probe_cache_bytes); base += 16U)
-            {
-                std::string probe_line;
-                char byte_hex[4];
-                const std::uint32_t end = std::min<std::uint32_t>(
-                    base + 16U, sizeof(attempt.aot_probe_cache_bytes));
-                for (std::uint32_t index = base; index < end; ++index)
-                {
-                    std::snprintf(byte_hex, sizeof(byte_hex), " %02X",
-                                  attempt.aot_probe_cache_bytes[index]);
-                    probe_line += byte_hex;
-                }
-                logger.error("AOT runtime cache probe +{}:{}",
-                             Hex32(base), probe_line);
-            }
         }
         PrintX86ExecutionSnapshot(logger,
                                   "minimal execution exception",
@@ -3549,35 +3524,6 @@ void PrintExecutionAttempt(
                 1000000.0,
             static_cast<double>(tex.palette_refresh_upload_nanoseconds) /
                 1000000.0);
-        // Task 433: which vertex field actually carries depth. Reported only
-        // when the census ran, so a normal run's summary is unchanged.
-        if (const auto* depth = repiu::hle::ActiveGlideVertexDepthCensus();
-            depth != nullptr && depth->enabled)
-        {
-            logger.info(
-                "Glide vertex depth census samples/z-meaningful/"
-                "ooz-meaningful/oow-meaningful: {}/{}/{}/{}",
-                depth->sample_count, depth->z.meaningful_count,
-                depth->ooz.meaningful_count, depth->oow.meaningful_count);
-            logger.info(
-                "Glide vertex depth census z/ooz/oow meaningful ranges: "
-                "[{}, {}] / [{}, {}] / [{}, {}]",
-                depth->z.meaningful_minimum, depth->z.maximum,
-                depth->ooz.meaningful_minimum, depth->ooz.maximum,
-                depth->oow.meaningful_minimum, depth->oow.maximum);
-            logger.info(
-                "Glide vertex depth census z/ooz/oow nonzero (incl "
-                "denormals): {}/{}/{}",
-                depth->z.nonzero_count, depth->ooz.nonzero_count,
-                depth->oow.nonzero_count);
-            for (std::size_t index = 0; index < depth->raw_count; ++index)
-            {
-                logger.info(
-                    "Glide vertex depth sample #{} z/ooz/oow: {}/{}/{}",
-                    index, depth->raw_z[index], depth->raw_ooz[index],
-                    depth->raw_oow[index]);
-            }
-        }
         for (std::uint32_t index = 0;
              index < repiu::engine::kGlideTextureFormatBuckets;
              ++index)

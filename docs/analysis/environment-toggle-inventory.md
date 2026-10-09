@@ -97,10 +97,19 @@
 | `REPIU_DOS4GW_MEMORY_PATH_PROBE=pharlap` | Task 611 판정 "AH=4Ah까지 가지만 할당은 풀지 못함". 두 곳에서 게스트 경로를 바꾼다 |
 | `REPIU_DPMI_1E7F_PROBE_SUCCESS`(같은 블록의 `REPIU_DPMI_1E7F_TRACE`와 함께) | Task 599. 진단용으로 CF만 지워 가짜 성공을 돌려줬다. Task 606이 이 호출을 x64 word 스택 lowering 결함의 반환 주소 손상으로 확정했고 수정 뒤 기본 실행에서 사라졌으므로(`EXE_DESIGN.ko.md` 첫 절) 실행 없이 삭제했다 |
 
-#### 일회성 진단 — issue #25
+#### 일회성 진단 — issue #25에서 9개 삭제, 4개 유지(2026-10-09)
 
-이미 답이 나온 질문을 위해 넣은 진단이다. 비용은 거의 없지만 대부분 본문에 끼워 넣은
-블록이다.
+이미 답이 나온 질문을 위해 넣은 진단으로 올렸던 후보다. 코드에서 다시 읽어 "살아 있는
+기구를 재는 재사용 계측이거나 가이드·스크립트가 쓰면 유지"로 갈랐다. 설계는
+`docs/design/20261009-i025-delete-one-off-diagnostics.md`.
+
+* **삭제(9)**: 아래 Glide 7개, `REPIU_LOWMEM_TRACE`, `REPIU_AOT_PROBE_GUEST`.
+* **유지(4)**: `REPIU_AOT_DBT_CALL_TRACE`(trace 순번이 call frame에 저장돼 반환 대조에 쓰임,
+  #22 설계도 유지), `REPIU_AOT_RETIRED_TRAP_PROFILE`(살아 있는 retired trap의 계측, ARCHITECTURE
+  절과 probe 있음), `REPIU_GLIDE_SETTER_CENSUS`/`_PHASE`(캡처·생략 검증 가이드와 `task364`·
+  `task365` 스크립트가 씀).
+
+조사 때의 후보 목록:
 
 * Glide 렌더 초기 작업(07-22~08-01): `REPIU_GLIDE_CALL_AUDIT`, `REPIU_GLIDE_TEX_CENSUS`,
   `REPIU_GLIDE_DRAW_CENSUS`, `REPIU_GLIDE_TRI_CENSUS`, `REPIU_GLIDE_FRAME_DUMP`,
@@ -209,7 +218,14 @@ candidates; only some historical A/B scripts reference them (listed per group).
     only CF to fake success) — deleted without a run, because Task 606 traced the call to a
     return address corrupted by the x64 word-stack lowering defect and the default run no
     longer makes it.
-  * **One-off diagnostics, issue #25.** For questions already answered: the Glide bring-up
+  * **One-off diagnostics, issue #25 (2026-10-09): nine deleted, four kept.** Re-read in code
+    and split by "keep a reusable measurement of a live mechanism, or anything a guide or script
+    uses": deleted the seven Glide probes below, `REPIU_LOWMEM_TRACE` and
+    `REPIU_AOT_PROBE_GUEST`; kept `REPIU_AOT_DBT_CALL_TRACE` (its sequence number is stored in
+    call frames for return matching, and #22 kept it), `REPIU_AOT_RETIRED_TRAP_PROFILE` (measures
+    live retired traps, with an ARCHITECTURE section and a probe) and
+    `REPIU_GLIDE_SETTER_CENSUS`/`_PHASE` (used by the capture and elision guides and the
+    `task364`/`task365` scripts). The candidates as surveyed: the Glide bring-up
     probes (07-22 to 08-01) `REPIU_GLIDE_CALL_AUDIT`, `_TEX_CENSUS`, `_DRAW_CENSUS`,
     `_TRI_CENSUS`, `_FRAME_DUMP`, `REPIU_DUMP_LFB_BMP`, `REPIU_GLIDE_VERTEX_DEPTH_CENSUS`;
     `REPIU_LOWMEM_TRACE` (v0.0.81, undocumented, duplicated by `RecordLowMemoryAccess`); the
