@@ -51,6 +51,7 @@
 #include "dos_file_create_probe.h"
 #include "dos_console_input_probe.h"
 #include "host_pad_input_probe.h"
+#include "mesa_fx_texture_source_probe.h"
 #include "dos_date_probe.h"
 #include "glide_setter_state_cache_probe.h"
 #include "glide_gl_error_policy_probe.h"
@@ -706,6 +707,11 @@ int main(int argc, char** argv)
     {
         return repiu::tools::RunHostPadInputProbe() ? 0 : 1;
     }
+    if (argc == 2 &&
+        std::strcmp(argv[1], "--mesa-fx-texture-source") == 0)
+    {
+        return repiu::tools::RunMesaFxTextureSourceProbe() ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--pic-timer-in-service") == 0)
     {
         return repiu::tools::RunPicTimerInServiceProbe() ? 0 : 1;
@@ -1205,6 +1211,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunHostPadInputProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunMesaFxTextureSourceProbe())
     {
         return 1;
     }

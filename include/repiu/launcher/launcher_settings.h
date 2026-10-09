@@ -30,6 +30,9 @@ struct LauncherSettings
     // `shaders/`). Checked against the list by the engine, not here.
     bool has_post_shader = false;
     std::string post_shader;
+    // Issue #37: whether textures use the game's 8-bit originals.
+    bool has_texture_full_precision = false;
+    bool texture_full_precision = true;
     // Where the selection cursor starts next time. Not applied to the run.
     std::string last_rom_set;
 };
@@ -62,17 +65,20 @@ struct LauncherEnvironmentOverrides
     bool swap_interval = false;
     bool ymz_volume = false;
     bool post_shader = false;
+    bool texture_full_precision = false;
 };
 
 [[nodiscard]] LauncherEnvironmentOverrides ResolveLauncherEnvironmentOverrides(
     const char* swap_interval_value, const char* ymz_volume_value,
-    const char* post_shader_value);
+    const char* post_shader_value,
+    const char* texture_full_precision_value = nullptr);
 
 struct LauncherSettingsApplication
 {
     bool swap_interval_published = false;
     bool ymz_volume_published = false;
     bool post_shader_published = false;
+    bool texture_full_precision_published = false;
 };
 
 // Publishes the stored values the environment has not already claimed.
@@ -98,6 +104,8 @@ inline constexpr const char* kLauncherSwapIntervalVariable =
     "REPIU_GLIDE_SWAP_INTERVAL";
 inline constexpr const char* kLauncherYmzVolumeVariable = "REPIU_YMZ_VOLUME";
 inline constexpr const char* kLauncherPostShaderVariable = "REPIU_POST_SHADER";
+inline constexpr const char* kLauncherTextureFullPrecisionVariable =
+    "REPIU_GLIDE_TEXTURE_FULL_PRECISION";
 
 }  // namespace repiu::launcher
 

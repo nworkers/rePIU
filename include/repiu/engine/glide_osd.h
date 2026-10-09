@@ -64,6 +64,7 @@ public:
     // be null, which hides the shader menu; choosing a shader there compiles
     // it on the spot, which this thread and context allow.
     void Render(std::atomic<bool>* lfb_high_precision,
+                std::atomic<bool>* texture_full_precision,
                 GlidePostProcess* post_process);
 
     // #5. The renderer section at the top of the overlay. Set once, after the

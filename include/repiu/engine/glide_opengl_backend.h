@@ -169,13 +169,23 @@ public:
     // Decode a Glide texture download into an OpenGL texture keyed by its TMU
     // start address (R3). format/large_lod/aspect follow the observed
     // GrTexInfo; source is guest texel data of source_size bytes.
+    // Issue #37: `full_precision`, when given, is the outcome of looking for
+    // the game's original 8-bit image; on kUsed its RGBA8 is kept beside the
+    // game's data and uploaded while the full-precision option is on.
+    struct FullPrecisionTexture
+    {
+        hle::MesaFxSourceOutcome outcome =
+            hle::MesaFxSourceOutcome::kNotApplicable;
+        std::vector<std::uint8_t> rgba8;
+    };
     bool StoreTexture(std::uint32_t start_address,
                       std::uint32_t format,
                       std::uint32_t large_lod,
                       std::uint32_t aspect_ratio,
                       const std::uint8_t* source,
                       std::size_t source_size,
-                      const std::uint8_t* palette_rgba8 = nullptr);
+                      const std::uint8_t* palette_rgba8 = nullptr,
+                      const FullPrecisionTexture* full_precision = nullptr);
     // Glide stores palette indices separately from the palette. Register a new
     // palette generation; stale P_8/AP_88 sources are refreshed on first use.
     bool RefreshPalettizedTextures(const std::uint8_t* palette_rgba8);
@@ -236,6 +246,16 @@ public:
     void SetLfbHighPrecision(bool enabled)
     {
         lfb_high_precision_.store(enabled, std::memory_order_relaxed);
+    }
+
+    // Issue #37: the full-precision texture option. Default on; the initial
+    // value comes from REPIU_GLIDE_TEXTURE_FULL_PRECISION when the window
+    // opens (the same rule as above), and the OSD flips it afterwards. A change
+    // re-uploads every texture that has a full-precision image on the host
+    // thread's next event pump.
+    bool TextureFullPrecisionEnabled() const
+    {
+        return texture_full_precision_.load(std::memory_order_relaxed);
     }
     bool exit_requested() const { return exit_requested_; }
     bool is_texture_combine_enabled() const { return texture_combine_enabled_; }
@@ -386,7 +406,15 @@ private:
         std::uint32_t format = 0U;
         std::vector<std::uint8_t> source;
         std::uint64_t palette_generation = 0U;
+        // Issue #37: both images of a texture whose full-precision original
+        // was found, so the option can switch between them; empty otherwise.
+        std::vector<std::uint8_t> game_rgba8;
+        std::vector<std::uint8_t> full_precision_rgba8;
     };
+
+    // Issue #37: re-uploads the kept textures when the option has changed
+    // since they were last uploaded. Host thread.
+    void ApplyTextureFullPrecision();
 
     bool IsHostThread() const;
     void InvokeOnHostThread(std::function<void()> command);
@@ -580,6 +608,10 @@ private:
     std::unique_ptr<class GlidePostProcess> post_process_;
     // Task 761: see LfbHighPrecisionEnabled above.
     std::atomic<bool> lfb_high_precision_{true};
+    // Issue #37: see TextureFullPrecisionEnabled above. `applied` is what the
+    // GL textures currently hold; host thread only.
+    std::atomic<bool> texture_full_precision_{true};
+    bool texture_full_precision_applied_ = true;
     // Task 745: the engine's own swap pacing when the driver refused the
     // requested interval. Host thread only, like the swap itself.
     bool swap_pacing_enabled_ = false;

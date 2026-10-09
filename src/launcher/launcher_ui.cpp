@@ -128,6 +128,9 @@ bool SettingsDiffer(const LauncherSettings& left, const LauncherSettings& right)
         left.has_ymz_volume != right.has_ymz_volume ||
         left.has_post_shader != right.has_post_shader ||
         left.post_shader != right.post_shader ||
+        left.has_texture_full_precision !=
+            right.has_texture_full_precision ||
+        left.texture_full_precision != right.texture_full_precision ||
         left.last_rom_set != right.last_rom_set)
     {
         return true;
@@ -300,6 +303,25 @@ void DrawOptions(LauncherSettings* settings,
         ImGui::TextUnformatted(
             "Applied to the finished frame only. Add your own .glsl files to "
             "the shaders folder; Tab in game switches and tunes them.");
+        ImGui::EndTooltip();
+    }
+
+    // Issue #37: with nothing stored the engine uses the 8-bit originals.
+    bool full_precision = !settings->has_texture_full_precision ||
+        settings->texture_full_precision;
+    if (ImGui::Checkbox("Full-precision textures", &full_precision))
+    {
+        settings->has_texture_full_precision = true;
+        settings->texture_full_precision = full_precision;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::TextUnformatted(
+            "Uses the game's original 8-bit textures instead of the 4444/565 "
+            "copies its graphics driver makes. Off matches the arcade "
+            "hardware; Tab in game switches it too.");
         ImGui::EndTooltip();
     }
 

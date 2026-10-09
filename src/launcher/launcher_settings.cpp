@@ -19,6 +19,7 @@ constexpr const char* kLauncherSection = "Launcher";
 constexpr const char* kSwapIntervalKey = "swap_interval";
 constexpr const char* kYmzVolumeKey = "ymz_volume";
 constexpr const char* kPostShaderKey = "post_shader";
+constexpr const char* kTextureFullPrecisionKey = "texture_full_precision";
 constexpr const char* kLastRomSetKey = "last_rom_set";
 
 bool ParseInt32(const std::string& text, std::int32_t* value)
@@ -106,6 +107,21 @@ LauncherSettingsLoad LoadLauncherSettings(
         }
     }
     if (const std::string* value =
+            document.FindLast(kVideoSection, kTextureFullPrecisionKey))
+    {
+        if (*value == "0" || *value == "1")
+        {
+            load.settings.has_texture_full_precision = true;
+            load.settings.texture_full_precision = *value == "1";
+        }
+        else
+        {
+            load.warnings.push_back(origin + ": [Video] " +
+                                    kTextureFullPrecisionKey +
+                                    " is not 0 or 1: " + *value);
+        }
+    }
+    if (const std::string* value =
             document.FindLast(kAudioSection, kYmzVolumeKey))
     {
         float parsed = 0.0F;
@@ -151,6 +167,11 @@ bool SaveLauncherSettings(const std::filesystem::path& config_directory,
     {
         stream << kPostShaderKey << " = " << settings.post_shader << "\n";
     }
+    if (settings.has_texture_full_precision)
+    {
+        stream << kTextureFullPrecisionKey << " = "
+               << (settings.texture_full_precision ? 1 : 0) << "\n";
+    }
     stream << "\n[" << kAudioSection << "]\n";
     if (settings.has_ymz_volume)
     {
@@ -184,7 +205,8 @@ std::string BuildLauncherChildCommandLine(const std::string& executable_path,
 
 LauncherEnvironmentOverrides ResolveLauncherEnvironmentOverrides(
     const char* swap_interval_value, const char* ymz_volume_value,
-    const char* post_shader_value)
+    const char* post_shader_value,
+    const char* texture_full_precision_value)
 {
     LauncherEnvironmentOverrides overrides;
     // An empty value still counts as set: the caller chose to define it, and
@@ -192,6 +214,7 @@ LauncherEnvironmentOverrides ResolveLauncherEnvironmentOverrides(
     overrides.swap_interval = swap_interval_value != nullptr;
     overrides.ymz_volume = ymz_volume_value != nullptr;
     overrides.post_shader = post_shader_value != nullptr;
+    overrides.texture_full_precision = texture_full_precision_value != nullptr;
     return overrides;
 }
 
@@ -224,6 +247,13 @@ LauncherSettingsApplication ApplyLauncherSettings(
     {
         publish(kLauncherPostShaderVariable, settings.post_shader);
         application.post_shader_published = true;
+    }
+    if (settings.has_texture_full_precision &&
+        !overrides.texture_full_precision)
+    {
+        publish(kLauncherTextureFullPrecisionVariable,
+                settings.texture_full_precision ? "1" : "0");
+        application.texture_full_precision_published = true;
     }
     return application;
 }

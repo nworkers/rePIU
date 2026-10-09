@@ -198,6 +198,7 @@ void DrawPostProcessMenu(GlidePostProcess* post_process)
 }  // namespace
 
 void GlideOsd::Render(std::atomic<bool>* lfb_high_precision,
+                      std::atomic<bool>* texture_full_precision,
                       GlidePostProcess* post_process)
 {
     if (!initialized_ || !visible_)
@@ -247,6 +248,28 @@ void GlideOsd::Render(std::atomic<bool>* lfb_high_precision,
             {
                 lfb_high_precision->store(enabled,
                                           std::memory_order_relaxed);
+            }
+        }
+        // Issue #37: the game's own driver cuts textures to 4444/565; this
+        // swaps in the 8-bit originals it still holds.
+        if (texture_full_precision != nullptr)
+        {
+            bool enabled =
+                texture_full_precision->load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("Full-precision textures (8-bit)", &enabled))
+            {
+                texture_full_precision->store(enabled,
+                                              std::memory_order_relaxed);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::BeginItemTooltip())
+            {
+                ImGui::TextUnformatted(
+                    "Uses the game's original 8-bit textures instead of the "
+                    "4444/565 copies its graphics driver makes. Off matches "
+                    "the arcade hardware.");
+                ImGui::EndTooltip();
             }
         }
         if (post_process != nullptr)

@@ -14,6 +14,7 @@
 #include "repiu/hle/glide_lfb.h"
 #include "repiu/hle/glide_lfb_region.h"
 #include "repiu/hle/glide_vertex.h"
+#include "repiu/hle/mesa_fx_texture_source.h"
 #include "repiu/runtime/selector_table.h"
 
 #include <algorithm>
@@ -2124,9 +2125,49 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                             context->glide_state.palette_valid
                             ? context->glide_state.palette_rgba8.data()
                             : nullptr;
+                        // Issue #37: the game's Mesa driver made this 4444 or
+                        // 565 data from an 8-bit original it still holds; find
+                        // and verify that original by reading guest memory.
+                        GlideOpenGlBackend::FullPrecisionTexture full_precision;
+                        const bool full_precision_candidate =
+                            format == 10U || format == 12U;
+                        if (full_precision_candidate)
+                        {
+                            const repiu::hle::MesaFxGuestReader reader =
+                                [context](std::uint32_t address, void* out,
+                                          std::size_t size) {
+                                    const auto* guest =
+                                        reinterpret_cast<const void*>(
+                                            static_cast<std::uintptr_t>(
+                                                address));
+                                    if (size == 0U ||
+                                        !IsGuestRangeReadable(context, guest,
+                                                              size))
+                                    {
+                                        return false;
+                                    }
+                                    std::memcpy(out, guest, size);
+                                    return true;
+                                };
+                            repiu::hle::MesaFxGateState gate;
+                            gate.esi =
+                                static_cast<std::uint32_t>(win32_context->Esi);
+                            gate.ebp =
+                                static_cast<std::uint32_t>(win32_context->Ebp);
+                            gate.esp =
+                                static_cast<std::uint32_t>(win32_context->Esp);
+                            gate.data_address = args[8];
+                            full_precision.outcome =
+                                repiu::hle::BuildMesaFxFullPrecisionTexture(
+                                    reader, gate, format, dimensions.width,
+                                    dimensions.height, data, source_size,
+                                    &full_precision.rgba8);
+                        }
                         const bool stored = context->glide_backend.StoreTexture(
                             start_address, format, large_lod, aspect_ratio, data,
-                            source_size, palette_ptr);
+                            source_size, palette_ptr,
+                            full_precision_candidate ? &full_precision
+                                                     : nullptr);
                         context->glide_backend_message =
                             context->glide_backend.message();
                         if (!stored)
