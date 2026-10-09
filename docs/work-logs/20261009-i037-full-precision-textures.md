@@ -55,6 +55,35 @@
 단위로 같다"이므로, 끌 때 원본을 다시 잘라 만들면 같은 이미지가 나온다. 그러면 추가분이 절반(상한
 약 16MB)이 되고, 토글하는 순간 변환 계산이 든다. 사용자 결정(2026-10-09)으로 지금은 두 벌을 유지한다.
 
+## Linux 검증 (2026-10-10)
+
+환경과 트리는 #24 작업 로그의 같은 절과 같다(Ubuntu 26.04.1, RTX 4090, 실행은 x11, main
+`2809668`).
+
+* **빌드**: Linux i386·x64 Release, 모든 기본 타깃 통과, 경고는 원래 있던 것뿐.
+* **core probe**: 두 아키텍처 모두 `mesa_fx_texture_source_all=true`, `launcher_all=true`,
+  `core_probe_failures=0`.
+* **게임 실행**: `scripts/survey_romsets.sh`(실행 시한으로 끝남, 기본 옵션이라 원본 정밀도 켬).
+  OSD 토글은 하지 않았다.
+
+  | 아키텍처 | 롬셋 | 실행 | 원본 정밀도 used / 실패 |
+  |---|---|---|---|
+  | x64 | pumpitea | 90초 1회 | 121 / 0 |
+  | x64 | pumpit8 | 90초 8회 | 정상 종료 7회 38~103 / 0, 1회는 아래 segfault |
+  | i386 | pumpitea | 90초 1회 | 66 / 0 |
+  | i386 | pumpit8 | 90초 1회 | 154 / 0 |
+
+  다섯 가지 실패 결과(not-applicable·unreadable·link-mismatch·data-mismatch·verify-mismatch)는
+  모든 실행에서 0이다. 프레임 수가 실행마다 크게 흔들린 것은 #6의 숨겨진 창 vsync 상태로,
+  #22 때와 같다.
+* **관찰: x64 실행 시한 순간의 segfault.** x64 pumpit8 90초 실행 하나가 `elapsed_ms=90000`,
+  즉 `REPIU_EXECUTION_TIMEOUT_MS` 만료 순간에 `[repiu-fault] unhandled signal=0xb
+  rip=0x200283 ... eip=0x200283 ... eflags=0x210283`로 끝났다(exit 139, 종료 사유와 최종
+  집계 줄 없음). 게임 진행 중이 아니라 시한 종료 경로에서 났고, 텍스처 경로와의 관련은 확인되지
+  않았다. EIP가 EFLAGS의 하위 비트와 같아 플래그 값이 반환 주소로 쓰인 모양이지만 추정이다.
+  x64 pumpit8 18회(90초 8회, 30초 10회) 중 1회로, 같은 기기의 #22 x64 survey 수십 회에는 없었다.
+  빈도가 낮아 회귀 여부는 판단하지 않았다.
+
 ---
 
 # Work log: full-precision textures bypassing the embedded Mesa fx 4444 truncation (issue #37)
@@ -94,3 +123,30 @@ entry at once. GPU memory is unchanged. `game_rgba8` is redundant: an original i
 re-truncating it equals the game's data byte for byte, so it can be rebuilt from the original on
 switching off, halving the extra memory (about 16 MB bound) at the cost of a conversion per toggle.
 Both copies stay for now by the user's decision on 2026-10-09.
+
+**Linux verification (2026-10-10).** In the environment and tree of the same section in #24's work
+log (Ubuntu 26.04.1, RTX 4090, running on x11, main `2809668`): Linux i386 and x64 Release builds of
+every default target pass with only pre-existing warnings, and the core probe reports
+`mesa_fx_texture_source_all=true`, `launcher_all=true` and `core_probe_failures=0` on both. Game
+runs through `scripts/survey_romsets.sh` (ended by the execution timeout, default options so full
+precision on, no OSD toggles):
+
+| Architecture | ROM set | Runs | Full precision used / failed |
+|---|---|---|---|
+| x64 | pumpitea | one, 90 s | 121 / 0 |
+| x64 | pumpit8 | eight, 90 s | seven clean exits, 38 to 103 / 0; one ended in the segfault below |
+| i386 | pumpitea | one, 90 s | 66 / 0 |
+| i386 | pumpit8 | one, 90 s | 154 / 0 |
+
+All five failure outcomes (not-applicable, unreadable, link-mismatch, data-mismatch,
+verify-mismatch) are zero in every run. Frame counts swung widely between runs, the hidden-window
+vsync state of #6, as in #22.
+
+**Observed: an x64 segfault at the execution timeout.** One x64 pumpit8 90 s run ended at
+`elapsed_ms=90000`, the moment `REPIU_EXECUTION_TIMEOUT_MS` expired, with
+`[repiu-fault] unhandled signal=0xb rip=0x200283 ... eip=0x200283 ... eflags=0x210283` (exit 139,
+no shutdown reason or final census lines). It happened on the timeout shutdown path, not in play,
+and no link to the texture path is established. EIP equals EFLAGS' low bits, which looks like a
+flags value used as a return address, but that is inferred. It is one of 18 x64 pumpit8 runs (eight
+of 90 s, ten of 30 s) and absent from the dozens of #22 x64 survey runs on the same machine; at that
+rate whether it is a regression was not judged.
