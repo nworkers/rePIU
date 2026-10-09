@@ -50,6 +50,7 @@
 
 probe의 기본값·마스크 단언과 설정 probe의 기본값 단언을 새 배치로 고쳤고, 가이드·설계·ARCHITECTURE를
 갱신했다. Win32 `--host-pad-input`·`--romset-config`(94개)·core probe, Linux x64 core probe 통과.
+이어 가운데에 `Start`를 더했고(사용자 요청), 사용자가 실제 패드로 새 배치를 확인했다.
 
 ## 확인하지 않은 것
 
@@ -92,7 +93,8 @@ for `COIN1`,
 no pad default for `TEST` and `SERVICE`, and `CLEAR` kept on Pad1's right stick click (not
 mentioned). The probes' default and mask assertions and the config probe's default assertion follow
 the new layout, and the guide, design and ARCHITECTURE are updated; the Win32 `--host-pad-input`,
-`--romset-config` (94 checks) and core probes and the Linux x64 core probe pass.
+`--romset-config` (94 checks) and core probes and the Linux x64 core probe pass. Start was then added
+to the center at the user's request, and the user confirmed the new layout on a real pad.
 
 **Not checked.** Nothing could be run on a device here, but the user confirmed the feature on a real
 gamepad (2026-10-09); whether a dance-pad joystick (`Joy<N>_`) was tried was not reported. The Linux
