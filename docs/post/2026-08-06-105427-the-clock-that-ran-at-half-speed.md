@@ -1,7 +1,7 @@
 # The Clock That Ran at Half Speed: From a Note-Jumping Report to a One-Line Default
 
-범위: [`7583fde`](https://github.com/nworkers/rePIU/commit/7583fde)(v0.0.132)부터
-[`e341c8f`](https://github.com/nworkers/rePIU/commit/e341c8f)(v0.0.134)까지
+범위: [`7583fde`](https://github.com/reexec/rePIU/commit/7583fde)(v0.0.132)부터
+[`e341c8f`](https://github.com/reexec/rePIU/commit/e341c8f)(v0.0.134)까지
 
 ## 주요 변경 사항
 
@@ -281,12 +281,12 @@ bounded backlog입니다. 하는 일은 정확히 하나 — 전달을 나르던
 
 이 사슬과 독립적으로 두 가지가 같은 범위에 들어 있습니다.
 
-* [`78366f8`](https://github.com/nworkers/rePIU/commit/78366f8) (v0.0.133) —
+* [`78366f8`](https://github.com/reexec/rePIU/commit/78366f8) (v0.0.133) —
   실행 backend를 `legacy`와 `dynamic` 둘로 줄였습니다. `aot`와 `aot-dynamic`은 제거
   시점에 이미 pumpit3에서 이미지 생성에 실패하고 있었고, 옛 이름은 별칭 없이
   거부합니다.
-* [`2038829`](https://github.com/nworkers/rePIU/commit/2038829) ·
-  [`3b5073c`](https://github.com/nworkers/rePIU/commit/3b5073c) — OpenWatcom 샘플
+* [`2038829`](https://github.com/reexec/rePIU/commit/2038829) ·
+  [`3b5073c`](https://github.com/reexec/rePIU/commit/3b5073c) — OpenWatcom 샘플
   baseline을 v0.0.59에서 v0.0.133으로 갱신하고, 통과 판정에 **완주 요구**를
   추가했습니다.
 
@@ -316,7 +316,7 @@ AOT timer safe-point  trap/injected/deferred:                 4010/3988/22
    대기를 진행으로 인정해야 합니다. 그때까지 측정은 `REPIU_EXECUTION_TIMEOUT_MS=0`
    + 하니스 시간 제한으로 우회합니다.
 2. **3D 모델이 깨져 보입니다.** 이 범위 직후
-   [`6ab688a`](https://github.com/nworkers/rePIU/commit/6ab688a)(v0.0.135)에서 원인이
+   [`6ab688a`](https://github.com/reexec/rePIU/commit/6ab688a)(v0.0.135)에서 원인이
    Glide 정점 깊이(`ooz`)를 디코더가 읽지 않아 모든 정점이 `z=0`으로 나가던 것으로
    확인됐습니다. 다음 글의 주제입니다.
 
@@ -349,7 +349,7 @@ xychart-beta
 ```
 
 **한 가지 주의를 함께 적습니다.** 위 535는 **옛 판정 기준**으로 측정된 값입니다.
-[`3b5073c`](https://github.com/nworkers/rePIU/commit/3b5073c)가 판정에 완주 요구를
+[`3b5073c`](https://github.com/reexec/rePIU/commit/3b5073c)가 판정에 완주 요구를
 추가했기 때문입니다.
 
 ```powershell
@@ -373,11 +373,11 @@ $runPassed = $run.ExitCode -eq 0 -and
 
 | 내용 | 커밋 |
 |---|---|
-| CD 위치 census · MSCDEX 명령 trace · `Stop()` 멱등화 · 감시 정체 규명 (Tasks 421~423) | [`7583fde`](https://github.com/nworkers/rePIU/commit/7583fde) |
-| 실행 backend를 legacy/dynamic으로 통합 (Tasks 424~427) | [`78366f8`](https://github.com/nworkers/rePIU/commit/78366f8) |
-| OpenWatcom 샘플 baseline 갱신 (Task 428) | [`2038829`](https://github.com/nworkers/rePIU/commit/2038829) |
-| 샘플 통과 기준에 완주 요구 추가 (Task 429) | [`3b5073c`](https://github.com/nworkers/rePIU/commit/3b5073c) |
-| 틱 시계열 · 게이트 귀속 · backlog 기본값 (Tasks 430~432) | [`e341c8f`](https://github.com/nworkers/rePIU/commit/e341c8f) |
+| CD 위치 census · MSCDEX 명령 trace · `Stop()` 멱등화 · 감시 정체 규명 (Tasks 421~423) | [`7583fde`](https://github.com/reexec/rePIU/commit/7583fde) |
+| 실행 backend를 legacy/dynamic으로 통합 (Tasks 424~427) | [`78366f8`](https://github.com/reexec/rePIU/commit/78366f8) |
+| OpenWatcom 샘플 baseline 갱신 (Task 428) | [`2038829`](https://github.com/reexec/rePIU/commit/2038829) |
+| 샘플 통과 기준에 완주 요구 추가 (Task 429) | [`3b5073c`](https://github.com/reexec/rePIU/commit/3b5073c) |
+| 틱 시계열 · 게이트 귀속 · backlog 기본값 (Tasks 430~432) | [`e341c8f`](https://github.com/reexec/rePIU/commit/e341c8f) |
 
 ### 교훈
 
@@ -520,8 +520,8 @@ Task 430에서 제 예상이 틀렸을 때 이 절차가 값을 했습니다. �
 
 # The Clock That Ran at Half Speed: From a Note-Jumping Report to a One-Line Default
 
-Range: [`7583fde`](https://github.com/nworkers/rePIU/commit/7583fde) (v0.0.132) through
-[`e341c8f`](https://github.com/nworkers/rePIU/commit/e341c8f) (v0.0.134)
+Range: [`7583fde`](https://github.com/reexec/rePIU/commit/7583fde) (v0.0.132) through
+[`e341c8f`](https://github.com/reexec/rePIU/commit/e341c8f) (v0.0.134)
 
 ## Major Changes
 
@@ -801,12 +801,12 @@ cost would show.
 
 Two independent items sit in the same range.
 
-* [`78366f8`](https://github.com/nworkers/rePIU/commit/78366f8) (v0.0.133) — the execution
+* [`78366f8`](https://github.com/reexec/rePIU/commit/78366f8) (v0.0.133) — the execution
   backends were reduced to `legacy` and `dynamic`. `aot` and `aot-dynamic` were already
   failing to build the pumpit3 image at the time of removal, and the old names are rejected
   without aliases.
-* [`2038829`](https://github.com/nworkers/rePIU/commit/2038829) ·
-  [`3b5073c`](https://github.com/nworkers/rePIU/commit/3b5073c) — the OpenWatcom sample
+* [`2038829`](https://github.com/reexec/rePIU/commit/2038829) ·
+  [`3b5073c`](https://github.com/reexec/rePIU/commit/3b5073c) — the OpenWatcom sample
   baseline moved from v0.0.59 to v0.0.133, and the pass criterion gained a **completion
   requirement**.
 
@@ -837,7 +837,7 @@ runs **174 seconds and 8,023 frames into gameplay**, and the note/BGA jumping ax
    services), or a tick wait needs to count as progress. Until then, measurements go through
    `REPIU_EXECUTION_TIMEOUT_MS=0` with the harness bounding the run.
 2. **The 3D model renders corrupted.** Immediately after this range,
-   [`6ab688a`](https://github.com/nworkers/rePIU/commit/6ab688a) (v0.0.135) traced it to Glide
+   [`6ab688a`](https://github.com/reexec/rePIU/commit/6ab688a) (v0.0.135) traced it to Glide
    vertex depth: the decoder never read `ooz`, so every vertex left with `z = 0`. That is the
    next post.
 
@@ -871,7 +871,7 @@ xychart-beta
 ```
 
 **One caveat belongs with that number.** The 535 was measured under the **old** criterion,
-because [`3b5073c`](https://github.com/nworkers/rePIU/commit/3b5073c) added a completion
+because [`3b5073c`](https://github.com/reexec/rePIU/commit/3b5073c) added a completion
 requirement afterwards.
 
 ```powershell
@@ -896,11 +896,11 @@ not code regressions.**
 
 | Content | Commit |
 |---|---|
-| CD position census, MSCDEX command trace, idempotent `Stop()`, watchdog identified (Tasks 421-423) | [`7583fde`](https://github.com/nworkers/rePIU/commit/7583fde) |
-| Execution backends consolidated to legacy/dynamic (Tasks 424-427) | [`78366f8`](https://github.com/nworkers/rePIU/commit/78366f8) |
-| OpenWatcom sample baseline refresh (Task 428) | [`2038829`](https://github.com/nworkers/rePIU/commit/2038829) |
-| Completion requirement in the sample pass criterion (Task 429) | [`3b5073c`](https://github.com/nworkers/rePIU/commit/3b5073c) |
-| Tick time series, gate attribution, backlog default (Tasks 430-432) | [`e341c8f`](https://github.com/nworkers/rePIU/commit/e341c8f) |
+| CD position census, MSCDEX command trace, idempotent `Stop()`, watchdog identified (Tasks 421-423) | [`7583fde`](https://github.com/reexec/rePIU/commit/7583fde) |
+| Execution backends consolidated to legacy/dynamic (Tasks 424-427) | [`78366f8`](https://github.com/reexec/rePIU/commit/78366f8) |
+| OpenWatcom sample baseline refresh (Task 428) | [`2038829`](https://github.com/reexec/rePIU/commit/2038829) |
+| Completion requirement in the sample pass criterion (Task 429) | [`3b5073c`](https://github.com/reexec/rePIU/commit/3b5073c) |
+| Tick time series, gate attribution, backlog default (Tasks 430-432) | [`e341c8f`](https://github.com/reexec/rePIU/commit/e341c8f) |
 
 ### Lessons
 

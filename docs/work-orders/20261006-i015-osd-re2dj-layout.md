@@ -1,6 +1,6 @@
 # #15 작업 지시: re2DJ 형태의 OSD와 창 크기에 비례하는 UI 글자
 
-Issue: [#15](https://github.com/nworkers/rePIU/issues/15) · 설계: [20261006-i015](../design/20261006-i015-osd-re2dj-layout.md)
+Issue: [#15](https://github.com/reexec/rePIU/issues/15) · 설계: [20261006-i015](../design/20261006-i015-osd-re2dj-layout.md)
 
 ## 절차
 
@@ -22,7 +22,7 @@ probe가 두 호스트에서 통과하고, OSD가 화면 맨 위 가로 전체 �
 
 # #15 Work Order: An OSD in the re2DJ Layout, and UI Text That Scales with the Window
 
-Issue: [#15](https://github.com/nworkers/rePIU/issues/15) · Design: [20261006-i015](../design/20261006-i015-osd-re2dj-layout.md)
+Issue: [#15](https://github.com/reexec/rePIU/issues/15) · Design: [20261006-i015](../design/20261006-i015-osd-re2dj-layout.md)
 
 ## Steps
 

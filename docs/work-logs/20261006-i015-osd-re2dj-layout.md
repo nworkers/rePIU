@@ -1,6 +1,6 @@
 # #15 작업 로그: re2DJ 형태의 OSD와 창 크기에 비례하는 UI 글자
 
-Issue: [#15](https://github.com/nworkers/rePIU/issues/15) · 설계: [20261006-i015](../design/20261006-i015-osd-re2dj-layout.md) ·
+Issue: [#15](https://github.com/reexec/rePIU/issues/15) · 설계: [20261006-i015](../design/20261006-i015-osd-re2dj-layout.md) ·
 작업 지시: [20261006-i015](../work-orders/20261006-i015-osd-re2dj-layout.md)
 
 ## 요약
@@ -39,7 +39,7 @@ ProggyForever입니다.
 | 검증 | 결과 |
 |---|---|
 | Win32 Release 빌드(ImGui 1.92.9) | exit 0, 바뀐 파일에 새 경고 없음 |
-| Win32 core probe | `imgui_ui_scale_all=true`. `core_probe_all=false`는 기존 [#8](https://github.com/nworkers/rePIU/issues/8) 하나 |
+| Win32 core probe | `imgui_ui_scale_all=true`. `core_probe_all=false`는 기존 [#8](https://github.com/reexec/rePIU/issues/8) 하나 |
 | Win32 AOT probe `--imgui-ui-scale` | true |
 | Win32 pumpit1 OSD 캡처 2배(1280×960)·1배(640×480)·전체화면(3840×2160) | 세 크기 모두 맨 위 가로 전체 폭, 첫 두 줄 정상, 글자가 창에 비례, ProggyForever. 1,922프레임, 실패 0 |
 | Win32 런처 캡처 기본(960×640)·최대화(3840×2054) | 글자·열·버튼이 함께 커짐, 두 크기 모두 스크롤바 없음 |
@@ -59,7 +59,7 @@ ProggyForever입니다.
 
 # #15 Work Log: An OSD in the re2DJ Layout, and UI Text That Scales with the Window
 
-Issue: [#15](https://github.com/nworkers/rePIU/issues/15) · Design: [20261006-i015](../design/20261006-i015-osd-re2dj-layout.md) ·
+Issue: [#15](https://github.com/reexec/rePIU/issues/15) · Design: [20261006-i015](../design/20261006-i015-osd-re2dj-layout.md) ·
 Work order: [20261006-i015](../work-orders/20261006-i015-osd-re2dj-layout.md)
 
 ## Summary
@@ -101,7 +101,7 @@ The font is ProggyForever from ImGui 1.92.9, as in re2DJ.
 | Check | Result |
 |---|---|
 | Win32 Release build (ImGui 1.92.9) | exit 0, no new warnings in the changed files |
-| Win32 core probe | `imgui_ui_scale_all=true`. `core_probe_all=false` comes only from the existing [#8](https://github.com/nworkers/rePIU/issues/8) |
+| Win32 core probe | `imgui_ui_scale_all=true`. `core_probe_all=false` comes only from the existing [#8](https://github.com/reexec/rePIU/issues/8) |
 | Win32 AOT probe `--imgui-ui-scale` | true |
 | Win32 pumpit1 OSD captures at 2x (1280×960), 1x (640×480), fullscreen (3840×2160) | full width at the top at all three, the first two lines right, text proportional to the window, ProggyForever. 1,922 frames, no failure |
 | Win32 launcher captures, default (960×640) and maximised (3840×2054) | text, columns and buttons grow together; no scroll bar at either size |

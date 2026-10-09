@@ -1,6 +1,6 @@
 # #6 설계: direct 모델에서도 swap 대기 중 타이머 tick 전달
 
-Issue: [#6](https://github.com/nworkers/rePIU/issues/6) ·
+Issue: [#6](https://github.com/reexec/rePIU/issues/6) ·
 선행: [Task 750 설계](20260928-750-timer-ticks-during-the-swap-wait.md), [Task 762](20260930-762-timer-handler-return-pad.md),
 [Task 773 로그의 "느린 상태의 정체"](../work-logs/20261005-773-glide-gate-relink-cost.md)
 
@@ -143,7 +143,7 @@ resolver가 쓰고 곧바로 출구 코드가 읽습니다).
 
 # #6 Design: Timer Ticks During the Swap Wait on the Direct Model Too
 
-Issue: [#6](https://github.com/nworkers/rePIU/issues/6) ·
+Issue: [#6](https://github.com/reexec/rePIU/issues/6) ·
 Prior: [Task 750 design](20260928-750-timer-ticks-during-the-swap-wait.md), [Task 762](20260930-762-timer-handler-return-pad.md),
 ["What the slow state is" in the Task 773 log](../work-logs/20261005-773-glide-gate-relink-cost.md)
 

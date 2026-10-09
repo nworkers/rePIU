@@ -106,7 +106,7 @@ flowchart LR
 
 ## 느린 상태의 정체 (#6, 같은 날)
 
-Issue: [#6](https://github.com/nworkers/rePIU/issues/6)
+Issue: [#6](https://github.com/reexec/rePIU/issues/6)
 
 **느린 상태는 이 작업의 변경 때문이 아닙니다. 게임 창이 화면에 보이지 않을 때 생깁니다.** 컴포지터는 숨겨진 창의 vsync swap을
 약 1 fps로 늦추고, direct 모델(i386)은 swap이 끝날 때까지 게스트 스레드가 gate 안에서 기다리며 그동안 타이머 tick을 받지 못합니다.
@@ -261,7 +261,7 @@ deliberate load, and the tick delivery path (the reasons behind `deferred`) of a
 
 ## What the slow state is (#6, same day)
 
-Issue: [#6](https://github.com/nworkers/rePIU/issues/6)
+Issue: [#6](https://github.com/reexec/rePIU/issues/6)
 
 **The slow state does not come from this task's change. It happens when the game window is not visible.** The compositor
 slows a hidden window's vsync swaps to about 1 fps, and on the direct model (i386) the guest thread waits inside the gate

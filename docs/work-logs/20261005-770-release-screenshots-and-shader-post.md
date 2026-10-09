@@ -26,7 +26,7 @@
 
 * `scripts/site/build_site.py --offline`(scratchpad venv): 성공, `internal links: ok`, posts 7개(새 글 포함),
   릴리스 타임라인에 v0.0.200. 두 언어 `index.html`에 `screenshots/` 참조 17개. 글의 이미지는
-  `https://github.com/nworkers/rePIU/raw/main/docs/screenshots/shaders/…`로 바뀌어 main push 뒤에 보입니다.
+  `https://github.com/reexec/rePIU/raw/main/docs/screenshots/shaders/…`로 바뀌어 main push 뒤에 보입니다.
 * 헤드리스 Edge로 한국어 소개(1280 폭)와 영어 소개(390 폭)를 렌더링해 격자와 설명을 눈으로 확인했습니다. 1280
   폭에서는 3열, 좁은 폭에서는 1열입니다. 390 폭 렌더는 오른쪽이 잘렸지만 변경 전 사이트도 같은 자리에서 잘려,
   헤드리스 Edge의 최소 창 폭 때문으로 봅니다. 격자 항목에는 이미지 고유 폭(640)이 열을 넓히지 않도록
@@ -70,7 +70,7 @@ Work order: [20261005-770](../work-orders/20261005-770-release-screenshots-and-s
 
 * `scripts/site/build_site.py --offline` (scratchpad venv): succeeds with `internal links: ok`, 7 posts including the
   new one, and v0.0.200 on the release timeline; both languages' `index.html` reference `screenshots/` 17 times. The
-  post's images become `https://github.com/nworkers/rePIU/raw/main/docs/screenshots/shaders/…` and show once main is
+  post's images become `https://github.com/reexec/rePIU/raw/main/docs/screenshots/shaders/…` and show once main is
   pushed.
 * Headless Edge renders of the Korean introduction (1280 wide) and the English one (390 wide) were checked by eye:
   three columns at 1280, one when narrow. The 390-wide render is cut on the right, but the site before this change

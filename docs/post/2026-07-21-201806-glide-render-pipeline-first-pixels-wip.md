@@ -1,6 +1,6 @@
 # Glide Render Pipeline: From Black Screen to First Pixels — Work in Progress 3
 
-범위: [`c96fef2`](https://github.com/nworkers/rePIU/commit/c96fef20d4eee6c31d234d1700394e17a005305d)부터 [`9718bf8`](https://github.com/nworkers/rePIU/commit/9718bf85fa167229edf86cf72af25bcb53dfb2dc)까지 (v0.0.35 → v0.0.77)
+범위: [`c96fef2`](https://github.com/reexec/rePIU/commit/c96fef20d4eee6c31d234d1700394e17a005305d)부터 [`9718bf8`](https://github.com/reexec/rePIU/commit/9718bf85fa167229edf86cf72af25bcb53dfb2dc)까지 (v0.0.35 → v0.0.77)
 
 지난 포스트의 주제는 "얼마나 빨리 실행되는가"였다. Native AOT 동적 번역기를 도입해 single-step trap 오버헤드를 줄이는 작업이었다.
 
@@ -24,22 +24,22 @@ flowchart TD
     D1 -->|수정| E["에셋 파싱 통과 → 프레임 루프 도달"]
 ```
 
-* **LE cross-page fixup 부호확장** ([`c4c2aad`](https://github.com/nworkers/rePIU/commit/c4c2aad4291bbc1b01ecb8f2b8b9c2c5d82b57a0), v0.0.52). fixup record의 `source_offset` 값 `0xFFFF`는 페이지 경계를 걸친 fixup을 뜻하는 `-1`인데, 이를 부호 확장 없이 사용해 게스트 명령어 자체를 덮어썼다. `int16_t` 부호확장으로 수정했다. 이 근인을 잡기까지 watchpoint 조사가 여러 차례 실패했고, 결정적 관측 기법은 trap 백엔드의 full 단일스텝이었다.
-* **DOS 파일 핸들 재활용** ([`c1ffbc0`](https://github.com/nworkers/rePIU/commit/c1ffbc01afe1c8c496ee02820ca182e8a4261755), v0.0.54). HLE의 `OpenDosFile`이 핸들 번호를 단조 증가시키고 `CloseDosFile`에서 회수하지 않았다. 게임이 파일을 16번 순차로 열고 닫으면(동시 열림은 1~2개뿐) 16번째 open이 핸들 20을 받는다. 그런데 게스트 Watcom clib의 핸들 플래그 테이블은 정확히 20칸이고, `table[20]`의 주소가 곧 그 테이블의 베이스 포인터 슬롯이다. 게스트가 `table[20]`에 쓰는 순간 베이스 포인터가 `0x4041`로 손상됐다. 실제 DOS는 가장 낮은 free 핸들을 반환하고 close 시 회수하므로 핸들 번호가 5~6을 벗어나지 않는다. lowest-free 할당으로 수정했다.
-* **DOS/4GW 저지대 read 허용** ([`e55644e`](https://github.com/nworkers/rePIU/commit/e55644e0f5e706de2e9f3b0c1fd69f3f42a7ac42), v0.0.58). 빈 텍스처 descriptor를 파싱하다 주소 0을 읽는 경로가 있다. DOS/4GW에서는 저지대가 매핑되어 있어 무해하지만 Win32에서는 널 페이지 fault다. 데이터 버그가 아니라 HLE 격차로 재분류하고 읽기를 에뮬레이트했다.
-* **arena 사이징** ([`b2c817f`](https://github.com/nworkers/rePIU/commit/b2c817fd35b6f875c42ba24adf577d0c376945af), v0.0.47). 32-bit EBX resize 요청을 존중하고, 게임의 측정된 약 83 MiB 힙 수요에 맞춰 arena를 잡아 arena-end 오버플로우를 제거했다.
+* **LE cross-page fixup 부호확장** ([`c4c2aad`](https://github.com/reexec/rePIU/commit/c4c2aad4291bbc1b01ecb8f2b8b9c2c5d82b57a0), v0.0.52). fixup record의 `source_offset` 값 `0xFFFF`는 페이지 경계를 걸친 fixup을 뜻하는 `-1`인데, 이를 부호 확장 없이 사용해 게스트 명령어 자체를 덮어썼다. `int16_t` 부호확장으로 수정했다. 이 근인을 잡기까지 watchpoint 조사가 여러 차례 실패했고, 결정적 관측 기법은 trap 백엔드의 full 단일스텝이었다.
+* **DOS 파일 핸들 재활용** ([`c1ffbc0`](https://github.com/reexec/rePIU/commit/c1ffbc01afe1c8c496ee02820ca182e8a4261755), v0.0.54). HLE의 `OpenDosFile`이 핸들 번호를 단조 증가시키고 `CloseDosFile`에서 회수하지 않았다. 게임이 파일을 16번 순차로 열고 닫으면(동시 열림은 1~2개뿐) 16번째 open이 핸들 20을 받는다. 그런데 게스트 Watcom clib의 핸들 플래그 테이블은 정확히 20칸이고, `table[20]`의 주소가 곧 그 테이블의 베이스 포인터 슬롯이다. 게스트가 `table[20]`에 쓰는 순간 베이스 포인터가 `0x4041`로 손상됐다. 실제 DOS는 가장 낮은 free 핸들을 반환하고 close 시 회수하므로 핸들 번호가 5~6을 벗어나지 않는다. lowest-free 할당으로 수정했다.
+* **DOS/4GW 저지대 read 허용** ([`e55644e`](https://github.com/reexec/rePIU/commit/e55644e0f5e706de2e9f3b0c1fd69f3f42a7ac42), v0.0.58). 빈 텍스처 descriptor를 파싱하다 주소 0을 읽는 경로가 있다. DOS/4GW에서는 저지대가 매핑되어 있어 무해하지만 Win32에서는 널 페이지 fault다. 데이터 버그가 아니라 HLE 격차로 재분류하고 읽기를 에뮬레이트했다.
+* **arena 사이징** ([`b2c817f`](https://github.com/reexec/rePIU/commit/b2c817fd35b6f875c42ba24adf577d0c376945af), v0.0.47). 32-bit EBX resize 요청을 존중하고, 게임의 측정된 약 83 MiB 힙 수요에 맞춰 arena를 잡아 arena-end 오버플로우를 제거했다.
 
 이 축에서 반복된 교훈은 분명하다. "게스트가 이상하게 동작한다"는 관측은 거의 항상 HLE가 원본 환경의 계약을 어겼다는 신호였고, 게스트 코드를 고치려는 시도는 매번 회귀로 돌아왔다.
 
 ### 2. 실행 인프라 견고화
 
-* **AOT return inline cache 확장** ([`fd2f906`](https://github.com/nworkers/rePIU/commit/fd2f906cb7ab9791e8ce5bfd3b4f0b00e9414431), v0.0.46). Glide 진입 이후 디코드가 멈추는 현상을 라이브 텔레메트리로 추적한 결과 return-target thrashing이었다. 단일 엔트리 캐시를 4-엔트리 체인으로 넓혀 해소했다.
-* **execution_trampoline 모듈 분해** ([`d1673e2`](https://github.com/nworkers/rePIU/commit/d1673e24451824e53ab6206bfa978100e5b15415), v0.0.60). 하나의 거대 파일에 누적되던 실행 트램펄린을 책임별 하위 시스템 모듈로 분리했다. AGENTS.md의 "독립적으로 이름 붙일 수 있는 하위 시스템은 전용 파일로 추출한다" 규칙을 뒤늦게 적용한 정리 작업이다.
-* **AOT/Glide 게이트 누수** ([`b1d80ad`](https://github.com/nworkers/rePIU/commit/b1d80ad44f702e1824044d278a355ad51111b00b), v0.0.66). zero-EIP 크래시의 근인은 미처리 게이트의 stdcall 스택 누수였다. 스택 스캔 복구를 도입해 수정한 뒤 `aot-dynamic`이 180초를 생존하며 메인 렌더 프레임 루프에 진입했다.
+* **AOT return inline cache 확장** ([`fd2f906`](https://github.com/reexec/rePIU/commit/fd2f906cb7ab9791e8ce5bfd3b4f0b00e9414431), v0.0.46). Glide 진입 이후 디코드가 멈추는 현상을 라이브 텔레메트리로 추적한 결과 return-target thrashing이었다. 단일 엔트리 캐시를 4-엔트리 체인으로 넓혀 해소했다.
+* **execution_trampoline 모듈 분해** ([`d1673e2`](https://github.com/reexec/rePIU/commit/d1673e24451824e53ab6206bfa978100e5b15415), v0.0.60). 하나의 거대 파일에 누적되던 실행 트램펄린을 책임별 하위 시스템 모듈로 분리했다. AGENTS.md의 "독립적으로 이름 붙일 수 있는 하위 시스템은 전용 파일로 추출한다" 규칙을 뒤늦게 적용한 정리 작업이다.
+* **AOT/Glide 게이트 누수** ([`b1d80ad`](https://github.com/reexec/rePIU/commit/b1d80ad44f702e1824044d278a355ad51111b00b), v0.0.66). zero-EIP 크래시의 근인은 미처리 게이트의 stdcall 스택 누수였다. 스택 스캔 복구를 도입해 수정한 뒤 `aot-dynamic`이 180초를 생존하며 메인 렌더 프레임 루프에 진입했다.
 
 ### 3. Glide ABI 정합
 
-* **grTexMinAddress / grTexMaxAddress stdcall 복원** ([`74482d8`](https://github.com/nworkers/rePIU/commit/74482d859e8488a8fba935fad7b790c60fa3c9ba), v0.0.62). `fxTMInit(gc, tmu)`가 `EAX`(gc)=0으로 크래시했다. 처음에는 "Mesa 컨텍스트가 할당되지 않았다"고 판단해 동적 널 레지스터 패칭을 설계했으나, 이는 오진이었다. gc는 게임이 `malloc(0x1C88)`로 정상 할당한다. 실제 근인은 `fxTMInit`이 gc를 `[esp]`에 보관한 뒤 두 게이트를 **stdcall(피호출자가 인자 pop)** 로 전제하고 `mov eax,[esp]`로 복원한다는 점이었다. 직전 작업이 이 게이트를 cdecl로 바꿔 인자 2개가 스택에 남았고, 복원 시 gc 대신 leftover `0`을 읽었다. xref로 `fxTMInit`이 두 thunk의 유일한 호출자임을 확인하고 stdcall을 복원했다.
+* **grTexMinAddress / grTexMaxAddress stdcall 복원** ([`74482d8`](https://github.com/reexec/rePIU/commit/74482d859e8488a8fba935fad7b790c60fa3c9ba), v0.0.62). `fxTMInit(gc, tmu)`가 `EAX`(gc)=0으로 크래시했다. 처음에는 "Mesa 컨텍스트가 할당되지 않았다"고 판단해 동적 널 레지스터 패칭을 설계했으나, 이는 오진이었다. gc는 게임이 `malloc(0x1C88)`로 정상 할당한다. 실제 근인은 `fxTMInit`이 gc를 `[esp]`에 보관한 뒤 두 게이트를 **stdcall(피호출자가 인자 pop)** 로 전제하고 `mov eax,[esp]`로 복원한다는 점이었다. 직전 작업이 이 게이트를 cdecl로 바꿔 인자 2개가 스택에 남았고, 복원 시 gc 대신 leftover `0`을 읽었다. xref로 `fxTMInit`이 두 thunk의 유일한 호출자임을 확인하고 stdcall을 복원했다.
 
 이 사건은 "에러 메시지가 사라졌다"가 진전의 증거가 아닐 수 있음을 보여준다. cdecl 변경은 `fxTMInit`을 더 일찍 크래시시켜 이후 `fxTMGetTMBlock` 에러에 도달하지 못하게 만든 회귀였을 뿐이다.
 
@@ -75,22 +75,22 @@ flowchart LR
     B5 --> DIAG["glReadPixels 비검정 픽셀 카운트<br/>(REPIU_GLIDE_PIXEL_DIAG)"]
 ```
 
-* **R0 게이트 안전망 + R1 프레임 제시** ([`ef89335`](https://github.com/nworkers/rePIU/commit/ef893351dda8aac4167e626418b722f9d800c8e9), v0.0.69). `PIU.EXE`가 참조하는 장식 Glide 이름은 97개인데 시그니처 카탈로그에는 44개만 등록되어 있었다. 미등록 이름은 호출 즉시 `signature-mismatch` 거부 → 미처리 게이트 크래시로 이어진다. 97개 전체를 카탈로그화하고 기본 핸들러(stdcall 정리 + 상태 반환)를 도입해 이 위험을 원천 차단했다. 그리고 `_GRBUFFERCLEAR@12`와 `_GRBUFFERSWAP@4`를 실제 `glClear`/`SwapBuffers`에 연결했다.
+* **R0 게이트 안전망 + R1 프레임 제시** ([`ef89335`](https://github.com/reexec/rePIU/commit/ef893351dda8aac4167e626418b722f9d800c8e9), v0.0.69). `PIU.EXE`가 참조하는 장식 Glide 이름은 97개인데 시그니처 카탈로그에는 44개만 등록되어 있었다. 미등록 이름은 호출 즉시 `signature-mismatch` 거부 → 미처리 게이트 크래시로 이어진다. 97개 전체를 카탈로그화하고 기본 핸들러(stdcall 정리 + 상태 반환)를 도입해 이 위험을 원천 차단했다. 그리고 `_GRBUFFERCLEAR@12`와 `_GRBUFFERSWAP@4`를 실제 `glClear`/`SwapBuffers`에 연결했다.
 
   이 시점의 프로파일링에서 중요한 사실이 드러났다. 게임은 60fps 프레임 루프에 안정적으로 정착했지만 `grDrawTriangle` 계열 호출이 **단 한 번도 없었다.** 게임이 죽은 것이 아니라, 메인 로직이 비-Glide 하위 시스템(I/O, EEPROM, 사운드)의 상태를 기다리며 그리기를 건너뛰고 빈 프레임만 스왑하고 있었던 것이다.
 
-* **화면 공간 직교 투영** ([`4c92428`](https://github.com/nworkers/rePIU/commit/4c92428272041ba7e7ce6215f780de32fea20c3a), v0.0.73). draw 호출이 나오기 시작한 뒤에도 창은 여전히 검정이었다. 런타임 정점 캡처로 게임이 640×480 **화면 픽셀 좌표**를 넘긴다는 것을 확인했는데, 백엔드가 `glOrtho`를 설정하지 않아 `ftransform()`이 단위 투영행렬을 적용했고, 픽셀 좌표(x≈288, y≈330)가 NDC `[-1,1]` 밖으로 나가 **모든 삼각형이 클리핑**됐다. 관측된 `grSstWinOpen origin=1`(GR_ORIGIN_UPPER_LEFT)에 맞춰 y가 뒤집힌 `glOrtho(0, w, h, 0, -1, 1)`를 도입했다. 비검정 픽셀이 0에서 18,176으로 바뀌었다.
-* **R2 정점 색상 + R3 텍스처 경로** ([`ad7631c`](https://github.com/nworkers/rePIU/commit/ad7631c31b95bc37b687b2114e9abaf80944e6eb), v0.0.74). 확정된 60바이트 2-TMU `GrVertex`의 색 필드를 `glColor4f`로 반영했다(흰색 고정 제거). 이어서 콘텐츠 draw가 `grColorCombine` function 3 = SCALE_OTHER = TEXTURE로 텍스처를 출력함을 확인하고, 플랫폼 공용 디코드 모듈(`src/hle/glide_texture_decode.{h,cpp}`), 백엔드 텍스처 캐시, GLSL `sampler2D` 샘플링을 구현했다.
-* **R4 알파 블렌딩** ([`4b713ca`](https://github.com/nworkers/rePIU/commit/4b713ca80d2e4184ace8b6c24024bd6f90da2868), v0.0.75). R3에서 투명 텍스처가 불투명 검정으로 렌더됐다. 관측된 블렌드 함수는 2종 — `(4,0,4,0)` = ONE,ZERO(불투명)와 `(1,5,4,0)` = SRC_ALPHA/ONE_MINUS_SRC_ALPHA(표준 투명) — 이었다. `SetAlphaBlend`를 일반화해 Glide blend factor를 GL factor로 매핑했다.
+* **화면 공간 직교 투영** ([`4c92428`](https://github.com/reexec/rePIU/commit/4c92428272041ba7e7ce6215f780de32fea20c3a), v0.0.73). draw 호출이 나오기 시작한 뒤에도 창은 여전히 검정이었다. 런타임 정점 캡처로 게임이 640×480 **화면 픽셀 좌표**를 넘긴다는 것을 확인했는데, 백엔드가 `glOrtho`를 설정하지 않아 `ftransform()`이 단위 투영행렬을 적용했고, 픽셀 좌표(x≈288, y≈330)가 NDC `[-1,1]` 밖으로 나가 **모든 삼각형이 클리핑**됐다. 관측된 `grSstWinOpen origin=1`(GR_ORIGIN_UPPER_LEFT)에 맞춰 y가 뒤집힌 `glOrtho(0, w, h, 0, -1, 1)`를 도입했다. 비검정 픽셀이 0에서 18,176으로 바뀌었다.
+* **R2 정점 색상 + R3 텍스처 경로** ([`ad7631c`](https://github.com/reexec/rePIU/commit/ad7631c31b95bc37b687b2114e9abaf80944e6eb), v0.0.74). 확정된 60바이트 2-TMU `GrVertex`의 색 필드를 `glColor4f`로 반영했다(흰색 고정 제거). 이어서 콘텐츠 draw가 `grColorCombine` function 3 = SCALE_OTHER = TEXTURE로 텍스처를 출력함을 확인하고, 플랫폼 공용 디코드 모듈(`src/hle/glide_texture_decode.{h,cpp}`), 백엔드 텍스처 캐시, GLSL `sampler2D` 샘플링을 구현했다.
+* **R4 알파 블렌딩** ([`4b713ca`](https://github.com/reexec/rePIU/commit/4b713ca80d2e4184ace8b6c24024bd6f90da2868), v0.0.75). R3에서 투명 텍스처가 불투명 검정으로 렌더됐다. 관측된 블렌드 함수는 2종 — `(4,0,4,0)` = ONE,ZERO(불투명)와 `(1,5,4,0)` = SRC_ALPHA/ONE_MINUS_SRC_ALPHA(표준 투명) — 이었다. `SetAlphaBlend`를 일반화해 Glide blend factor를 GL factor로 매핑했다.
 
 **헤드리스 검증 기법.** 이 세션은 desktop/window-station 격리 때문에 GL 창 스크린샷을 찍을 수 없다. 그래서 `BufferSwap`에 env-gated(`REPIU_GLIDE_PIXEL_DIAG`) `glReadPixels` 비검정 픽셀 카운트 진단을 넣어 래스터화를 직접 측정했다. 투영 수정 전이라면 100% 클리핑으로 비검정이 0이어야 하므로, 이 카운트의 변화는 지오메트리가 실제로 래스터화된다는 결정적 증거가 된다.
 
 ### 5. 주변 장치 HLE와 진단 인프라
 
-* **93C46 EEPROM HLE 상태 기계와 타이머 인터럽트 주입** ([`391e198`](https://github.com/nworkers/rePIU/commit/391e1980ec4663ce00f00a0ee73a5873540df6f7), v0.0.70). 게임이 기다리던 하드웨어 조건 중 하나를 채웠다.
-* **간접 LINEXE 호출과 INT 8 경계 처리** ([`d218b43`](https://github.com/nworkers/rePIU/commit/d218b43d6c07ae7873d3cbda025cf724d1ecd37f)).
-* **텍스처 BMP 덤프와 포맷 검증** ([`5864bff`](https://github.com/nworkers/rePIU/commit/5864bfff27d7f062744dbd103a4eb8f582173119)). `REPIU_DUMP_TEXTURE_BMP=1`이면 `grTexDownloadMipMapLevel` 시점에 디코딩된 RGBA8을 32비트 BGRA BMP로 `build/texture_dumps/`에 저장한다. 100초 구동에서 1×1 텍스처 2장(`tex_0x0_fmt10_1x1_1.bmp`, `tex_0x8_fmt12_1x1_2.bmp`)이 정확히 덤프됐다. 함께 `IsGlideTextureFormatAcceptable`을 추가해 지원하지 않는 포맷을 디코딩 전에 거부한다.
-* **JAMMA I/O 키보드 매핑** ([`9718bf8`](https://github.com/nworkers/rePIU/commit/9718bf85fa167229edf86cf72af25bcb53dfb2dc), v0.0.77). MAME `xtom3d.cpp` 사양에 맞춘 active-low 비트마스크로 P1 패드(`0x02A8`), 시스템(`0x02A9`), P2 패드(`0x02AA`)를 매핑하고 `GetAsyncKeyState`로 폴링한다. `HandlePortIoInstruction`을 동적 바이트 읽기 루프로 리팩터링해 8/16/32-bit `IN` 폭에 모두 대응한다.
+* **93C46 EEPROM HLE 상태 기계와 타이머 인터럽트 주입** ([`391e198`](https://github.com/reexec/rePIU/commit/391e1980ec4663ce00f00a0ee73a5873540df6f7), v0.0.70). 게임이 기다리던 하드웨어 조건 중 하나를 채웠다.
+* **간접 LINEXE 호출과 INT 8 경계 처리** ([`d218b43`](https://github.com/reexec/rePIU/commit/d218b43d6c07ae7873d3cbda025cf724d1ecd37f)).
+* **텍스처 BMP 덤프와 포맷 검증** ([`5864bff`](https://github.com/reexec/rePIU/commit/5864bfff27d7f062744dbd103a4eb8f582173119)). `REPIU_DUMP_TEXTURE_BMP=1`이면 `grTexDownloadMipMapLevel` 시점에 디코딩된 RGBA8을 32비트 BGRA BMP로 `build/texture_dumps/`에 저장한다. 100초 구동에서 1×1 텍스처 2장(`tex_0x0_fmt10_1x1_1.bmp`, `tex_0x8_fmt12_1x1_2.bmp`)이 정확히 덤프됐다. 함께 `IsGlideTextureFormatAcceptable`을 추가해 지원하지 않는 포맷을 디코딩 전에 거부한다.
+* **JAMMA I/O 키보드 매핑** ([`9718bf8`](https://github.com/reexec/rePIU/commit/9718bf85fa167229edf86cf72af25bcb53dfb2dc), v0.0.77). MAME `xtom3d.cpp` 사양에 맞춘 active-low 비트마스크로 P1 패드(`0x02A8`), 시스템(`0x02A9`), P2 패드(`0x02AA`)를 매핑하고 `GetAsyncKeyState`로 폴링한다. `HandlePortIoInstruction`을 동적 바이트 읽기 루프로 리팩터링해 8/16/32-bit `IN` 폭에 모두 대응한다.
 
 ### 실행 로그 — 현재 진행 지점
 
@@ -123,7 +123,7 @@ R2(24,704)보다 R3/R4(17,280)의 비검정 픽셀이 적은 것은 회귀가 �
 
 ### Sample test 결과
 
-OpenWatcom sample suite는 DOS/4GW console sample 호환성의 회귀 지표다. 이번 범위에서 baseline을 v0.0.59 시점으로 갱신했다([`fa97643`](https://github.com/nworkers/rePIU/commit/fa97643f8a09a48ee6afe6553cd9f9713df2bb28)). 전체 819개 중 빌드 통과 793, 빌드 제외 26, 실행 대상 793, 실행 통과 529다. 실행 통과율은 `66.7%`, 전체 통과율은 `64.6%`다.
+OpenWatcom sample suite는 DOS/4GW console sample 호환성의 회귀 지표다. 이번 범위에서 baseline을 v0.0.59 시점으로 갱신했다([`fa97643`](https://github.com/reexec/rePIU/commit/fa97643f8a09a48ee6afe6553cd9f9713df2bb28)). 전체 819개 중 빌드 통과 793, 빌드 제외 26, 실행 대상 793, 실행 통과 529다. 실행 통과율은 `66.7%`, 전체 통과율은 `64.6%`다.
 
 | 기록 파일 | 버전 | 전체 | 빌드 통과 | 빌드 제외 | 실행 대상 | 실행 통과 | 실행 통과율 | 전체 통과율 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -183,7 +183,7 @@ sequenceDiagram
 
 # Glide Render Pipeline: From Black Screen to First Pixels — Work in Progress 3
 
-Range: [`c96fef2`](https://github.com/nworkers/rePIU/commit/c96fef20d4eee6c31d234d1700394e17a005305d) through [`9718bf8`](https://github.com/nworkers/rePIU/commit/9718bf85fa167229edf86cf72af25bcb53dfb2dc) (v0.0.35 → v0.0.77)
+Range: [`c96fef2`](https://github.com/reexec/rePIU/commit/c96fef20d4eee6c31d234d1700394e17a005305d) through [`9718bf8`](https://github.com/reexec/rePIU/commit/9718bf85fa167229edf86cf72af25bcb53dfb2dc) (v0.0.35 → v0.0.77)
 
 The previous post was about *how fast* execution runs — introducing a native AOT dynamic translator to cut single-step trap overhead.
 
@@ -207,22 +207,22 @@ flowchart TD
     D1 -->|fixed| E["asset parsing passes → frame loop reached"]
 ```
 
-* **LE cross-page fixup sign extension** ([`c4c2aad`](https://github.com/nworkers/rePIU/commit/c4c2aad4291bbc1b01ecb8f2b8b9c2c5d82b57a0), v0.0.52). A fixup record's `source_offset` value of `0xFFFF` means `-1`, denoting a fixup that straddles a page boundary; using it unsigned patched the wrong location and overwrote a guest instruction. Fixed with `int16_t` sign extension. Several watchpoint investigations failed before this; the decisive observation technique turned out to be full single-stepping on the trap backend.
-* **DOS file handle recycling** ([`c1ffbc0`](https://github.com/nworkers/rePIU/commit/c1ffbc01afe1c8c496ee02820ca182e8a4261755), v0.0.54). `OpenDosFile` incremented handle numbers monotonically and `CloseDosFile` never reclaimed them. Opening and closing 16 files in sequence (never more than two open at once) made the 16th open return handle 20 — but the guest Watcom clib's handle-flag table has exactly 20 entries, and the address of `table[20]` *is* that table's base-pointer slot. Writing `table[20]` corrupted the base to `0x4041`. Real DOS returns the lowest free handle and reclaims it on close, so numbers never leave the 5–6 range. Fixed with lowest-free allocation.
-* **DOS/4GW low-memory read tolerance** ([`e55644e`](https://github.com/nworkers/rePIU/commit/e55644e0f5e706de2e9f3b0c1fd69f3f42a7ac42), v0.0.58). Parsing an empty texture descriptor reads address 0. Under DOS/4GW low memory is mapped and this is harmless; on Win32 it is a null-page fault. Reclassified from data bug to HLE gap and emulated the read.
-* **Arena sizing** ([`b2c817f`](https://github.com/nworkers/rePIU/commit/b2c817fd35b6f875c42ba24adf577d0c376945af), v0.0.47). Honored 32-bit EBX resize requests and sized the arena to the game's measured ~83 MiB heap demand, eliminating the arena-end overflow.
+* **LE cross-page fixup sign extension** ([`c4c2aad`](https://github.com/reexec/rePIU/commit/c4c2aad4291bbc1b01ecb8f2b8b9c2c5d82b57a0), v0.0.52). A fixup record's `source_offset` value of `0xFFFF` means `-1`, denoting a fixup that straddles a page boundary; using it unsigned patched the wrong location and overwrote a guest instruction. Fixed with `int16_t` sign extension. Several watchpoint investigations failed before this; the decisive observation technique turned out to be full single-stepping on the trap backend.
+* **DOS file handle recycling** ([`c1ffbc0`](https://github.com/reexec/rePIU/commit/c1ffbc01afe1c8c496ee02820ca182e8a4261755), v0.0.54). `OpenDosFile` incremented handle numbers monotonically and `CloseDosFile` never reclaimed them. Opening and closing 16 files in sequence (never more than two open at once) made the 16th open return handle 20 — but the guest Watcom clib's handle-flag table has exactly 20 entries, and the address of `table[20]` *is* that table's base-pointer slot. Writing `table[20]` corrupted the base to `0x4041`. Real DOS returns the lowest free handle and reclaims it on close, so numbers never leave the 5–6 range. Fixed with lowest-free allocation.
+* **DOS/4GW low-memory read tolerance** ([`e55644e`](https://github.com/reexec/rePIU/commit/e55644e0f5e706de2e9f3b0c1fd69f3f42a7ac42), v0.0.58). Parsing an empty texture descriptor reads address 0. Under DOS/4GW low memory is mapped and this is harmless; on Win32 it is a null-page fault. Reclassified from data bug to HLE gap and emulated the read.
+* **Arena sizing** ([`b2c817f`](https://github.com/reexec/rePIU/commit/b2c817fd35b6f875c42ba24adf577d0c376945af), v0.0.47). Honored 32-bit EBX resize requests and sized the arena to the game's measured ~83 MiB heap demand, eliminating the arena-end overflow.
 
 The recurring lesson is clear: an observation that "the guest is behaving strangely" was almost always a signal that the HLE had broken a contract of the original environment, and every attempt to work around it on the guest side came back as a regression.
 
 ### 2. Hardening the execution infrastructure
 
-* **AOT return inline cache widening** ([`fd2f906`](https://github.com/nworkers/rePIU/commit/fd2f906cb7ab9791e8ce5bfd3b4f0b00e9414431), v0.0.46). Live telemetry traced a post-Glide decode freeze to return-target thrashing. Widening the single-entry cache to a four-entry chain resolved it.
-* **execution_trampoline decomposition** ([`d1673e2`](https://github.com/nworkers/rePIU/commit/d1673e24451824e53ab6206bfa978100e5b15415), v0.0.60). Split the accumulating monolithic execution trampoline into per-responsibility subsystem modules — a belated application of the AGENTS.md rule that independently nameable subsystems get their own files.
-* **AOT/Glide gate leak** ([`b1d80ad`](https://github.com/nworkers/rePIU/commit/b1d80ad44f702e1824044d278a355ad51111b00b), v0.0.66). The root cause of zero-EIP crashes was an unhandled gate leaking its stdcall frame. After adding stack-scan recovery, `aot-dynamic` survived 180 seconds and entered the main render frame loop.
+* **AOT return inline cache widening** ([`fd2f906`](https://github.com/reexec/rePIU/commit/fd2f906cb7ab9791e8ce5bfd3b4f0b00e9414431), v0.0.46). Live telemetry traced a post-Glide decode freeze to return-target thrashing. Widening the single-entry cache to a four-entry chain resolved it.
+* **execution_trampoline decomposition** ([`d1673e2`](https://github.com/reexec/rePIU/commit/d1673e24451824e53ab6206bfa978100e5b15415), v0.0.60). Split the accumulating monolithic execution trampoline into per-responsibility subsystem modules — a belated application of the AGENTS.md rule that independently nameable subsystems get their own files.
+* **AOT/Glide gate leak** ([`b1d80ad`](https://github.com/reexec/rePIU/commit/b1d80ad44f702e1824044d278a355ad51111b00b), v0.0.66). The root cause of zero-EIP crashes was an unhandled gate leaking its stdcall frame. After adding stack-scan recovery, `aot-dynamic` survived 180 seconds and entered the main render frame loop.
 
 ### 3. Glide ABI alignment
 
-* **Restoring stdcall for grTexMinAddress / grTexMaxAddress** ([`74482d8`](https://github.com/nworkers/rePIU/commit/74482d859e8488a8fba935fad7b790c60fa3c9ba), v0.0.62). `fxTMInit(gc, tmu)` crashed with `EAX` (gc) = 0. The first diagnosis — an unallocated Mesa context, to be repaired by dynamic null-register patching — was wrong. The game allocates gc itself via `malloc(0x1C88)`. The real cause: `fxTMInit` stores gc at `[esp]`, calls both gates assuming **stdcall (callee pops the argument)**, then reloads gc with `mov eax,[esp]`. A prior change had switched those gates to cdecl, leaving two arguments on the stack, so the reload read a leftover `0` instead of gc. An xref confirmed `fxTMInit` is the sole caller of both thunks, and stdcall was restored.
+* **Restoring stdcall for grTexMinAddress / grTexMaxAddress** ([`74482d8`](https://github.com/reexec/rePIU/commit/74482d859e8488a8fba935fad7b790c60fa3c9ba), v0.0.62). `fxTMInit(gc, tmu)` crashed with `EAX` (gc) = 0. The first diagnosis — an unallocated Mesa context, to be repaired by dynamic null-register patching — was wrong. The game allocates gc itself via `malloc(0x1C88)`. The real cause: `fxTMInit` stores gc at `[esp]`, calls both gates assuming **stdcall (callee pops the argument)**, then reloads gc with `mov eax,[esp]`. A prior change had switched those gates to cdecl, leaving two arguments on the stack, so the reload read a leftover `0` instead of gc. An xref confirmed `fxTMInit` is the sole caller of both thunks, and stdcall was restored.
 
 This episode is a reminder that "the error message went away" is not evidence of progress. The cdecl change merely made `fxTMInit` crash *earlier*, so execution never reached the later `fxTMGetTMBlock` error.
 
@@ -258,22 +258,22 @@ flowchart LR
     B5 --> DIAG["glReadPixels non-black pixel count<br/>(REPIU_GLIDE_PIXEL_DIAG)"]
 ```
 
-* **R0 gate safety net + R1 frame presentation** ([`ef89335`](https://github.com/nworkers/rePIU/commit/ef893351dda8aac4167e626418b722f9d800c8e9), v0.0.69). `PIU.EXE` references 97 decorated Glide names, but only 44 were in the signature catalog; an unregistered name is rejected as `signature-mismatch` on call, which leads to an unhandled-gate crash. Cataloging all 97 with a default handler (stdcall cleanup plus a status return) eliminated that class of risk, and `_GRBUFFERCLEAR@12` / `_GRBUFFERSWAP@4` were wired to real `glClear` / `SwapBuffers`.
+* **R0 gate safety net + R1 frame presentation** ([`ef89335`](https://github.com/reexec/rePIU/commit/ef893351dda8aac4167e626418b722f9d800c8e9), v0.0.69). `PIU.EXE` references 97 decorated Glide names, but only 44 were in the signature catalog; an unregistered name is rejected as `signature-mismatch` on call, which leads to an unhandled-gate crash. Cataloging all 97 with a default handler (stdcall cleanup plus a status return) eliminated that class of risk, and `_GRBUFFERCLEAR@12` / `_GRBUFFERSWAP@4` were wired to real `glClear` / `SwapBuffers`.
 
   Profiling at this point revealed something important: the game had settled into a stable 60 FPS frame loop but issued **zero** `grDrawTriangle`-family calls. The game was not dead — its main logic was skipping rendering and swapping empty frames while waiting on a non-Glide subsystem (I/O, EEPROM, sound).
 
-* **Screen-space orthographic projection** ([`4c92428`](https://github.com/nworkers/rePIU/commit/4c92428272041ba7e7ce6215f780de32fea20c3a), v0.0.73). Even once draw calls appeared, the window stayed black. Runtime vertex capture confirmed the game passes 640×480 **screen-pixel coordinates**, but the backend set no `glOrtho`, so `ftransform()` applied an identity projection and pixel coordinates (x≈288, y≈330) landed outside NDC `[-1,1]` — **every triangle was clipped.** Added a y-flipped `glOrtho(0, w, h, 0, -1, 1)` matching the observed `grSstWinOpen origin=1` (GR_ORIGIN_UPPER_LEFT). Non-black pixels went from 0 to 18,176.
-* **R2 vertex color + R3 texture path** ([`ad7631c`](https://github.com/nworkers/rePIU/commit/ad7631c31b95bc37b687b2114e9abaf80944e6eb), v0.0.74). Wired the confirmed 60-byte 2-TMU `GrVertex` color fields through `glColor4f` (removing the hardcoded white). Then confirmed that content draws emit texture color via `grColorCombine` function 3 = SCALE_OTHER = TEXTURE, and implemented a platform-neutral decode module (`src/hle/glide_texture_decode.{h,cpp}`), a backend texture cache, and GLSL `sampler2D` sampling.
-* **R4 alpha blending** ([`4b713ca`](https://github.com/nworkers/rePIU/commit/4b713ca80d2e4184ace8b6c24024bd6f90da2868), v0.0.75). R3 rendered transparent textures as opaque black. Two blend functions were observed — `(4,0,4,0)` = ONE,ZERO (opaque) and `(1,5,4,0)` = SRC_ALPHA/ONE_MINUS_SRC_ALPHA (standard transparency). Generalized `SetAlphaBlend` to map Glide blend factors onto GL factors.
+* **Screen-space orthographic projection** ([`4c92428`](https://github.com/reexec/rePIU/commit/4c92428272041ba7e7ce6215f780de32fea20c3a), v0.0.73). Even once draw calls appeared, the window stayed black. Runtime vertex capture confirmed the game passes 640×480 **screen-pixel coordinates**, but the backend set no `glOrtho`, so `ftransform()` applied an identity projection and pixel coordinates (x≈288, y≈330) landed outside NDC `[-1,1]` — **every triangle was clipped.** Added a y-flipped `glOrtho(0, w, h, 0, -1, 1)` matching the observed `grSstWinOpen origin=1` (GR_ORIGIN_UPPER_LEFT). Non-black pixels went from 0 to 18,176.
+* **R2 vertex color + R3 texture path** ([`ad7631c`](https://github.com/reexec/rePIU/commit/ad7631c31b95bc37b687b2114e9abaf80944e6eb), v0.0.74). Wired the confirmed 60-byte 2-TMU `GrVertex` color fields through `glColor4f` (removing the hardcoded white). Then confirmed that content draws emit texture color via `grColorCombine` function 3 = SCALE_OTHER = TEXTURE, and implemented a platform-neutral decode module (`src/hle/glide_texture_decode.{h,cpp}`), a backend texture cache, and GLSL `sampler2D` sampling.
+* **R4 alpha blending** ([`4b713ca`](https://github.com/reexec/rePIU/commit/4b713ca80d2e4184ace8b6c24024bd6f90da2868), v0.0.75). R3 rendered transparent textures as opaque black. Two blend functions were observed — `(4,0,4,0)` = ONE,ZERO (opaque) and `(1,5,4,0)` = SRC_ALPHA/ONE_MINUS_SRC_ALPHA (standard transparency). Generalized `SetAlphaBlend` to map Glide blend factors onto GL factors.
 
 **Headless verification technique.** This session cannot screenshot the GL window because of desktop/window-station isolation. Instead, an env-gated (`REPIU_GLIDE_PIXEL_DIAG`) `glReadPixels` non-black-pixel count in `BufferSwap` measures rasterization directly. Before the projection fix everything was clipped, so the count had to be 0 — which makes any change in that count decisive evidence that geometry now rasterizes.
 
 ### 5. Peripheral HLE and diagnostic infrastructure
 
-* **93C46 EEPROM HLE state machine and timer interrupt injection** ([`391e198`](https://github.com/nworkers/rePIU/commit/391e1980ec4663ce00f00a0ee73a5873540df6f7), v0.0.70) — satisfying one of the hardware conditions the game was waiting on.
-* **Indirect LINEXE calls and INT 8 boundaries** ([`d218b43`](https://github.com/nworkers/rePIU/commit/d218b43d6c07ae7873d3cbda025cf724d1ecd37f)).
-* **Texture BMP dumping and format validation** ([`5864bff`](https://github.com/nworkers/rePIU/commit/5864bfff27d7f062744dbd103a4eb8f582173119)). With `REPIU_DUMP_TEXTURE_BMP=1`, decoded RGBA8 is written as 32-bit BGRA BMP to `build/texture_dumps/` at `grTexDownloadMipMapLevel` time. A 100-second run dumped exactly two 1×1 textures (`tex_0x0_fmt10_1x1_1.bmp`, `tex_0x8_fmt12_1x1_2.bmp`). Alongside it, `IsGlideTextureFormatAcceptable` rejects unsupported formats before any decode.
-* **JAMMA I/O keyboard mapping** ([`9718bf8`](https://github.com/nworkers/rePIU/commit/9718bf85fa167229edf86cf72af25bcb53dfb2dc), v0.0.77). Active-low bitmasks matching the MAME `xtom3d.cpp` specification map P1 pad (`0x02A8`), system (`0x02A9`: coin/service/test), and P2 pad (`0x02AA`), polled via `GetAsyncKeyState`. `HandlePortIoInstruction` was refactored into a dynamic byte-read loop so 8-, 16-, and 32-bit `IN` widths all work.
+* **93C46 EEPROM HLE state machine and timer interrupt injection** ([`391e198`](https://github.com/reexec/rePIU/commit/391e1980ec4663ce00f00a0ee73a5873540df6f7), v0.0.70) — satisfying one of the hardware conditions the game was waiting on.
+* **Indirect LINEXE calls and INT 8 boundaries** ([`d218b43`](https://github.com/reexec/rePIU/commit/d218b43d6c07ae7873d3cbda025cf724d1ecd37f)).
+* **Texture BMP dumping and format validation** ([`5864bff`](https://github.com/reexec/rePIU/commit/5864bfff27d7f062744dbd103a4eb8f582173119)). With `REPIU_DUMP_TEXTURE_BMP=1`, decoded RGBA8 is written as 32-bit BGRA BMP to `build/texture_dumps/` at `grTexDownloadMipMapLevel` time. A 100-second run dumped exactly two 1×1 textures (`tex_0x0_fmt10_1x1_1.bmp`, `tex_0x8_fmt12_1x1_2.bmp`). Alongside it, `IsGlideTextureFormatAcceptable` rejects unsupported formats before any decode.
+* **JAMMA I/O keyboard mapping** ([`9718bf8`](https://github.com/reexec/rePIU/commit/9718bf85fa167229edf86cf72af25bcb53dfb2dc), v0.0.77). Active-low bitmasks matching the MAME `xtom3d.cpp` specification map P1 pad (`0x02A8`), system (`0x02A9`: coin/service/test), and P2 pad (`0x02AA`), polled via `GetAsyncKeyState`. `HandlePortIoInstruction` was refactored into a dynamic byte-read loop so 8-, 16-, and 32-bit `IN` widths all work.
 
 ### Execution log — current progress point
 
@@ -308,7 +308,7 @@ The render pipeline is alive, but this is not yet a game screen. The confirmed r
 
 ### Sample test results
 
-The OpenWatcom sample suite is the regression indicator for DOS/4GW console sample compatibility. The baseline was refreshed at v0.0.59 in this range ([`fa97643`](https://github.com/nworkers/rePIU/commit/fa97643f8a09a48ee6afe6553cd9f9713df2bb28)): of 819 samples, 793 build, 26 are excluded from the build, 793 are run-eligible, and 529 pass. The run pass rate is `66.7%` and the overall pass rate is `64.6%`.
+The OpenWatcom sample suite is the regression indicator for DOS/4GW console sample compatibility. The baseline was refreshed at v0.0.59 in this range ([`fa97643`](https://github.com/reexec/rePIU/commit/fa97643f8a09a48ee6afe6553cd9f9713df2bb28)): of 819 samples, 793 build, 26 are excluded from the build, 793 are run-eligible, and 529 pass. The run pass rate is `66.7%` and the overall pass rate is `64.6%`.
 
 | Report file | Version | Total | Build passed | Build skipped | Run eligible | Run passed | Run rate | Overall rate |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

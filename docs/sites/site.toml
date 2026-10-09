@@ -3,10 +3,10 @@
 
 [site]
 name = "rePIU"
-repo = "nworkers/rePIU"
+repo = "reexec/rePIU"
 branch = "main"
 # Overridden in CI by actions/configure-pages (base_url).
-default_url = "https://nworkers.github.io/rePIU/"
+default_url = "https://reexec.github.io/rePIU/"
 default_lang = "ko"
 languages = ["ko", "en"]
 
