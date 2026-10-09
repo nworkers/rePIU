@@ -1,6 +1,6 @@
 # Full-Precision Textures: Undoing the 4444 Cut Inside the Game's Own Driver (WIP)
 
-범위: `v0.0.212` 이후, [issue #37](https://github.com/nworkers/rePIU/issues/37) (main 머지 전)
+범위: [`v0.0.212`부터 `v0.0.213`까지](https://github.com/nworkers/rePIU/compare/v0.0.212...v0.0.213) ([issue #37](https://github.com/nworkers/rePIU/issues/37))
 
 pumpitea를 돌리면 곡 선택 화면의 얼굴이나 BGA의 옷 주름이 얼룩덜룩하게 뭉개져 보입니다. 에뮬레이터의 결함처럼
 보이지만, 원인은 게임 실행 파일 안에 있었습니다. PIU는 OpenGL로 그리고, 그 OpenGL을 Glide로 옮기는 **Mesa 3.x
@@ -199,7 +199,7 @@ ti` 검증으로 맞는 객체인지 확인합니다.
 
 # Full-Precision Textures: Undoing the 4444 Cut Inside the Game's Own Driver (WIP)
 
-Range: after `v0.0.212`, [issue #37](https://github.com/nworkers/rePIU/issues/37) (before the merge to main)
+Range: [`v0.0.212` to `v0.0.213`](https://github.com/nworkers/rePIU/compare/v0.0.212...v0.0.213) ([issue #37](https://github.com/nworkers/rePIU/issues/37))
 
 Run pumpitea and the faces on the song select screen and the folds in the BGA look blotchy. It looks like an
 emulator defect, but the cause is inside the game's executable. PIU draws through OpenGL and **links a whole Mesa 3.x
