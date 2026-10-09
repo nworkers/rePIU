@@ -51,8 +51,22 @@
   열린 issue #8(Release에서의 stack_bridge probe)의 기존 실패다.
 * **Glide probe**: `repiu_glide_issue_probe`, `repiu_glide_render_probe` 통과.
 * **변수 읽기**: `src/`·`include/`에 6개 변수 문자열이 없다.
-* **확인하지 못한 것**: 게임 실행. 메모리 규칙에 따라 probe로 끝냈고, 실행은 사용자 확인 뒤
-  한 롬셋으로 좁혀 한다. Linux i386 빌드도 하지 않았다.
+* **게임 실행**(사용자 확인 뒤, Win32 Release, pumpit2a 60초, `scripts/survey_romsets.sh`,
+  NVRAM은 실행마다 임시 디렉터리): 기준은 v0.0.207 릴리스. 두 쌍을 순서를 바꿔 돌렸다.
+
+  | 실행 | 프레임 | fault | 자산 열기 | tick due/injected/dropped | max-backlog |
+  |---|---:|---:|---:|---|---:|
+  | 1쌍 새 빌드 | 3,051 | 0 | 21 | 13,527 / 13,444 / 83 | **64** |
+  | 1쌍 v0.0.207 | 3,184 | 0 | 23 | 14,079 / 14,053 / 26 | 20 |
+  | 2쌍 v0.0.207 | 3,202 | 0 | 23 | 14,120 / 14,098 / 22 | 19 |
+  | 2쌍 새 빌드 | 3,203 | 0 | 23 | 14,121 / 14,099 / 22 | 19 |
+
+  1쌍의 새 빌드는 8초와 27초 지점의 끊김이 더 깊어(6.8·20.7fps 대 27.6·51.2fps) backlog가
+  상한에 닿았고 약 1초 뒤처져 마지막 자산 두 개를 열기 전에 끝났다. 2쌍에서는 초당 fps
+  열까지 거의 같았으므로 실행 편차로 판정했다. 장면 순서는 네 실행 모두 같고, 새 최종 로그
+  줄(`timer tick delivery due/injected/dropped/deferred/max-backlog/remaining`)이 의도대로
+  찍혔다.
+* **확인하지 못한 것**: Linux i386 빌드.
 
 ---
 
@@ -87,5 +101,12 @@ chain on `MASTER/PIU_1ST/PIU/PIU.EXE` now runs to the end (exit 0); its
 indirect dispatch probe #22 deleted, so only the first 70 lines compare — identical apart from
 timings. Core probe: all 39 pass on Linux x64; on Win32 only `stack_bridge` fails, the existing
 failure tracked in open issue #8. Both Glide probes pass. No source reads the six variables.
-**Not done:** a game run (probe-first by the standing rule; one short run of one romset needs
-the user's go-ahead) and a Linux i386 build.
+**Game run** (with the user's go-ahead; Win32 Release, pumpit2a for 60 s via
+`scripts/survey_romsets.sh`, NVRAM in a fresh temporary directory per run, against the v0.0.207
+release, two pairs in alternating order): no faults anywhere and the same scene sequence in all
+four runs; the new final-log line prints as intended. In the first pair the new build's hitches
+at 8 s and 27 s ran deeper (6.8 and 20.7 fps against 27.6 and 51.2), the backlog reached its cap
+of 64 (83 dropped against 26), and the run ended about a second behind, before the last two asset
+opens. The second pair matched almost exactly (frames 3,202/3,203, ticks 14,120/14,121, 22
+dropped and a peak backlog of 19 on both sides, 23 opens each), so the first pair's gap is
+run-to-run variation. **Not done:** a Linux i386 build.
