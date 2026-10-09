@@ -541,6 +541,8 @@ P2도 같은 방식이다. **열거 순서는 바꾸지 않는다.** `JammaInput
   섹션은 경고만 남긴다. 생성 파일도 `[Input]`만 쓴다.
 * 게임패드·조이스틱 바인딩. `SDL_Gamepad` 기반이므로 `Joy1_Button3` 형태의 이름 공간을
   키 이름 표 밖에 예약해 둔다.
+  **(issue #34에서 구현: `Pad<N>_<버튼>`과 `Joy<N>_Button<K>`·`Joy<N>_Hat<H><방향>`,
+  `docs/design/20261009-i034-gamepad-input.md`.)**
 * 폴링 경로를 `SDL_GetKeyboardState`로 옮기면 `SDL_Keycode` → VK 표까지 사라진다.
   이번에는 입력이 창 포커스 기준이 되는 동작 변화와 폴링 신선도가 이벤트 펌프 주기에
   묶이는 문제 때문에 채택하지 않았다. 나중에 다시 검토할 수 있도록 근거를 남긴다.
@@ -1136,7 +1138,7 @@ A runtime smoke test is performed only after user confirmation.
   recognized, other sections only produce a warning, and generation writes `[Input]`
   alone.
 * Gamepad and joystick bindings. They would be `SDL_Gamepad` based, so a `Joy1_Button3`
-  style namespace is reserved outside the key name table.
+  style namespace is reserved outside the key name table. **(Implemented in issue #34: `Pad<N>_<Button>` and `Joy<N>_Button<K>`/`Joy<N>_Hat<H><Dir>`; see `docs/design/20261009-i034-gamepad-input.md`.)**
 * Moving the polling path to `SDL_GetKeyboardState` would remove even the `SDL_Keycode`
   to VK table. It was not adopted here because it makes input focus-scoped and ties
   polling freshness to the event pump cadence; the rationale is recorded so the option

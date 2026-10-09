@@ -2,10 +2,14 @@
 
 #include "repiu/input/jamma_input_bindings.h"
 
+#include <atomic>
+
 namespace repiu::engine
 {
 namespace
 {
+
+std::atomic<std::uint16_t> g_pad_mask{0U};
 
 input::ResolvedJammaBindings& MutableActiveJammaBindings()
 {
@@ -42,6 +46,16 @@ const input::ResolvedJammaBindings& ActiveJammaBindings()
 void ResolveActiveJammaScancodes()
 {
     input::ResolveJammaHostScancodes(&MutableActiveJammaBindings());
+}
+
+void PublishJammaPadMask(std::uint16_t mask)
+{
+    g_pad_mask.store(mask, std::memory_order_relaxed);
+}
+
+std::uint16_t PublishedJammaPadMask()
+{
+    return g_pad_mask.load(std::memory_order_relaxed);
 }
 
 }  // namespace repiu::engine

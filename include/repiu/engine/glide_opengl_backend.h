@@ -568,6 +568,10 @@ private:
     // the window opens and stopped when it closes. Owned through a pointer
     // to keep SDL's event types out of this header's users.
     std::unique_ptr<class SdlInputScriptPlayerHandle> input_script_;
+    // Issue #34: gamepads and joysticks, opened on the first event pump and
+    // closed with the window. Host thread only; a pointer for the same reason
+    // as above.
+    std::unique_ptr<class SdlPadInput> pad_input_;
     // Task 761: the in-game OSD, created with the window and destroyed with
     // it. Null in dummy mode. Host thread only.
     std::unique_ptr<class GlideOsd> osd_;

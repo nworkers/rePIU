@@ -219,6 +219,8 @@ add_library(repiu_exe
     src/config/romset_config_template.cpp
     src/input/host_key_binding.cpp
     src/input/host_key_names.cpp
+    src/input/host_pad_binding.cpp
+    src/input/host_pad_state.cpp
     src/input/jamma_input_bindings.cpp
     src/input/jamma_input_key.cpp
     src/exe/dos16m_bound_module.cpp
@@ -336,6 +338,7 @@ target_sources(repiu_exe
         src/engine/bios/bios_keyboard_services.cpp
         src/engine/input/sdl_bios_keyboard_adapter.cpp
         src/engine/input/active_jamma_bindings.cpp
+        src/engine/input/sdl_pad_input.cpp
         src/engine/execution/execution_probe_memory_dump.cpp
         src/engine/execution/execution_trampoline.cpp
         src/engine/execution/single_step_hotspot_profile.cpp
@@ -795,6 +798,7 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/code_cache_placement_probe.cpp
     src/tools/aot_probe/dos_console_device_probe.cpp
     src/tools/aot_probe/dos_console_input_probe.cpp
+    src/tools/aot_probe/host_pad_input_probe.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
     src/tools/aot_probe/env_toggle_probe.cpp
     src/tools/aot_probe/far_jump_probe.cpp
@@ -1029,6 +1033,8 @@ if(WIN32)
         src/tools/aot_probe/glide_texture_table_stack_probe.cpp
         src/tools/aot_probe/dos_file_create_probe.cpp
         src/tools/aot_probe/dos_console_input_probe.cpp
+        src/tools/aot_probe/host_pad_input_probe.cpp
+    src/tools/aot_probe/host_pad_input_probe.cpp
         src/tools/aot_probe/dos_date_probe.cpp
         src/tools/aot_probe/glide_setter_state_cache_probe.cpp
         src/tools/aot_probe/glide_setter_phase_timing_probe.cpp

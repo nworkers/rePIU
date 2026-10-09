@@ -353,7 +353,7 @@ JammaInputTimelineSnapshot JammaInputTimeline::Snapshot() const {
   return result;
 }
 
-std::uint16_t CaptureCurrentJammaPressedMask() {
+std::uint16_t CaptureKeyboardJammaPressedMask() {
   const repiu::input::ResolvedJammaBindings &bindings = ActiveJammaBindings();
 
   // Hoisted out of the loop below, and skipped entirely unless some alias
@@ -387,6 +387,11 @@ std::uint16_t CaptureCurrentJammaPressedMask() {
     }
   }
   return pressed_mask;
+}
+
+std::uint16_t CaptureCurrentJammaPressedMask() {
+  return static_cast<std::uint16_t>(CaptureKeyboardJammaPressedMask() |
+                                    PublishedJammaPadMask());
 }
 
 } // namespace repiu::engine

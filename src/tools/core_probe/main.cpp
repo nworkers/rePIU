@@ -29,6 +29,7 @@
 #include "code_cache_placement_probe.h"
 #include "dos_console_device_probe.h"
 #include "dos_console_input_probe.h"
+#include "host_pad_input_probe.h"
 #include "dos_file_handle_cache_probe.h"
 #include "env_toggle_probe.h"
 #include "event_clock_probe.h"
@@ -104,6 +105,9 @@ constexpr CoreProbe kCoreProbes[] = {
     {"dos_console_device", &repiu::tools::RunDosConsoleDeviceProbe},
     // Task 764. INT 21h AH=07h/08h against the BIOS keyboard buffer.
     {"dos_console_input", &repiu::tools::RunDosConsoleInputProbe},
+    // Issue #34. Pad names, defaults and the state-to-input mapping, with no
+    // device attached.
+    {"host_pad_input", &repiu::tools::RunHostPadInputProbe},
     {"pit_timer", &repiu::tools::RunPitTimerProbe},
     // Task 754. Pure arithmetic over two clock readings.
     {"event_clock", &repiu::tools::RunEventClockProbe},
