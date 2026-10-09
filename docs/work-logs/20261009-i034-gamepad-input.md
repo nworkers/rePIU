@@ -72,9 +72,13 @@ probe의 기본값·마스크 단언과 설정 probe의 기본값 단언을 새 
   뽑았다 꽂자 `Pad1/Joy1 disconnected` 뒤 같은 번호 1로 다시 연결되었고, 바로 입력이 들어왔다.
   버튼별 배치는 로그로 가를 수 없어(`A`·`Start`가 같은 줄을 낸다) 사용자가 화면으로 확인했다
   (2026-10-10).
-* **여전히 확인하지 않은 것**: Linux i386 빌드에서의 실제 장치, 누른 채로 뽑았을 때 입력이 떼어지는지
-  (뽑기 직전 입력은 이미 떼어져 있었다), 로그의 `CLEAR`(`Pad1_RightStick`, 두 실행 모두 찍히지 않음),
-  발판형 조이스틱(`Joy<N>_`).
+* **실제 장치(i386)**: 같은 패드로 i386 빌드에서 pumpitea를 두 번 실행했다(창을 닫아 정상 종료,
+  fault 0). 32비트 SDL에서도 `Joy1/Pad1 connected`가 찍혔고, 게임이 `COIN1`, 1P 발판 다섯 개,
+  `CLEAR`(`Pad1_RightStick`, `0x02A9`=`0x7F`)를 모두 읽었다. 누름과 뗌은 첫 실행 141/141, 둘째 53/53이다.
+  둘째 실행에서 `A`를 누른 채로 뽑자 `P1-Center PRESSED` → `Pad1/Joy1 disconnected` →
+  `P1-Center released` → 다시 연결 순서로 찍혀, 분리가 눌린 입력을 떼는 것을 확인했다. 사용자가
+  화면에서도 정상임을 확인했다(2026-10-10).
+* **여전히 확인하지 않은 것**: 발판형 조이스틱(`Joy<N>_`).
 
 ---
 
@@ -128,7 +132,10 @@ the game read `COIN1` and all five P1 panels, chords of two and three included (
 up-left as `0xF8`); in the second run 40 presses matched 40 releases with nothing left held.
 Unplugging and replugging the pad mid-run printed `Pad1/Joy1 disconnected`, reconnected it as
 number 1 and input resumed at once. The per-button layout cannot be told apart in the log (`A` and
-`Start` print the same line), so the user confirmed it on screen (2026-10-10). **Still not checked:**
-a real device on the Linux i386 build, whether unplugging while pressed releases the input (the last
-input before the unplug had already been released), `CLEAR` in the log (`Pad1_RightStick`, absent
-from both runs), and dance-pad joysticks (`Joy<N>_`).
+`Start` print the same line), so the user confirmed it on screen (2026-10-10). **Real device
+(i386):** two pumpitea runs with the same pad on the i386 build (closed from the window, no faults).
+`Joy1/Pad1 connected` printed under 32-bit SDL too, and the game read `COIN1`, all five P1 panels and
+`CLEAR` (`Pad1_RightStick`, `0x02A9` = `0x7F`); presses matched releases 141/141 and 53/53. In the
+second run, unplugging while holding `A` printed `P1-Center PRESSED` → `Pad1/Joy1 disconnected` →
+`P1-Center released` → reconnect, so a disconnect releases what was held. The user confirmed the
+runs on screen (2026-10-10). **Still not checked:** dance-pad joysticks (`Joy<N>_`).
