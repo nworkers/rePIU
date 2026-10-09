@@ -1,5 +1,21 @@
 # Executable Design Notes
 
+## issue #37: 내장 Mesa fx 드라이버의 텍스처 4444 절단 / Mesa fx texture truncation
+
+PIU 실행 파일은 OpenGL로 그리고 Mesa 3.x의 3dfx 드라이버(fxMesa)를 정적으로 링크해 Glide로 옮긴다.
+이 드라이버의 `fxTexGetFormat`은 RGBA 텍스처를 요청 정밀도와 무관하게 ARGB_4444로, RGB 텍스처를
+RGB_565로 정하고, `fxTexBuildImageMap`이 원본 RGBA8의 각 채널 상위 비트만 남겨(`& 0xF0`, `& 0xF8/0xFC`)
+변환한 뒤 `grTexDownloadMipMapLevel`로 넘긴다. 원본 픽셀은 `gl_texture_image +0x34`에 남아 있다.
+같은 Mesa 빌드가 19개 롬셋 모두에 들어 있다(pumpitea 주소: `0x01049044`, `0x01049294`, `0x0103FE61`).
+
+PIU executables draw through OpenGL with Mesa 3.x's 3dfx driver (fxMesa) linked in. Its
+`fxTexGetFormat` turns every RGBA texture into ARGB_4444 and RGB into RGB_565 whatever precision is
+requested, and `fxTexBuildImageMap` keeps only each channel's top bits (`& 0xF0`, `& 0xF8/0xFC`)
+before `grTexDownloadMipMapLevel`; the original pixels stay at `gl_texture_image +0x34`. All 19 ROM
+sets carry the same build (pumpitea: `0x01049044`, `0x01049294`, `0x0103FE61`).
+
+근거 / Evidence: [Mesa fx 텍스처 경로](analysis/mesa-fx-texture-path.md).
+
 ## Task 606: FPU word stack
 
 Task 606에서 `pumpit2a`의 FPU 초기화 루틴은 guest `0x010F839E`의
