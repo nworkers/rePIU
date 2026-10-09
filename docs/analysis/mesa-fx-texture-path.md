@@ -44,7 +44,8 @@ flowchart LR
 * 업로드 함수(`0x0103FD5C`)는 `push ecx/esi/edi/ebp` 뒤 `sub esp,0x10`을 한다. 호출 직전 레지스터는
   `ESI` = `ti`, `EBP` = 현재 Mesa level, `EBX` = 다음 Glide LOD이다. 이 함수의 호출자들은 `tObj`를
   `EBP`에 두고 `EDX`로 넘기므로(`0x010407EC`, `0x01040C70`), 게이트에서 본 `[ESP+0x34]`(저장된 호출자
-  `EBP`)가 `tObj`일 가능성이 높다 — `[tObj+0x484] == ESI`로 검증할 수 있다. **확인됨(2026-10-09 사용자 실행):** pumpitea에서 4444 48개·565 13개, 업로드 61개 모두 이 연결과 재절단 검증을 통과했다(`used=61`, 실패 0).
+  `EBP`)가 `tObj`일 가능성이 높다 — `[tObj+0x484] == ESI`로 검증할 수 있다. **확인됨(2026-10-09 사용자 실행):** pumpitea에서 4444 48개·565 13개, 업로드 61개 모두 이 연결과 재절단 검증을 통과했다(`used=61`, 실패 0). 이어 pumpit8에서도 업로드
+130개(4444 88개·565 42개)가 모두 통과했다(`used=130`, 실패 0).
 
 ### 19개 롬셋 모두 같은 Mesa 빌드다
 
@@ -57,7 +58,7 @@ pumpitpr·pru는 주소까지 같다).
 
 * 크기 변환 경로(원본이 Glide 크기보다 작을 때)가 실제로 쓰이는지. Mesa 코드상 정수 배 확대이고 구현도
   그 규칙을 따르지만, pumpitea 실행에서는 따로 집계하지 않았다(검증에 실패하면 4444로 돌아간다).
-* pumpitea 외 롬셋의 실행 결과(서명은 같다).
+* pumpitea·pumpit8 외 롬셋의 실행 결과(서명은 같다).
 
 ## 관련
 
@@ -89,7 +90,8 @@ original pixels at `+0x34`** (RGBA byte order); `tObj->Image[level]` is `+0x50 +
 (`0x0103FD5C`) pushes `ecx/esi/edi/ebp` and reserves 0x10; at its Glide call `ESI` is `ti`, `EBP` the
 Mesa level and `EBX` the next Glide LOD, and its callers keep `tObj` in `EBP` (`0x010407EC`,
 `0x01040C70`), so the saved caller `EBP` at the gate's `[ESP+0x34]` is probably `tObj`, checkable with
-`[tObj+0x484] == ESI` — **confirmed by the user's run on 2026-10-09:** all 61 pumpitea uploads (48 4444, 13 565) passed the link and the re-truncation check (`used=61`, no failures).
+`[tObj+0x484] == ESI` — **confirmed by the user's run on 2026-10-09:** all 61 pumpitea uploads (48 4444, 13 565) passed the link and the re-truncation check (`used=61`, no failures), and so did all 130 in a
+following pumpit8 run (88 4444, 42 565; `used=130`).
 
 All 19 ROM sets carry the same Mesa build: three signatures — the `fxTexGetFormat` entry, the 4444
 packing and the upload call tail — occur once each in every set at the same relative distance; only
@@ -97,5 +99,5 @@ the addresses differ.
 
 **Unresolved.** Whether the resizing path (an original smaller than the Glide size) occurs in practice —
 Mesa enlarges by whole factors and the implementation follows that rule, but the pumpitea run did not
-count it separately (a failed check falls back to 4444) — and runs on ROM sets other than pumpitea (the
-signatures match).
+count it separately (a failed check falls back to 4444) — and runs on ROM sets other than pumpitea and pumpit8
+(the signatures match).

@@ -34,12 +34,13 @@
 | `repiu_aot_probe --mesa-fx-texture-source` | 4444·565·upscale·fallbacks·odd_size 모두 true |
 | 런처 probe, core probe | Win32·Linux x64 실패 0 |
 | pumpitea 실행(사용자, 2026-10-09) | 업로드 61개(4444 48, 565 13), `used=61`, 실패 0. OSD 토글마다 18개 다시 올림. 사용자가 화질 변화를 확인. 정상 종료(`exit-requested`) |
+| pumpit8 실행(사용자, 2026-10-09, 약 65초) | 업로드 130개(4444 88, 565 42), `used=130`, 실패 0. 토글 41회, 회당 15~39개 다시 올림. 정상 종료 |
 
 추정이던 `[ESP+0x34]` = tObj 연결은 이 실행으로 확인됐다.
 
 ## 확인하지 않은 것
 
-* pumpitea 외 롬셋의 실행(서명은 같다).
+* pumpitea·pumpit8 외 롬셋의 실행(서명은 같다).
 * 크기 변환 경로가 실제로 쓰이는지(따로 집계하지 않음, 검증 실패 시 4444로 돌아감).
 * Linux i386 빌드.
 
@@ -78,9 +79,11 @@ pump after a change and restores the binding. The option is an OSD checkbox, the
 **Verified.** Win32 and Linux x64 Release builds without errors; the new probe, the launcher probe
 and the core probes pass on both. The user's pumpitea run on 2026-10-09 uploaded 61 textures (48
 4444, 13 565), all used at full precision with no fallbacks, re-uploaded 18 per OSD toggle, showed
-the quality change and exited normally — confirming the inferred `[ESP+0x34]` link.
+the quality change and exited normally — confirming the inferred `[ESP+0x34]` link; a following
+pumpit8 run of about 65 seconds used all 130 uploads (88 4444, 42 565) with no fallbacks across 41
+toggles of 15 to 39 re-uploads each.
 
-**Not checked.** Runs on other ROM sets (their signatures match), whether the resizing path occurs in
+**Not checked.** Runs on ROM sets other than pumpitea and pumpit8 (their signatures match), whether the resizing path occurs in
 practice, and the Linux i386 build.
 
 **Follow-up candidate: memory.** Each verified texture keeps two extra RGBA8 copies in host memory
