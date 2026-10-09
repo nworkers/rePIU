@@ -873,7 +873,7 @@ blend가 깨졌다면 어떤 offset에서도 일치하지 않습니다.
 장면(Task 363 기준 setter가 Glide gate의 85.33%)에서의 이득.
 
 **방법 메모:** back buffer 스크린샷 기능은 현재 없습니다. `REPIU_GLIDE_FRAME_DUMP`는
-이미지가 아니라 draw-call 추적이고, `build/texture_dumps/`의 BMP는 텍스처 dump입니다.
+이미지가 아니라 draw-call 추적이었고(issue #25에서 제거), `build/texture_dumps/`의 BMP는 텍스처 dump입니다.
 따라서 cross-run 시각 검증은 `REPIU_GLIDE_PIXEL_DIAG`의 swap별 통계를 phase offset으로
 대응시키는 방식을 씁니다.
 
@@ -910,7 +910,7 @@ freed time went into the guest-execution and kernel-transition estimates.
 the gain in an LFB-free gameplay scene.
 
 **Method note:** there is no back-buffer screenshot facility.
-`REPIU_GLIDE_FRAME_DUMP` is a draw-call trace, and the BMPs under
+`REPIU_GLIDE_FRAME_DUMP` was a draw-call trace (removed in issue #25), and the BMPs under
 `build/texture_dumps/` are texture dumps, so cross-run visual verification uses
 phase-offset matching of `REPIU_GLIDE_PIXEL_DIAG`'s per-swap statistics.
 
@@ -976,8 +976,8 @@ NCC 압축인 포맷 1(YIQ_422)과 9(AYIQ_8422)뿐입니다.
 **중복 정리:** 기존 `REPIU_DUMP_TEXTURE_BMP` 경로를 제거했습니다. 24비트라 알파를
 잃었고(기존 주석이 "조사 중인 바로 그 경우"라고 인정), 덤프 전용으로 텍스처를 한 번
 더 디코드하고 있었습니다. `DumpTextureToBmp`는 LFB 전용이 되어
-`DumpLfbSurfaceToBmp`로 개명됐습니다. `REPIU_DUMP_LFB_BMP`는 같은 알파 손실을
-안은 채 남아 있어 향후 통합 후보입니다.
+`DumpLfbSurfaceToBmp`로 개명됐습니다. 같은 알파 손실을 안고 남아 있던
+`REPIU_DUMP_LFB_BMP`와 그 writer는 issue #25에서 제거했습니다.
 
 Task 375 settled a suspicion about textures by building the inspection that did not exist. Over 24.1
 seconds of music select the census recorded 41 uploads against 29 distinct addresses with zero
@@ -987,7 +987,8 @@ in both formats present. A mid-investigation suspicion that RGB_565 was losing i
 disproved three ways, the cyan being colour-graded BGA artwork. The 8-bit paths including P_8 and
 its palette download exist and work; this game simply does not use them. The pre-existing
 `REPIU_DUMP_TEXTURE_BMP` dump was removed as a duplicate that dropped alpha and decoded every
-texture twice, leaving its writer to serve the LFB surface alone.
+texture twice, leaving its writer to serve the LFB surface alone; that LFB dump
+(`REPIU_DUMP_LFB_BMP`), which kept the same alpha loss, went in issue #25.
 
 
 ## GLSL 셰이더 구조와 남은 `glGetError` (2026-08-01 검토) — **확인됨 / 미해결**

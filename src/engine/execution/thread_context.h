@@ -659,10 +659,6 @@ struct ThreadContext
     LinuxX64TransferFailureProvenance
         linux_x64_transfer_failure_provenance;
     UnhandledBreakpointEvidence unhandled_breakpoint_evidence;
-    std::uint32_t aot_probe_guest_address = 0;
-    std::uint32_t aot_probe_cache_address = 0;
-    std::uint32_t aot_probe_cache_valid = 0;
-    std::uint8_t aot_probe_cache_bytes[32] = {};
     std::uint32_t handled_fatal_breakpoint_count = 0;
     std::uint32_t last_fatal_breakpoint_address = 0;
     std::uint32_t last_fatal_message_address = 0;
