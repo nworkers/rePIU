@@ -20,7 +20,7 @@ docs/post/2026-07-10-010119-preserving-dos4gw-execution-wip.md
 
 ## 사이트 게시
 
-main에 머지된 글은 [프로젝트 사이트](https://nworkers.github.io/rePIU/)의 개발 기록에 자동으로 게시된다
+main에 머지된 글은 [프로젝트 사이트](https://reexec.github.io/rePIU/)의 개발 기록에 자동으로 게시된다
 ([사이트 README](../sites/README.md)). 사이트 빌드가 두 언어를 나누는 규칙을 지킨다.
 
 * 한국어 문서와 영어 문서 사이에는 `---` 한 줄만 둔다. 그 다음 비어 있지 않은 줄은 영어 문서의 `#` 제목이어야
@@ -85,7 +85,7 @@ Write the complete Korean document first, followed by the complete English docum
 ## Site Publishing
 
 Posts merged to main are published automatically in the dev log of the
-[project site](https://nworkers.github.io/rePIU/) ([site README](../sites/README.md)). Keep to the rules
+[project site](https://reexec.github.io/rePIU/) ([site README](../sites/README.md)). Keep to the rules
 the site build uses to separate the two languages.
 
 * Put a single `---` line between the Korean and English documents. The next non-blank line must be the

@@ -1,6 +1,6 @@
 # Post-Processing Shaders: An Arcade Monitor on Top of the Glide Frame (WIP)
 
-범위: [`v0.0.197`부터 `v0.0.200`까지](https://github.com/nworkers/rePIU/compare/v0.0.197...v0.0.200) (Tasks 768–769)
+범위: [`v0.0.197`부터 `v0.0.200`까지](https://github.com/reexec/rePIU/compare/v0.0.197...v0.0.200) (Tasks 768–769)
 
 원본 PIU 기판은 640×480 화면을 아케이드 CRT 모니터로 내보냈습니다. rePIU는 그 화면을 현대 모니터의 창에 2배로
 그리는데, 정확할수록 오히려 "그 시절 화면"과 멀어집니다. 이번 작업은 게임이 다 그린 프레임 위에 **표시 단계에서만**
@@ -217,7 +217,7 @@ SDL3의 [`SDL_SetWindowFullscreen`](https://wiki.libsdl.org/SDL3/SDL_SetWindowFu
 
 # Post-Processing Shaders: An Arcade Monitor on Top of the Glide Frame (WIP)
 
-Range: [`v0.0.197` to `v0.0.200`](https://github.com/nworkers/rePIU/compare/v0.0.197...v0.0.200) (Tasks 768–769)
+Range: [`v0.0.197` to `v0.0.200`](https://github.com/reexec/rePIU/compare/v0.0.197...v0.0.200) (Tasks 768–769)
 
 The original PIU board sent its 640×480 picture to an arcade CRT monitor. rePIU draws that picture at 2x in a window
 on a modern monitor, and the more exact it is, the further it gets from "the screen of the day". This post records

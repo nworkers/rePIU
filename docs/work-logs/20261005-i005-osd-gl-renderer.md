@@ -1,6 +1,6 @@
 # #5 작업 로그: 인게임 OSD에 OpenGL renderer 표시
 
-Issue: [#5](https://github.com/nworkers/rePIU/issues/5) · 설계: [20261005-i005](../design/20261005-i005-osd-gl-renderer.md) ·
+Issue: [#5](https://github.com/reexec/rePIU/issues/5) · 설계: [20261005-i005](../design/20261005-i005-osd-gl-renderer.md) ·
 작업 지시: [20261005-i005](../work-orders/20261005-i005-osd-gl-renderer.md)
 
 ## 요약
@@ -28,7 +28,7 @@ issue #5는 2026-10-05 Linux 세션에서 등록만 되고 구현되지 않은 �
 | 검증 | 결과 |
 |---|---|
 | Win32 Release 빌드 | exit 0, 바뀐 파일에 새 경고 없음 |
-| Win32 core probe | `gl_renderer_identity_all=true`. `core_probe_all=false`는 기존 [#8](https://github.com/nworkers/rePIU/issues/8)(`stack_bridge_contract`) 하나 |
+| Win32 core probe | `gl_renderer_identity_all=true`. `core_probe_all=false`는 기존 [#8](https://github.com/reexec/rePIU/issues/8)(`stack_bridge_contract`) 하나 |
 | Win32 AOT probe `--gl-renderer-identity` | exit 0 |
 | Win32 pumpit1 22초, OSD 열고 `PrintWindow` 캡처 | Renderer 절: `NVIDIA GeForce RTX 4090/PCIe/SSE2`, `Vendor: NVIDIA Corporation`, `OpenGL: 4.6.0 NVIDIA 616.56`, `Video driver: windows`. 기존 LFB·shader 항목 그대로. 1,023프레임, 실패 0 |
 | Linux x64 Debug(WSL) 빌드 | exit 0 |
@@ -47,7 +47,7 @@ issue #5는 2026-10-05 Linux 세션에서 등록만 되고 구현되지 않은 �
 
 # #5 Work Log: The OpenGL Renderer in the In-Game OSD
 
-Issue: [#5](https://github.com/nworkers/rePIU/issues/5) · Design: [20261005-i005](../design/20261005-i005-osd-gl-renderer.md) ·
+Issue: [#5](https://github.com/reexec/rePIU/issues/5) · Design: [20261005-i005](../design/20261005-i005-osd-gl-renderer.md) ·
 Work order: [20261005-i005](../work-orders/20261005-i005-osd-gl-renderer.md)
 
 ## Summary
@@ -76,7 +76,7 @@ implementation.
 | Check | Result |
 |---|---|
 | Win32 Release build | exit 0, no new warnings in the changed files |
-| Win32 core probe | `gl_renderer_identity_all=true`. `core_probe_all=false` comes only from the existing [#8](https://github.com/nworkers/rePIU/issues/8) (`stack_bridge_contract`) |
+| Win32 core probe | `gl_renderer_identity_all=true`. `core_probe_all=false` comes only from the existing [#8](https://github.com/reexec/rePIU/issues/8) (`stack_bridge_contract`) |
 | Win32 AOT probe `--gl-renderer-identity` | exit 0 |
 | Win32 pumpit1 22 s, OSD opened and captured with `PrintWindow` | Renderer section: `NVIDIA GeForce RTX 4090/PCIe/SSE2`, `Vendor: NVIDIA Corporation`, `OpenGL: 4.6.0 NVIDIA 616.56`, `Video driver: windows`. The LFB and shader controls unchanged. 1,023 frames, no failure |
 | Linux x64 Debug (WSL) build | exit 0 |

@@ -1,6 +1,6 @@
 # #5 설계: 인게임 OSD에 OpenGL renderer 표시
 
-Issue: [#5](https://github.com/nworkers/rePIU/issues/5)
+Issue: [#5](https://github.com/reexec/rePIU/issues/5)
 
 ## 배경
 
@@ -53,7 +53,7 @@ flowchart LR
 
 # #5 Design: The OpenGL Renderer in the In-Game OSD
 
-Issue: [#5](https://github.com/nworkers/rePIU/issues/5)
+Issue: [#5](https://github.com/reexec/rePIU/issues/5)
 
 ## Background
 

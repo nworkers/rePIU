@@ -1,6 +1,6 @@
 # Hunting the Missing Difficulty Dots: Four Wrong Answers and Two Real Bugs
 
-범위: [`71f4ce2`](https://github.com/nworkers/rePIU/commit/71f4ce2)부터 [`62f05de`](https://github.com/nworkers/rePIU/commit/62f05de)까지
+범위: [`71f4ce2`](https://github.com/reexec/rePIU/commit/71f4ce2)부터 [`62f05de`](https://github.com/reexec/rePIU/commit/62f05de)까지
 
 ## 주요 변경 사항
 
@@ -106,13 +106,13 @@ raw=05 00 00 00 | 05 00 00 00 | 03 00 00 00 | 0A 00 00 00 | 00 00 00 00
 
 | 결함 | 위치 | 커밋 |
 |---|---|---|
-| `grHints` 미구현 | `linexe_glide_boundary.cpp` | [`71f4ce2`](https://github.com/nworkers/rePIU/commit/71f4ce2) |
-| `GrTexInfo` 미독 | `grTexTextureMemRequired` | [`659053d`](https://github.com/nworkers/rePIU/commit/659053d) |
-| 좌표 정규화 + `GrColor_t` 형식 | `glide_opengl_backend.cpp`, `glide_hle.cpp` | [`62f05de`](https://github.com/nworkers/rePIU/commit/62f05de) |
+| `grHints` 미구현 | `linexe_glide_boundary.cpp` | [`71f4ce2`](https://github.com/reexec/rePIU/commit/71f4ce2) |
+| `GrTexInfo` 미독 | `grTexTextureMemRequired` | [`659053d`](https://github.com/reexec/rePIU/commit/659053d) |
+| 좌표 정규화 + `GrColor_t` 형식 | `glide_opengl_backend.cpp`, `glide_hle.cpp` | [`62f05de`](https://github.com/reexec/rePIU/commit/62f05de) |
 
 `grHints`는 별개 항목이었다. 로그의 유일한 미구현 Glide API(호출 298회)였고, hint type별 상태 기록으로 구현했다. `GrVertex` 레이아웃은 ABI로 고정돼 있어 STWHINT가 구조체를 직접 읽는 렌더러의 결과를 바꾸지 않으므로, 상태 기록이 이 backend에서는 stub이 아니라 완결된 구현이다. `GR_HINT_FPUPRECISION`만 기록만 하고 x87 제어 워드는 바꾸지 않았다 — 호스트가 게스트의 부동소수 연산을 대신 수행하지 않으므로, 제어 워드를 바꾸면 게스트 결과가 달라진다.
 
-계측용 커밋들도 남겼다. [`c086911`](https://github.com/nworkers/rePIU/commit/c086911)(주기 표본 + 알파 통계), [`d99f849`](https://github.com/nworkers/rePIU/commit/d99f849)(원시 텍스처 인자), [`31285a6`](https://github.com/nworkers/rePIU/commit/31285a6)(초소형 quad 표본), [`e26e06f`](https://github.com/nworkers/rePIU/commit/e26e06f)(원시 `GrTexInfo` 바이트), [`dfa9f8f`](https://github.com/nworkers/rePIU/commit/dfa9f8f)(프레임 덤프), [`05b25e7`](https://github.com/nworkers/rePIU/commit/05b25e7)(전체 다운로드 로그). 전부 환경 변수로 켜는 기본 OFF 계측이며 렌더링 경로는 바꾸지 않는다.
+계측용 커밋들도 남겼다. [`c086911`](https://github.com/reexec/rePIU/commit/c086911)(주기 표본 + 알파 통계), [`d99f849`](https://github.com/reexec/rePIU/commit/d99f849)(원시 텍스처 인자), [`31285a6`](https://github.com/reexec/rePIU/commit/31285a6)(초소형 quad 표본), [`e26e06f`](https://github.com/reexec/rePIU/commit/e26e06f)(원시 `GrTexInfo` 바이트), [`dfa9f8f`](https://github.com/reexec/rePIU/commit/dfa9f8f)(프레임 덤프), [`05b25e7`](https://github.com/reexec/rePIU/commit/05b25e7)(전체 다운로드 로그). 전부 환경 변수로 켜는 기본 OFF 계측이며 렌더링 경로는 바꾸지 않는다.
 
 ### 검증
 
@@ -222,7 +222,7 @@ Glide 2.x의 `grHints(GrHint_t type, FxU32 mask)`는 렌더링 상태가 아니�
 
 # Hunting the Missing Difficulty Dots: Four Wrong Answers and Two Real Bugs
 
-Range: [`71f4ce2`](https://github.com/nworkers/rePIU/commit/71f4ce2) through [`62f05de`](https://github.com/nworkers/rePIU/commit/62f05de)
+Range: [`71f4ce2`](https://github.com/reexec/rePIU/commit/71f4ce2) through [`62f05de`](https://github.com/reexec/rePIU/commit/62f05de)
 
 ## Major Changes
 
@@ -324,13 +324,13 @@ That matters because the function is not a passive query: the guest lays out its
 
 | Defect | Location | Commit |
 |---|---|---|
-| `grHints` unimplemented | `linexe_glide_boundary.cpp` | [`71f4ce2`](https://github.com/nworkers/rePIU/commit/71f4ce2) |
-| `GrTexInfo` never read | `grTexTextureMemRequired` | [`659053d`](https://github.com/nworkers/rePIU/commit/659053d) |
-| Coordinate normalization + `GrColor_t` | `glide_opengl_backend.cpp`, `glide_hle.cpp` | [`62f05de`](https://github.com/nworkers/rePIU/commit/62f05de) |
+| `grHints` unimplemented | `linexe_glide_boundary.cpp` | [`71f4ce2`](https://github.com/reexec/rePIU/commit/71f4ce2) |
+| `GrTexInfo` never read | `grTexTextureMemRequired` | [`659053d`](https://github.com/reexec/rePIU/commit/659053d) |
+| Coordinate normalization + `GrColor_t` | `glide_opengl_backend.cpp`, `glide_hle.cpp` | [`62f05de`](https://github.com/reexec/rePIU/commit/62f05de) |
 
 `grHints` was a separate item: the only unimplemented Glide API in the log at 298 calls, now implemented as per-type state recording. Because the `GrVertex` layout is fixed by the ABI, STWHINT cannot change the output of a renderer that reads the structure directly, so recording is a complete implementation rather than a stub. `GR_HINT_FPUPRECISION` is recorded but not applied: the host does not execute the guest's floating point, and changing the x87 control word would alter guest results.
 
-The instrumentation commits are [`c086911`](https://github.com/nworkers/rePIU/commit/c086911), [`d99f849`](https://github.com/nworkers/rePIU/commit/d99f849), [`31285a6`](https://github.com/nworkers/rePIU/commit/31285a6), [`e26e06f`](https://github.com/nworkers/rePIU/commit/e26e06f), [`dfa9f8f`](https://github.com/nworkers/rePIU/commit/dfa9f8f), and [`05b25e7`](https://github.com/nworkers/rePIU/commit/05b25e7) — all environment-gated, off by default, and none of them change the rendering path.
+The instrumentation commits are [`c086911`](https://github.com/reexec/rePIU/commit/c086911), [`d99f849`](https://github.com/reexec/rePIU/commit/d99f849), [`31285a6`](https://github.com/reexec/rePIU/commit/31285a6), [`e26e06f`](https://github.com/reexec/rePIU/commit/e26e06f), [`dfa9f8f`](https://github.com/reexec/rePIU/commit/dfa9f8f), and [`05b25e7`](https://github.com/reexec/rePIU/commit/05b25e7) — all environment-gated, off by default, and none of them change the rendering path.
 
 ### Verification
 

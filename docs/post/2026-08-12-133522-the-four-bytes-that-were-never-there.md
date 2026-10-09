@@ -1,6 +1,6 @@
 # The Four Bytes That Were Never There: A Colour Profile, a Missing Checksum, and the Wrong Suspect
 
-범위: [`7f708b1`](https://github.com/nworkers/rePIU/commit/7f708b1ffb358e857d88b52dc95f796f24ff6614)부터 [`3e69b9c`](https://github.com/nworkers/rePIU/commit/3e69b9c)까지 (v0.0.149 → v0.0.150)
+범위: [`7f708b1`](https://github.com/reexec/rePIU/commit/7f708b1ffb358e857d88b52dc95f796f24ff6614)부터 [`3e69b9c`](https://github.com/reexec/rePIU/commit/3e69b9c)까지 (v0.0.149 → v0.0.150)
 
 `pumpit8`(Pump It Up: The Rebirth)은 ROM·CHD 마운트, 실행 파일 로딩, JAMMA, 보안 칩 초기화를 모두 통과한 뒤 배경 애니메이션을 읽다가 약 97초 지점에서 `0xC0000005` 접근 위반으로 종료됐습니다.
 
@@ -32,7 +32,7 @@ zlib datastream은 deflate 블록 뒤에 4바이트 adler32가 와야 끝납니�
 
 원본 자산을 정적으로 확인하려는 시도는 막혔습니다. `BGA/083.DAT`는 `RES\0` 버전 3 컨테이너인데 16바이트 헤더 뒤 페이로드 390,039바이트가 전부 고엔트로피이고, 파일 어디에도 PNG signature도 `iCCP` 문자열도 없습니다. **PNG는 런타임에만 존재합니다.**
 
-기존 실행 probe는 레지스터가 가리키는 메모리를 32바이트씩만 떠 줬습니다. 2,615바이트 chunk를 보기엔 부족해서 진단 기능부터 만들었습니다 ([`147ec90`](https://github.com/nworkers/rePIU/commit/147ec90)).
+기존 실행 probe는 레지스터가 가리키는 메모리를 32바이트씩만 떠 줬습니다. 2,615바이트 chunk를 보기엔 부족해서 진단 기능부터 만들었습니다 ([`147ec90`](https://github.com/reexec/rePIU/commit/147ec90)).
 
 `REPIU_EXECUTION_PROBE_DUMP_*`는 probe가 처음 적중한 순간 지정한 게스트 메모리 구간을 파일로 기록합니다.
 
@@ -143,7 +143,7 @@ flowchart TD
     E -->|"rePIU<br/>handler가 scasb 거부"| G["0xC0000005 치명적 종료"]
 ```
 
-대책은 저메모리 대행 기능을 게스트가 실제로 쓰는 명령 집합까지 넓히는 것입니다 ([`3e69b9c`](https://github.com/nworkers/rePIU/commit/3e69b9c)). 특정 주소를 우회하거나 libpng 반환값을 조작하는 것이 아니라, 이미 있던 기능을 완성하는 작업입니다.
+대책은 저메모리 대행 기능을 게스트가 실제로 쓰는 명령 집합까지 넓히는 것입니다 ([`3e69b9c`](https://github.com/reexec/rePIU/commit/3e69b9c)). 특정 주소를 우회하거나 libpng 반환값을 조작하는 것이 아니라, 이미 있던 기능을 완성하는 작업입니다.
 
 문제는 `REP` 계열이 `MOV`와 근본적으로 다르다는 점입니다. `MOV`는 "읽고 `EIP`를 다음으로 옮기면" 끝이지만 `repne scasb`는 반복 상태를 `ECX`/`EDI`에 들고 있습니다. 해법은 아키텍처가 이미 보장하는 성질에 있었습니다. **`REP` 계열은 반복 도중 인터럽트가 가능하도록 정의되어 있어 재개 가능합니다.**
 
@@ -301,7 +301,7 @@ VEH 핸들러는 임의의 시점에 끼어들기 때문에 제약이 큽니다.
 
 # The Four Bytes That Were Never There: A Colour Profile, a Missing Checksum, and the Wrong Suspect
 
-Range: [`7f708b1`](https://github.com/nworkers/rePIU/commit/7f708b1ffb358e857d88b52dc95f796f24ff6614) to [`3e69b9c`](https://github.com/nworkers/rePIU/commit/3e69b9c) (v0.0.149 → v0.0.150)
+Range: [`7f708b1`](https://github.com/reexec/rePIU/commit/7f708b1ffb358e857d88b52dc95f796f24ff6614) to [`3e69b9c`](https://github.com/reexec/rePIU/commit/3e69b9c) (v0.0.149 → v0.0.150)
 
 `pumpit8` (Pump It Up: The Rebirth) cleared ROM/CHD mounting, executable loading, JAMMA, and security-chip initialization, then terminated with a `0xC0000005` access violation about 97 seconds in while reading a background animation.
 
@@ -333,7 +333,7 @@ A zlib datastream ends with a 4-byte adler32 after the deflate blocks. Consuming
 
 Inspecting the original asset statically was blocked. `BGA/083.DAT` is a `RES\0` version-3 container whose 390,039-byte payload after the 16-byte header is entirely high-entropy, with no PNG signature and no `iCCP` string anywhere in the file. **The PNG exists only at runtime.**
 
-The existing execution probe captured only 32 bytes per register — far too little for a 2,615-byte chunk — so the diagnostic came first ([`147ec90`](https://github.com/nworkers/rePIU/commit/147ec90)).
+The existing execution probe captured only 32 bytes per register — far too little for a 2,615-byte chunk — so the diagnostic came first ([`147ec90`](https://github.com/reexec/rePIU/commit/147ec90)).
 
 `REPIU_EXECUTION_PROBE_DUMP_*` writes a chosen guest memory range to a file at the probe's first hit.
 
@@ -444,7 +444,7 @@ flowchart TD
     E -->|"rePIU<br/>handler rejects scasb"| G["0xC0000005, fatal"]
 ```
 
-The fix widens the low-memory facility to the instruction set the guest actually uses ([`3e69b9c`](https://github.com/nworkers/rePIU/commit/3e69b9c)). It bypasses no address and manipulates no libpng return value; it completes a facility that already existed.
+The fix widens the low-memory facility to the instruction set the guest actually uses ([`3e69b9c`](https://github.com/reexec/rePIU/commit/3e69b9c)). It bypasses no address and manipulates no libpng return value; it completes a facility that already existed.
 
 The difficulty is that `REP` forms differ fundamentally from `MOV`. `MOV` is done once you read and step `EIP`; `repne scasb` carries repetition state in `ECX`/`EDI`. The solution rests on a property the architecture already guarantees: **`REP` forms are defined to be interruptible between iterations, and therefore restartable.**
 

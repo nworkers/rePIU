@@ -70,7 +70,7 @@ headless Edge 캡처(로컬 `http.server`):
 
 1. main 머지 후 **Settings → Pages → Build and deployment → Source = GitHub Actions**.
 2. Actions에서 Pages 워크플로를 수동 실행하거나 다음 main push를 기다립니다.
-3. <https://nworkers.github.io/rePIU/>에서 두 언어 페이지를 확인합니다.
+3. <https://reexec.github.io/rePIU/>에서 두 언어 페이지를 확인합니다.
 
 ## English
 
@@ -146,4 +146,4 @@ absolute URLs (meaningful only at the deployed address).
 
 1. After the merge to main: **Settings → Pages → Build and deployment → Source = GitHub Actions**.
 2. Run the Pages workflow manually from Actions, or wait for the next push to main.
-3. Check both languages at <https://nworkers.github.io/rePIU/>.
+3. Check both languages at <https://reexec.github.io/rePIU/>.

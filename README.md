@@ -99,7 +99,7 @@ Windows host system date.*
 ### 1. 저장소 복제 / Clone
 
 ```powershell
-git clone https://github.com/nworkers/rePIU.git
+git clone https://github.com/reexec/rePIU.git
 cd rePIU
 ```
 
@@ -502,7 +502,7 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 
 ## 문서와 지원 / Documentation and support
 
-* [프로젝트 사이트](https://nworkers.github.io/rePIU/) — 소개, 개발 기록과 릴리스 타임라인, 다운로드(한국어/English). 소스는 [docs/sites/](docs/sites/README.md)
+* [프로젝트 사이트](https://reexec.github.io/rePIU/) — 소개, 개발 기록과 릴리스 타임라인, 다운로드(한국어/English). 소스는 [docs/sites/](docs/sites/README.md)
 * [프로젝트 헌장](docs/PROJECT_CHARTER.md) — 목표와 비목표
 * [아키텍처](ARCHITECTURE.md) — 현재 subsystem과 실행 구조
 * [포팅 계획](docs/DOS4G_HLE_PORTING_PLAN.md) — 장기 구현 단계
@@ -511,13 +511,13 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 * [코딩 스타일](docs/CODING_STYLE.md) — C++20 스타일과 디렉터리 정책
 * [작업 규칙](AGENTS.md) — 설계 우선 개발, 문서화와 Git workflow
 
-질문, 재현 가능한 결함 보고와 제안은 [GitHub Issues](https://github.com/nworkers/rePIU/issues)에 남겨 주십시오. 보안 문제나 비공개 연락 경로는 아직 별도로 정의되어 있지 않습니다.
+질문, 재현 가능한 결함 보고와 제안은 [GitHub Issues](https://github.com/reexec/rePIU/issues)에 남겨 주십시오. 보안 문제나 비공개 연락 경로는 아직 별도로 정의되어 있지 않습니다.
 
-*The [project site](https://nworkers.github.io/rePIU/) introduces the project and carries the dev log, the release timeline, and downloads in Korean and English; its source is [docs/sites/](docs/sites/README.md). Use the linked architecture, analysis, knowledge-base, style, and workflow documents for project guidance. Questions and reproducible bug reports belong in GitHub Issues; a private security-reporting channel has not yet been defined.*
+*The [project site](https://reexec.github.io/rePIU/) introduces the project and carries the dev log, the release timeline, and downloads in Korean and English; its source is [docs/sites/](docs/sites/README.md). Use the linked architecture, analysis, knowledge-base, style, and workflow documents for project guidance. Questions and reproducible bug reports belong in GitHub Issues; a private security-reporting channel has not yet been defined.*
 
 ## 유지보수와 기여 / Maintainers and contributing
 
-이 프로젝트는 GitHub의 [nworkers/rePIU](https://github.com/nworkers/rePIU) 저장소 maintainers가 관리합니다. 기여 전 다음 흐름을 따라 주십시오.
+이 프로젝트는 GitHub의 [reexec/rePIU](https://github.com/reexec/rePIU) 저장소 maintainers가 관리합니다. 기여 전 다음 흐름을 따라 주십시오.
 
 1. 기존 issue와 [현재 분석 frontier](docs/analysis/current-execution-frontier.md)를 확인합니다.
 2. 동작 변경 전에 `docs/design/`에 설계를, `docs/work-orders/`에 구현 계획을 작성합니다.
@@ -527,7 +527,7 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 
 상세 기여 절차를 분리한 `CONTRIBUTING.md`는 아직 없습니다. 큰 변경은 구현 전에 issue에서 범위를 논의해 주십시오.
 
-*The repository maintainers at `nworkers/rePIU` maintain the project. Review existing issues and the current execution frontier, document design and work order before behavioral changes, preserve original executable logic, include appropriate tests and a work log, follow the coding and repository rules, and discuss large changes in an issue before implementation. A standalone `CONTRIBUTING.md` is not yet available.*
+*The repository maintainers at `reexec/rePIU` maintain the project. Review existing issues and the current execution frontier, document design and work order before behavioral changes, preserve original executable logic, include appropriate tests and a work log, follow the coding and repository rules, and discuss large changes in an issue before implementation. A standalone `CONTRIBUTING.md` is not yet available.*
 
 ## 라이선스 / License
 

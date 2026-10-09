@@ -10,7 +10,7 @@ rePIU에는 저장소 README 외에 프로젝트를 소개하고 릴리스를 �
 * 검정 바탕에 8비트 DOS 레트로 스타일, 무난한 디자인.
 * 세 가지 내용: 프로젝트 소개, WIP(블로그 글과 릴리스 타임라인만), 다운로드.
 * 소스는 `docs/sites/` 아래에 둔다. GitHub Actions를 사용해도 된다.
-* 기본 주소(`https://nworkers.github.io/rePIU/`)를 쓴다.
+* 기본 주소(`https://reexec.github.io/rePIU/`)를 쓴다.
 * 한국어와 영어를 모두 지원한다.
 
 확인한 현재 상태:
@@ -35,7 +35,7 @@ flowchart LR
     BUILD["scripts/site/build_site.py"]
     OUT["build/site/<br/>ko: / · en: /en/"]
     CHECK["내부 링크 검사"]
-    PAGES["GitHub Pages<br/>nworkers.github.io/rePIU"]
+    PAGES["GitHub Pages<br/>reexec.github.io/rePIU"]
 
     SITE --> BUILD
     POST --> BUILD
@@ -97,7 +97,7 @@ fence를 추적하므로 오분리가 없다. 분리점이 없으면 같은 본�
 
 * `markdown-it-py`(MIT) CommonMark에 table·strikethrough를 켜고, `mdit-py-plugins`(MIT)의 anchors로 제목
   id를 만든다. GitHub 렌더링과 목록 들여쓰기 규칙이 같아 기존 글이 그대로 보인다.
-* 상대 링크는 원본 파일 위치 기준으로 풀어 `github.com/nworkers/rePIU/blob/main/…`로 바꾼다. 다른 글을
+* 상대 링크는 원본 파일 위치 기준으로 풀어 `github.com/reexec/rePIU/blob/main/…`로 바꾼다. 다른 글을
   가리키는 링크는 사이트의 글 페이지로 바꾼다.
 * ` ```mermaid ` 블록은 `<pre class="mermaid">`로 내보내고, 그런 블록이 있는 페이지에서만 jsDelivr의
   고정 버전 Mermaid(MIT)를 불러 VGA 색으로 그린다.
@@ -105,7 +105,7 @@ fence를 추적하므로 오분리가 없다. 분리점이 없으면 같은 본�
 
 #### 결정 5 — 릴리스 데이터
 
-* 빌드 시 `GET /repos/nworkers/rePIU/releases`를 `GITHUB_TOKEN`으로 읽는다(draft 제외). 브라우저는 API를
+* 빌드 시 `GET /repos/reexec/rePIU/releases`를 `GITHUB_TOKEN`으로 읽는다(draft 제외). 브라우저는 API를
   부르지 않으므로 호출 한도와 JS 의존이 없다.
 * 본문은 `docs/release-notes/<tag>.md`가 있으면 그 파일을 언어별로 나눠 쓰고, 없으면 API 본문(자동 생성,
   영어)을 두 언어에 쓴다. 파일 첫 제목(`## rePIU v…`)은 버전 표시와 겹치므로 제거한다.
@@ -186,7 +186,7 @@ The request:
 * A black background, 8-bit DOS retro style, restrained design.
 * Three things: an introduction, WIP (blog posts and a release timeline only), and downloads.
 * Source under `docs/sites/`; GitHub Actions may be used.
-* The default address (`https://nworkers.github.io/rePIU/`).
+* The default address (`https://reexec.github.io/rePIU/`).
 * Both Korean and English.
 
 Current state:
@@ -248,14 +248,14 @@ use the same body.
 * `markdown-it-py` (MIT) CommonMark with tables and strikethrough, and `mdit-py-plugins` (MIT) anchors for
   heading ids. It follows GitHub's list-indent rules, so existing posts render as they do on GitHub.
 * Relative links are resolved against the source file's location and rewritten to
-  `github.com/nworkers/rePIU/blob/main/…`; links to another post go to that post's site page.
+  `github.com/reexec/rePIU/blob/main/…`; links to another post go to that post's site page.
 * ` ```mermaid ` blocks become `<pre class="mermaid">`, and only pages that have one load a pinned Mermaid
   (MIT) from jsDelivr, drawn in VGA colours.
 * Tables are wrapped in a horizontal-scroll container so a phone page never scrolls sideways.
 
 #### Decision 5 — Release data
 
-* At build time, `GET /repos/nworkers/rePIU/releases` with `GITHUB_TOKEN` (drafts excluded). The browser
+* At build time, `GET /repos/reexec/rePIU/releases` with `GITHUB_TOKEN` (drafts excluded). The browser
   never calls the API, so there is no rate limit and no JavaScript dependency.
 * The body is `docs/release-notes/<tag>.md` split by language when it exists, otherwise the API body
   (generated, English) for both languages. The file's first heading (`## rePIU v…`) duplicates the version

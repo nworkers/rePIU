@@ -1,6 +1,6 @@
 # #6 작업 지시: direct 모델에서도 swap 대기 중 타이머 tick 전달
 
-Issue: [#6](https://github.com/nworkers/rePIU/issues/6) · 설계: [20261005-i006](../design/20261005-i006-direct-model-swap-wait-ticks.md)
+Issue: [#6](https://github.com/reexec/rePIU/issues/6) · 설계: [20261005-i006](../design/20261005-i006-direct-model-swap-wait-ticks.md)
 
 ## 절차
 
@@ -20,7 +20,7 @@ probe가 통과하고, Linux i386에서 창을 최소화해도 tick이 대량으
 
 # #6 Work Order: Timer Ticks During the Swap Wait on the Direct Model Too
 
-Issue: [#6](https://github.com/nworkers/rePIU/issues/6) · Design: [20261005-i006](../design/20261005-i006-direct-model-swap-wait-ticks.md)
+Issue: [#6](https://github.com/reexec/rePIU/issues/6) · Design: [20261005-i006](../design/20261005-i006-direct-model-swap-wait-ticks.md)
 
 ## Steps
 

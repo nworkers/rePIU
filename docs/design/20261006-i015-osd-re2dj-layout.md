@@ -1,6 +1,6 @@
 # #15 설계: re2DJ 형태의 OSD와 창 크기에 비례하는 UI 글자
 
-Issue: [#15](https://github.com/nworkers/rePIU/issues/15) · 참고: re2DJ `src/ui/osd.cpp`(re2DJ Task 297)
+Issue: [#15](https://github.com/reexec/rePIU/issues/15) · 참고: re2DJ `src/ui/osd.cpp`(re2DJ Task 297)
 
 ## 배경
 
@@ -67,7 +67,7 @@ flowchart TD
 
 # #15 Design: An OSD in the re2DJ Layout, and UI Text That Scales with the Window
 
-Issue: [#15](https://github.com/nworkers/rePIU/issues/15) · Reference: re2DJ `src/ui/osd.cpp` (re2DJ Task 297)
+Issue: [#15](https://github.com/reexec/rePIU/issues/15) · Reference: re2DJ `src/ui/osd.cpp` (re2DJ Task 297)
 
 ## Background
 

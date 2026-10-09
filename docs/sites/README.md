@@ -1,6 +1,6 @@
 # rePIU 프로젝트 사이트
 
-이 디렉터리는 <https://nworkers.github.io/rePIU/>의 소스입니다. 설계는
+이 디렉터리는 <https://reexec.github.io/rePIU/>의 소스입니다. 설계는
 [Task 756 설계](../design/20260928-756-github-pages-site.md)에 있습니다.
 
 ## 구조
@@ -62,7 +62,7 @@ python3 -m http.server -d build/site 8000     # http://localhost:8000/
 
 # rePIU project site
 
-This directory is the source of <https://nworkers.github.io/rePIU/>. The design is
+This directory is the source of <https://reexec.github.io/rePIU/>. The design is
 [Task 756](../design/20260928-756-github-pages-site.md).
 
 ## Layout

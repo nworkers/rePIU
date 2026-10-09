@@ -1,6 +1,6 @@
 # #5 작업 지시: 인게임 OSD에 OpenGL renderer 표시
 
-Issue: [#5](https://github.com/nworkers/rePIU/issues/5) · 설계: [20261005-i005](../design/20261005-i005-osd-gl-renderer.md)
+Issue: [#5](https://github.com/reexec/rePIU/issues/5) · 설계: [20261005-i005](../design/20261005-i005-osd-gl-renderer.md)
 
 ## 절차
 
@@ -21,7 +21,7 @@ probe가 두 호스트에서 통과하고, Win32에서 OSD를 열면 renderer·v
 
 # #5 Work Order: The OpenGL Renderer in the In-Game OSD
 
-Issue: [#5](https://github.com/nworkers/rePIU/issues/5) · Design: [20261005-i005](../design/20261005-i005-osd-gl-renderer.md)
+Issue: [#5](https://github.com/reexec/rePIU/issues/5) · Design: [20261005-i005](../design/20261005-i005-osd-gl-renderer.md)
 
 ## Steps
 

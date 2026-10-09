@@ -1,6 +1,6 @@
 # #6 작업 로그: direct 모델에서도 swap 대기 중 타이머 tick 전달
 
-Issue: [#6](https://github.com/nworkers/rePIU/issues/6) · 설계: [20261005-i006](../design/20261005-i006-direct-model-swap-wait-ticks.md) ·
+Issue: [#6](https://github.com/reexec/rePIU/issues/6) · 설계: [20261005-i006](../design/20261005-i006-direct-model-swap-wait-ticks.md) ·
 작업 지시: [20261005-i006](../work-orders/20261005-i006-direct-model-swap-wait-ticks.md)
 
 ## 요약
@@ -90,7 +90,7 @@ pumpit8·pumpitea 40초). 최소화는 Linux와 같이 9초 뒤 `ShowWindow(SW_M
 
 # #6 Work Log: Timer Ticks During the Swap Wait on the Direct Model Too
 
-Issue: [#6](https://github.com/nworkers/rePIU/issues/6) · Design: [20261005-i006](../design/20261005-i006-direct-model-swap-wait-ticks.md) ·
+Issue: [#6](https://github.com/reexec/rePIU/issues/6) · Design: [20261005-i006](../design/20261005-i006-direct-model-swap-wait-ticks.md) ·
 Work order: [20261005-i006](../work-orders/20261005-i006-direct-model-swap-wait-ticks.md)
 
 ## Summary
