@@ -49,8 +49,10 @@ flowchart TD
 ## 옵션
 
 * OSD 체크박스 "텍스처 원본 정밀도"(Task 761의 LFB 고정밀 토글과 같은 자리·방식).
-* 환경 변수 `REPIU_GLIDE_TEXTURE_FULL_PRECISION`로 시작값을 정한다. 기본값은 사용자 결정.
-* 런처 설정에도 같은 항목을 두는지는 사용자 결정(기존 런처 옵션 저장 방식 사용).
+* 환경 변수 `REPIU_GLIDE_TEXTURE_FULL_PRECISION`로 시작값을 정한다. **기본값 켬**(사용자 결정,
+  2026-10-09). `0|off|false`로 끈다.
+* **런처 설정에도 둔다**(사용자 결정): `[Video] texture_full_precision = 0|1`, 런처가 같은 환경
+  변수로 게시한다.
 
 ## 바꾸지 않는 것
 
@@ -92,8 +94,9 @@ every kept entry on the host thread's next event pump. The texture census gains 
 used/fallback counts with the failure reason (link, data, verification) in the final log.
 
 **Option.** An OSD checkbox like Task 761's LFB high-precision toggle; the starting value comes from
-`REPIU_GLIDE_TEXTURE_FULL_PRECISION`, with the default and whether the launcher also gets the setting
-left to the user.
+`REPIU_GLIDE_TEXTURE_FULL_PRECISION`, **on by default**, and the launcher gets the same setting
+(`[Video] texture_full_precision = 0|1`, published as that variable) — both decided by the user on
+2026-10-09.
 
 **Unchanged.** Guest memory and code, the game's texture memory layout, 8-bit formats (P_8, AP_88)
 and the LFB path.
