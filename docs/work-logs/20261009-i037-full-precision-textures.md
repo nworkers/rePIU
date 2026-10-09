@@ -43,6 +43,17 @@
 * 크기 변환 경로가 실제로 쓰이는지(따로 집계하지 않음, 검증 실패 시 4444로 돌아감).
 * Linux i386 빌드.
 
+## 후속 후보: 메모리
+
+검증된 텍스처마다 호스트 메모리에 RGBA8 두 벌(`game_rgba8`, `full_precision_rgba8`)을 더 들고 있다.
+텍셀당 8바이트로, pumpitea 토글 시점 18개 항목은 많아야 약 9MB, 게임에 알려 주는 텍스처 메모리
+8MB(텍셀 약 400만 개)를 기준으로 한 상한은 약 32MB다. 시작 주소가 다른 겹친 업로드는 예전 항목을 바로
+지우지 않으므로 실제 상한은 이보다 클 수 있다. GPU 메모리는 변경 전과 같다.
+
+`game_rgba8`은 없어도 된다. 원본을 쓰는 조건이 "원본을 다시 4444/565로 자르면 게임 데이터와 바이트
+단위로 같다"이므로, 끌 때 원본을 다시 잘라 만들면 같은 이미지가 나온다. 그러면 추가분이 절반(상한
+약 16MB)이 되고, 토글하는 순간 변환 계산이 든다. 사용자 결정(2026-10-09)으로 지금은 두 벌을 유지한다.
+
 ---
 
 # Work log: full-precision textures bypassing the embedded Mesa fx 4444 truncation (issue #37)
@@ -71,3 +82,12 @@ the quality change and exited normally — confirming the inferred `[ESP+0x34]` 
 
 **Not checked.** Runs on other ROM sets (their signatures match), whether the resizing path occurs in
 practice, and the Linux i386 build.
+
+**Follow-up candidate: memory.** Each verified texture keeps two extra RGBA8 copies in host memory
+(`game_rgba8`, `full_precision_rgba8`), 8 bytes per texel: at most about 9 MB for the 18 entries live
+at pumpitea's toggle, about 32 MB bounded by the 8 MB texture memory the game is told (about 4 M
+texels) — possibly more, since an overlapping upload at another start address does not drop the old
+entry at once. GPU memory is unchanged. `game_rgba8` is redundant: an original is used only when
+re-truncating it equals the game's data byte for byte, so it can be rebuilt from the original on
+switching off, halving the extra memory (about 16 MB bound) at the cost of a conversion per toggle.
+Both copies stay for now by the user's decision on 2026-10-09.

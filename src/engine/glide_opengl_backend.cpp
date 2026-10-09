@@ -2170,6 +2170,9 @@ bool GlideOpenGlBackend::StoreTexture(
       aspect_ratio, &entry.s_extent, &entry.t_extent);
   // Issue #37: keep both images when the original was found and verified, so
   // the option can switch between them later without the guest's help.
+  // game_rgba8 could be rebuilt by re-truncating the original (that is what
+  // the verification checked), halving this memory; see the issue #37 work
+  // log.
   const bool has_full_precision =
       full_precision != nullptr &&
       full_precision->outcome == repiu::hle::MesaFxSourceOutcome::kUsed &&
