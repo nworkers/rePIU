@@ -50,18 +50,20 @@ SDL 게임패드·조이스틱 하위 시스템은 어디서도 초기화하지 
 
 | 입력 | 1P | 2P |
 |---|---|---|
-| 좌상(UpLeft) | `Pad1_DpadLeft` | `Pad2_DpadLeft` |
-| 우상(UpRight) | `Pad1_DpadUp` | `Pad2_DpadUp` |
-| 우하(DownRight) | `Pad1_DpadRight` | `Pad2_DpadRight` |
-| 좌하(DownLeft) | `Pad1_DpadDown` | `Pad2_DpadDown` |
-| 가운데(Center) | `Pad1_A` | `Pad2_A` |
-| `COIN1` | `Pad1_Start`, `Pad2_Start` | |
-| `SERVICE` | `Pad1_Back` | |
-| `TEST` | `Pad1_LeftStick` | |
+| 좌상(UpLeft) | `Pad1_LeftShoulder` | `Pad2_LeftShoulder` |
+| 우상(UpRight) | `Pad1_RightShoulder` | `Pad2_RightShoulder` |
+| 우하(DownRight) | `Pad1_B`, `Pad1_DpadRight` | `Pad2_B`, `Pad2_DpadRight` |
+| 좌하(DownLeft) | `Pad1_DpadDown`, `Pad1_DpadLeft` | `Pad2_DpadDown`, `Pad2_DpadLeft` |
+| 가운데(Center) | `Pad1_A`, `Pad1_Start` | `Pad2_A`, `Pad2_Start` |
+| `COIN1` | `Pad1_Back`, `Pad2_Back` | |
+| `SERVICE` | 없음 | |
+| `TEST` | 없음 | |
 | `CLEAR` | `Pad1_RightStick` | |
 
-발판은 대각선 네 개라 D-pad를 시계 방향으로 45° 돌려 붙였다(위 → 우상, 오른쪽 → 우하, 아래 → 좌하,
-왼쪽 → 좌상). TEST·CLEAR는 실수로 누르기 어려운 스틱 클릭에 두었다. 기본값은 기존 키 기본값 뒤에
+발판 배치는 사용자가 정했다(2026-10-09): 위쪽 발판은 어깨 버튼, 아래쪽은 D-pad 아래·왼쪽과
+`B`·D-pad 오른쪽, 가운데는 `A`와 `Start`. 처음 설계한 "D-pad를 45° 돌린 배치"를 실제 패드로 써 본 뒤 바꿨다. 코인은 `Back`이고, TEST·SERVICE는 패드로
+운영자 메뉴에 실수로 들어가지 않도록 기본값을 두지 않는다(같은 날 사용자 결정). CLEAR는 실수로 누르기 어려운
+오른쪽 스틱 클릭에 둔다. 기본값은 기존 키 기본값 뒤에
 붙으므로, 설정 파일에서 입력을 직접 적은 경우에는 그 줄이 패드 기본값까지 대신한다(지금 규칙과 같다).
 
 ## 구조
@@ -145,10 +147,12 @@ aliases are capped separately at four each per input.
 removed. Every joystick, standard gamepads included, gets a `Joy` number; those SDL recognizes as
 standard gamepads also get a `Pad` number. A removed device's presses are released.
 
-**Defaults.** The four diagonal panels take the D-pad turned 45° clockwise (up → up-right,
-right → down-right, down → down-left, left → up-left) and the center takes A, for Pad1 on P1 and
-Pad2 on P2; `COIN1` takes either Start, `SERVICE` Pad1 Back, `TEST` Pad1 LeftStick and `CLEAR` Pad1
-RightStick, the stick clicks being hard to press by accident. The pad defaults follow the existing
+**Defaults.** The panel layout is the user's (2026-10-09), replacing the first design's D-pad turned
+45 degrees after trying a real pad: the upper panels take the shoulder buttons, the lower ones the
+D-pad's down with left and `B` with the D-pad's right, and the center takes A and Start, for Pad1 on P1 and
+Pad2 on P2; `COIN1` takes either pad's Back, `TEST` and `SERVICE` have no pad default so a pad
+cannot open the operator menus by accident (also the user's call), and `CLEAR` takes Pad1's right
+stick click, which is hard to press by accident. The pad defaults follow the existing
 key defaults, so an input written in a config file replaces both, as the current rule already says.
 
 **Structure.** SDL-independent `HostPadAlias` names and parser (`repiu/input/host_pad_binding.h`) and

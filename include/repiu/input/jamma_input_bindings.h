@@ -63,7 +63,7 @@ struct ResolvedJammaBindings
 };
 
 // The config-file text of an input's built-in default, e.g.
-// "Keypad7, Home, Pad2_DpadLeft".
+// "Keypad7, Home, Pad2_LeftShoulder".
 // The defaults are stored as text and parsed through the same path a file
 // takes, so a default can never mean something the equivalent file would not.
 std::string_view DefaultJammaBindingText(JammaInputKey key);

@@ -48,25 +48,27 @@ static_assert(kJammaPortBitCount == kJammaInputKeyCount,
 // is the pairing the hardcoded mapping used before this table existed.
 //
 // Issue #34 adds the standard gamepad after the keys: Pad1 for P1 and Pad2 for
-// P2. The panels are diagonal, so the D-pad is turned 45 degrees clockwise --
-// up is up-right, right is down-right, down is down-left, left is up-left --
-// and A is the center. TEST and CLEAR sit on the stick clicks, which are hard
-// to press by accident.
+// P2. The upper panels take the shoulder buttons, the lower ones the D-pad's
+// down with left and B with right, and A or Start is the center -- the
+// user's layout.
+// Back inserts a coin on either pad; TEST and SERVICE stay keyboard only so a
+// pad cannot open the operator menus, and CLEAR sits on the right stick click,
+// which is hard to press by accident.
 constexpr std::string_view kDefaultBindingText[] = {
-    "Q, Pad1_DpadLeft",
-    "E, Pad1_DpadUp",
-    "Z, Pad1_DpadDown",
-    "C, Pad1_DpadRight",
-    "S, Pad1_A",
-    "F5, Pad1_Start, Pad2_Start",
-    "F1, Pad1_LeftStick",
-    "F2, Pad1_Back",
+    "Q, Pad1_LeftShoulder",
+    "E, Pad1_RightShoulder",
+    "Z, Pad1_DpadDown, Pad1_DpadLeft",
+    "C, Pad1_B, Pad1_DpadRight",
+    "S, Pad1_A, Pad1_Start",
+    "F5, Pad1_Back, Pad2_Back",
+    "F1",
+    "F2",
     "F3, Pad1_RightStick",
-    "Keypad7, Home, Pad2_DpadLeft",
-    "Keypad9, PageUp, Pad2_DpadUp",
-    "Keypad1, End, Pad2_DpadDown",
-    "Keypad3, PageDown, Pad2_DpadRight",
-    "Keypad5, Clear, Pad2_A",
+    "Keypad7, Home, Pad2_LeftShoulder",
+    "Keypad9, PageUp, Pad2_RightShoulder",
+    "Keypad1, End, Pad2_DpadDown, Pad2_DpadLeft",
+    "Keypad3, PageDown, Pad2_B, Pad2_DpadRight",
+    "Keypad5, Clear, Pad2_A, Pad2_Start",
 };
 
 std::string_view TrimBlanks(std::string_view text)

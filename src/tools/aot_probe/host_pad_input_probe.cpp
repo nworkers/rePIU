@@ -143,17 +143,20 @@ bool ProbeDefaults()
 {
     const ResolvedJammaBindings defaults = input::DefaultJammaBindings();
     return input::FormatJammaBinding(defaults, JammaInputKey::kP1UpLeft) ==
-               "Q, Pad1_DpadLeft" &&
+               "Q, Pad1_LeftShoulder" &&
            input::FormatJammaBinding(defaults, JammaInputKey::kP1UpRight) ==
-               "E, Pad1_DpadUp" &&
+               "E, Pad1_RightShoulder" &&
+           input::FormatJammaBinding(defaults, JammaInputKey::kP1DownLeft) ==
+               "Z, Pad1_DpadDown, Pad1_DpadLeft" &&
            input::FormatJammaBinding(defaults, JammaInputKey::kP1Center) ==
-               "S, Pad1_A" &&
+               "S, Pad1_A, Pad1_Start" &&
            input::FormatJammaBinding(defaults, JammaInputKey::kCoin1) ==
-               "F5, Pad1_Start, Pad2_Start" &&
-           input::FormatJammaBinding(defaults, JammaInputKey::kTest) ==
-               "F1, Pad1_LeftStick" &&
+               "F5, Pad1_Back, Pad2_Back" &&
+           input::FormatJammaBinding(defaults, JammaInputKey::kTest) == "F1" &&
+           input::FormatJammaBinding(defaults, JammaInputKey::kService) ==
+               "F2" &&
            input::FormatJammaBinding(defaults, JammaInputKey::kP2DownRight) ==
-               "Keypad3, PageDown, Pad2_DpadRight" &&
+               "Keypad3, PageDown, Pad2_B, Pad2_DpadRight" &&
            defaults.Get(JammaInputKey::kP2DownRight).alias_count == 2;
 }
 
@@ -163,11 +166,15 @@ bool ProbeMask()
     HostPadState state;
     bool ok = input::ComputeJammaPadMask(defaults, state) == 0U;
 
-    state.gamepad_buttons[0] = 1U << SDL_GAMEPAD_BUTTON_DPAD_UP;
-    state.gamepad_buttons[1] = 1U << SDL_GAMEPAD_BUTTON_SOUTH;
+    state.gamepad_buttons[0] = (1U << SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) |
+                               (1U << SDL_GAMEPAD_BUTTON_DPAD_LEFT);
+    state.gamepad_buttons[1] = (1U << SDL_GAMEPAD_BUTTON_SOUTH) |
+                               (1U << SDL_GAMEPAD_BUTTON_EAST);
     ok = ok && input::ComputeJammaPadMask(defaults, state) ==
                    (JammaInputKeyMask(JammaInputKey::kP1UpRight) |
-                    JammaInputKeyMask(JammaInputKey::kP2Center));
+                    JammaInputKeyMask(JammaInputKey::kP1DownLeft) |
+                    JammaInputKeyMask(JammaInputKey::kP2Center) |
+                    JammaInputKeyMask(JammaInputKey::kP2DownRight));
 
     // A pad with no number bound (Pad3) changes nothing.
     HostPadState unbound;

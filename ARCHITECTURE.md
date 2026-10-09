@@ -3914,7 +3914,7 @@ The user-facing guide is [docs/guides/romset-config-files.md](docs/guides/romset
 issue #34부터 `[Input]` 값에 키 이름과 함께 게임패드·조이스틱 이름을 쓸 수 있습니다.
 `Pad<N>_<버튼>`은 SDL이 표준 게임패드로 인식한 장치의 위치 기준 버튼(`A`는 아래쪽 면 버튼)과
 트리거, `Joy<N>_Button<K>`·`Joy<N>_Hat<H><방향>`은 표준 매핑이 없는 장치(USB 발판 등)의 번호입니다.
-기본값은 표준 게임패드만 두며, Pad1이 1P, Pad2가 2P입니다(D-pad를 45° 돌린 대각선 발판, `A`가 가운데).
+기본값은 표준 게임패드만 두며, Pad1이 1P, Pad2가 2P입니다(위쪽 발판은 어깨 버튼, 아래쪽은 D-pad 아래·왼쪽과 `B`·D-pad 오른쪽, `A`·`Start`가 가운데).
 
 ```mermaid
 flowchart LR
@@ -3942,7 +3942,8 @@ From issue #34 an `[Input]` value mixes key names with gamepad and joystick name
 `Pad<N>_<Button>` for a device SDL recognizes as a standard gamepad (positional buttons, `A` the
 bottom face button, and the triggers), and `Joy<N>_Button<K>`/`Joy<N>_Hat<H><Dir>` by number for
 devices without a standard mapping, such as USB dance pads. Defaults cover standard gamepads only,
-Pad1 for P1 and Pad2 for P2 (the D-pad turned 45 degrees for the diagonal panels, `A` the center).
+Pad1 for P1 and Pad2 for P2 (the shoulder buttons for the upper panels, the D-pad's down and left
+and `B` with the D-pad's right for the lower ones, `A` and `Start` the center).
 The name parser and state are plain data testable without a device, and `JammaInputBinding` keeps
 four pad aliases beside its keys. The engine's `SdlPadInput`, on the host thread that pumps events,
 initializes `SDL_INIT_GAMEPAD`, numbers devices in connection order, records only the inputs whose

@@ -33,11 +33,28 @@
 | Win32 aot_probe 전체 체인 | exit 0, 555줄 |
 | core probe | Win32·Linux x64 모두 실패 0 |
 
+## 기본값 변경 (2026-10-09, 사용자 확인 뒤)
+
+사용자가 실제 패드로 동작을 확인한 뒤 기본 배치를 정했다. 처음 설계의 "D-pad 45° 회전 + Start 코인 +
+스틱 클릭 TEST·SERVICE"를 아래로 바꿨다.
+
+| 입력 | 1P(Pad1) / 2P(Pad2) |
+|---|---|
+| 좌상·우상 | `LeftShoulder` · `RightShoulder` |
+| 좌하 | `DpadDown`, `DpadLeft` |
+| 우하 | `B`, `DpadRight` |
+| 가운데 | `A`, `Start` |
+| `COIN1` | `Pad1_Back`, `Pad2_Back` |
+| `TEST`, `SERVICE` | 없음(키보드만) |
+| `CLEAR` | `Pad1_RightStick`(사용자가 언급하지 않아 유지) |
+
+probe의 기본값·마스크 단언과 설정 probe의 기본값 단언을 새 배치로 고쳤고, 가이드·설계·ARCHITECTURE를
+갱신했다. Win32 `--host-pad-input`·`--romset-config`(94개)·core probe, Linux x64 core probe 통과.
+
 ## 확인하지 않은 것
 
-* **실제 장치.** 이 환경에 연결된 게임패드나 발판이 없어 장치 이벤트 경로(`SdlPadInput`과 백엔드
-  연결)는 실행으로 확인하지 못했다. 장치 없이 동작이 그대로인지 보는 게임 실행도 하지 않았다
-  (사용자 확인 후 진행).
+* **실제 장치.** 이 환경에는 장치가 없어 직접 실행하지 못했지만, 사용자가 실제 패드로 동작을
+  확인했다(2026-10-09). 발판형 조이스틱(`Joy<N>_`)은 확인 여부를 따로 듣지 못했다.
 * Linux i386 빌드.
 
 ---
@@ -67,6 +84,16 @@ README, and the 497 design's §17.
 eight checks; `--romset-config` passes 94 checks including the generated-file round trip; the full
 Win32 aot_probe chain exits 0 with 555 lines; the core probe has no failures on Win32 or Linux x64.
 
-**Not checked.** Real devices: no gamepad or dance pad is attached here, so the device event path
-(`SdlPadInput` and the backend wiring) has not been exercised, and no game run checked that nothing
-changes without a device (pending the user's go-ahead). The Linux i386 build.
+**Defaults changed (2026-10-09, after the user's check).** Having confirmed the feature on a real
+pad, the user set the layout, replacing the first design's rotated D-pad, Start for coin and stick
+clicks for TEST and SERVICE: the shoulder buttons for the upper panels, D-pad down and left for
+down-left, `B` and D-pad right for down-right, `A` and `Start` for the center, either pad's `Back`
+for `COIN1`,
+no pad default for `TEST` and `SERVICE`, and `CLEAR` kept on Pad1's right stick click (not
+mentioned). The probes' default and mask assertions and the config probe's default assertion follow
+the new layout, and the guide, design and ARCHITECTURE are updated; the Win32 `--host-pad-input`,
+`--romset-config` (94 checks) and core probes and the Linux x64 core probe pass.
+
+**Not checked.** Nothing could be run on a device here, but the user confirmed the feature on a real
+gamepad (2026-10-09); whether a dance-pad joystick (`Joy<N>_`) was tried was not reported. The Linux
+i386 build.

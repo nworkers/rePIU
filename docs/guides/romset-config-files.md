@@ -100,23 +100,24 @@ SERVICE =
 
 | 키 이름 | 설명 | 기본값(키) | 기본값(게임패드) |
 |---|---|---|---|
-| `P1_UP_LEFT` | 1P 좌상단 발판 | `Q` | `Pad1_DpadLeft` |
-| `P1_UP_RIGHT` | 1P 우상단 발판 | `E` | `Pad1_DpadUp` |
-| `P1_CENTER` | 1P 가운데 발판 | `S` | `Pad1_A` |
-| `P1_DOWN_LEFT` | 1P 좌하단 발판 | `Z` | `Pad1_DpadDown` |
-| `P1_DOWN_RIGHT` | 1P 우하단 발판 | `C` | `Pad1_DpadRight` |
-| `P2_UP_LEFT` | 2P 좌상단 발판 | `Keypad7, Home` | `Pad2_DpadLeft` |
-| `P2_UP_RIGHT` | 2P 우상단 발판 | `Keypad9, PageUp` | `Pad2_DpadUp` |
-| `P2_CENTER` | 2P 가운데 발판 | `Keypad5, Clear` | `Pad2_A` |
-| `P2_DOWN_LEFT` | 2P 좌하단 발판 | `Keypad1, End` | `Pad2_DpadDown` |
-| `P2_DOWN_RIGHT` | 2P 우하단 발판 | `Keypad3, PageDown` | `Pad2_DpadRight` |
-| `TEST` | 테스트 버튼 | `F1` | `Pad1_LeftStick` |
-| `SERVICE` | 서비스 버튼 | `F2` | `Pad1_Back` |
+| `P1_UP_LEFT` | 1P 좌상단 발판 | `Q` | `Pad1_LeftShoulder` |
+| `P1_UP_RIGHT` | 1P 우상단 발판 | `E` | `Pad1_RightShoulder` |
+| `P1_CENTER` | 1P 가운데 발판 | `S` | `Pad1_A, Pad1_Start` |
+| `P1_DOWN_LEFT` | 1P 좌하단 발판 | `Z` | `Pad1_DpadDown, Pad1_DpadLeft` |
+| `P1_DOWN_RIGHT` | 1P 우하단 발판 | `C` | `Pad1_B, Pad1_DpadRight` |
+| `P2_UP_LEFT` | 2P 좌상단 발판 | `Keypad7, Home` | `Pad2_LeftShoulder` |
+| `P2_UP_RIGHT` | 2P 우상단 발판 | `Keypad9, PageUp` | `Pad2_RightShoulder` |
+| `P2_CENTER` | 2P 가운데 발판 | `Keypad5, Clear` | `Pad2_A, Pad2_Start` |
+| `P2_DOWN_LEFT` | 2P 좌하단 발판 | `Keypad1, End` | `Pad2_DpadDown, Pad2_DpadLeft` |
+| `P2_DOWN_RIGHT` | 2P 우하단 발판 | `Keypad3, PageDown` | `Pad2_B, Pad2_DpadRight` |
+| `TEST` | 테스트 버튼 | `F1` | 없음 |
+| `SERVICE` | 서비스 버튼 | `F2` | 없음 |
 | `CLEAR` | CLEAR 버튼 | `F3` | `Pad1_RightStick` |
-| `COIN1` | 코인 투입 | `F5` | `Pad1_Start, Pad2_Start` |
+| `COIN1` | 코인 투입 | `F5` | `Pad1_Back, Pad2_Back` |
 
-게임패드 기본값은 발판이 대각선이라 D-pad를 시계 방향으로 45° 돌려 붙였다(위 → 우상, 오른쪽 →
-우하, 아래 → 좌하, 왼쪽 → 좌상). 입력을 설정 파일에 직접 적으면 그 줄이 키와 게임패드 기본값을
+게임패드 기본값은 위쪽 발판을 어깨 버튼(LB·RB)에, 아래쪽 발판을 D-pad 아래·왼쪽(좌하)과
+`B`·D-pad 오른쪽(우하)에, 가운데를 `A`와 `Start`에 둔다. 코인은 `Back`이다. TEST와 SERVICE는 게임 중 실수로
+운영자 메뉴에 들어가지 않도록 게임패드 기본값이 없다(필요하면 직접 건다). 입력을 설정 파일에 직접 적으면 그 줄이 키와 게임패드 기본값을
 **모두** 대신한다. 키만 바꾸고 게임패드는 그대로 쓰려면 `P1_CENTER = M, Pad1_A`처럼 함께 적는다.
 
 2P 기본값에 숫자패드와 편집키가 둘 다 있는 이유는 NumLock 상태 때문이다. NumLock이 꺼져
@@ -153,7 +154,7 @@ Windows 키는 지원하지 않는다. 대부분의 조합을 운영체제가 �
 [Input]
 P1_CENTER   = S, Pad1_A, Joy1_Button5
 P1_UP_LEFT  = Q, Joy1_Hat1Up
-COIN1       = F5, Pad1_Start
+COIN1       = F5, Pad1_Back
 ```
 
 | 형식 | 뜻 |
@@ -334,23 +335,25 @@ partly invalid value (`TEST = F9, NoSuchKey`) applies its valid half.
 
 | Key name | Meaning | Default (keys) | Default (gamepad) |
 |---|---|---|---|
-| `P1_UP_LEFT` | P1 upper-left panel | `Q` | `Pad1_DpadLeft` |
-| `P1_UP_RIGHT` | P1 upper-right panel | `E` | `Pad1_DpadUp` |
-| `P1_CENTER` | P1 center panel | `S` | `Pad1_A` |
-| `P1_DOWN_LEFT` | P1 lower-left panel | `Z` | `Pad1_DpadDown` |
-| `P1_DOWN_RIGHT` | P1 lower-right panel | `C` | `Pad1_DpadRight` |
-| `P2_UP_LEFT` | P2 upper-left panel | `Keypad7, Home` | `Pad2_DpadLeft` |
-| `P2_UP_RIGHT` | P2 upper-right panel | `Keypad9, PageUp` | `Pad2_DpadUp` |
-| `P2_CENTER` | P2 center panel | `Keypad5, Clear` | `Pad2_A` |
-| `P2_DOWN_LEFT` | P2 lower-left panel | `Keypad1, End` | `Pad2_DpadDown` |
-| `P2_DOWN_RIGHT` | P2 lower-right panel | `Keypad3, PageDown` | `Pad2_DpadRight` |
-| `TEST` | Test button | `F1` | `Pad1_LeftStick` |
-| `SERVICE` | Service button | `F2` | `Pad1_Back` |
+| `P1_UP_LEFT` | P1 upper-left panel | `Q` | `Pad1_LeftShoulder` |
+| `P1_UP_RIGHT` | P1 upper-right panel | `E` | `Pad1_RightShoulder` |
+| `P1_CENTER` | P1 center panel | `S` | `Pad1_A, Pad1_Start` |
+| `P1_DOWN_LEFT` | P1 lower-left panel | `Z` | `Pad1_DpadDown, Pad1_DpadLeft` |
+| `P1_DOWN_RIGHT` | P1 lower-right panel | `C` | `Pad1_B, Pad1_DpadRight` |
+| `P2_UP_LEFT` | P2 upper-left panel | `Keypad7, Home` | `Pad2_LeftShoulder` |
+| `P2_UP_RIGHT` | P2 upper-right panel | `Keypad9, PageUp` | `Pad2_RightShoulder` |
+| `P2_CENTER` | P2 center panel | `Keypad5, Clear` | `Pad2_A, Pad2_Start` |
+| `P2_DOWN_LEFT` | P2 lower-left panel | `Keypad1, End` | `Pad2_DpadDown, Pad2_DpadLeft` |
+| `P2_DOWN_RIGHT` | P2 lower-right panel | `Keypad3, PageDown` | `Pad2_B, Pad2_DpadRight` |
+| `TEST` | Test button | `F1` | none |
+| `SERVICE` | Service button | `F2` | none |
 | `CLEAR` | Clear button | `F3` | `Pad1_RightStick` |
-| `COIN1` | Coin insert | `F5` | `Pad1_Start, Pad2_Start` |
+| `COIN1` | Coin insert | `F5` | `Pad1_Back, Pad2_Back` |
 
-The panels are diagonal, so the gamepad defaults turn the D-pad 45 degrees clockwise (up is
-up-right, right is down-right, down is down-left, left is up-left). Writing an input in a config
+The gamepad defaults put the upper panels on the shoulder buttons (LB, RB), the lower panels on
+the D-pad's down and left (down-left) and `B` with the D-pad's right (down-right), and the center
+on `A` and `Start`. `Back` inserts a coin. TEST and SERVICE have no gamepad default, so a pad cannot open the
+operator menus by accident; bind them yourself if you need them. Writing an input in a config
 file replaces **both** its key and gamepad defaults; to change only the key and keep the gamepad,
 write both, as in `P1_CENTER = M, Pad1_A`.
 
@@ -390,7 +393,7 @@ they connect** and keep their number until removed.
 [Input]
 P1_CENTER   = S, Pad1_A, Joy1_Button5
 P1_UP_LEFT  = Q, Joy1_Hat1Up
-COIN1       = F5, Pad1_Start
+COIN1       = F5, Pad1_Back
 ```
 
 | Form | Meaning |
