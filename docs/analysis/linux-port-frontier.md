@@ -3576,7 +3576,7 @@ offsets.**
 | ~~No first frame is reached (the screen)~~ | **resolved in Task 506** | `dynamic` AOT bypassed legacy's per-instruction single-step bottleneck. `pumpit1` produced its first black swap at about 45.1 seconds, 69,263/307,200 non-black pixels at about 51.7 seconds, and more than forty continuing swaps. What is drawn accurately remains a separate verification question. |
 | The three audio outputs | **corrected** | see section 8 |
 | Hardware debug registers | **unavailable — now enforced by a predicate** | Linux user space cannot write its own thread's. **Not only `native_linear_span`** stood on them but `native_fast_path` and `native_region` too, and `native_fast_path` is **on by default**, which is what produced the nine-second stall (3d-23). `HardwareDebugRegistersAvailable()` now gates all three ahead of their environment settings |
-| **The Release probe failures** | **open (found in Task 509)** | the probe suite has **never been validated in Release.** Linux Release **segfaults (exit 139)** after `dos_file_handle_cache` and before the `== pit_timer ==` header; Windows Release fails `fault_handler_data_faults` and `stack_bridge_contract`. Debug is 15 of 15 on both, including a Windows Debug build carrying 509's change -- what separates them is the **configuration**, not the host. **The engine is fine in Release** -- the Linux Release `repiu` reproduces 3d-19's baseline on the DOS/4GW sample. 509's change (frame counters and one shutdown line) does not pass through these probes |
+| ~~**The Release probe failures**~~ | **closed (Windows: Task 765; Linux: passing since the x64 work)** | the probe suite has **never been validated in Release.** Linux Release **segfaults (exit 139)** after `dos_file_handle_cache` and before the `== pit_timer ==` header; Windows Release fails `fault_handler_data_faults` and `stack_bridge_contract`. Debug is 15 of 15 on both, including a Windows Debug build carrying 509's change -- what separates them is the **configuration**, not the host. **The engine is fine in Release** -- the Linux Release `repiu` reproduces 3d-19's baseline on the DOS/4GW sample. 509's change (frame counters and one shutdown line) does not pass through these probes |
 | Cross-process telemetry | **fenced** | the shared section and suspended snapshot in `live_telemetry_snapshot.cpp`; not needed to run the guest |
 | `CaptureSuspendedThreadSnapshot` | **no callers** | defined, never declared or called; removing it wants its intent confirmed first |
 | ~~A SIGTRAP on teardown~~ | **resolved (Task 508)** | 507 reproduced it and 508 settled the cause: **the ordering, not the trap**. The shutdown block walks the same cleanup sequence whether or not recovery succeeded, and its third step is `RemoveFaultHandler()`. A refused recovery means the guest thread keeps running, and the `dynamic` backend plants INT3s and sets the trap flag in the ordinary course of dispatching, so hitting one after the handler is gone runs the kernel's default disposition -- a core dump. 507's own step markers were the evidence: **both SIGTRAPs printed `step=translation-worker` last**, the step immediately after `step=fault-handler`. 508 does no cleanup on the refused arm: `probe-dump`, `DetachHostThread`, `_Exit`. Six 60-second-budget runs gave 6 of 6 refused and zero SIGTRAPs (two under the same conditions before the fix). The "EIP pointing into an already-released AOT cache" 507 worried about does not arise -- **because nothing is released**. |
@@ -19006,7 +19006,7 @@ Work log: [750](../work-logs/20260928-750-timer-ticks-during-the-swap-wait.md)
 
 * Win32 pumpitp3·pumpipx3의 "unable to find entry point in DLL"(간헐). Win32는 `iret`가 native라 중첩·차례
   규칙이 꺼져 있다.
-* INT 21h AH=08h 없음. 부팅 검사 구간의 tick 폐기(pumpitpc·pumpitpr 약 450).
+* ~~INT 21h AH=08h 없음.~~ **해결(issue #31, 원래 Task 764):** `AH=07h/08h` HLE. 부팅 검사 구간의 tick 폐기(pumpitpc·pumpitpr 약 450)는 남음.
 
 ## English
 
@@ -19040,7 +19040,7 @@ Work log: [751](../work-logs/20260928-751-guest-cli-hold-and-romset-survey.md)
 
 * "unable to find entry point in DLL" in pumpitp3 and pumpipx3 on Win32 (intermittent). Win32's `iret` is
   native, so the nesting and turn rules are off there.
-* No INT 21h AH=08h. Ticks dropped during the start-up check (pumpitpc and pumpitpr, about 450).
+* ~~No INT 21h AH=08h.~~ **Resolved (issue #31, originally Task 764):** an `AH=07h/08h` HLE. Ticks dropped during the start-up check (pumpitpc and pumpitpr, about 450) remain.
 
 ## 2026-09-28 Task 752 — pumpit8의 fps: 페이서가 늦은 프레임을 붙잡았고, WSL은 소프트웨어로 그리고 있었다
 

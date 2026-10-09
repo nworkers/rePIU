@@ -28,6 +28,7 @@
 // read as a complete run.
 #include "code_cache_placement_probe.h"
 #include "dos_console_device_probe.h"
+#include "dos_console_input_probe.h"
 #include "dos_file_handle_cache_probe.h"
 #include "env_toggle_probe.h"
 #include "event_clock_probe.h"
@@ -101,6 +102,8 @@ constexpr CoreProbe kCoreProbes[] = {
     {"execution_timeout", &repiu::tools::RunExecutionTimeoutProbe},
     {"dos_file_handle_cache", &repiu::tools::RunDosFileHandleCacheProbe},
     {"dos_console_device", &repiu::tools::RunDosConsoleDeviceProbe},
+    // Task 764. INT 21h AH=07h/08h against the BIOS keyboard buffer.
+    {"dos_console_input", &repiu::tools::RunDosConsoleInputProbe},
     {"pit_timer", &repiu::tools::RunPitTimerProbe},
     // Task 754. Pure arithmetic over two clock readings.
     {"event_clock", &repiu::tools::RunEventClockProbe},

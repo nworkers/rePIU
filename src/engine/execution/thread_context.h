@@ -923,6 +923,13 @@ struct ThreadContext
     // vector. Keep an INT 21h-specific histogram for trace-free live analysis.
     std::uint32_t handled_dos_int21_count = 0;
     std::uint32_t handled_dos_int21_ah_counts[256] = {};
+    // Task 764: INT 21h AH=07h/08h. An extended key hands out its scan code on
+    // the call after the zero, and a call with nothing queued is counted as a
+    // wait (the guest is left on the `int 21h` to ask again).
+    std::uint8_t dos_console_pending_scan_code = 0;
+    bool dos_console_pending_scan_code_valid = false;
+    std::uint32_t dos_console_input_count = 0;
+    std::uint32_t dos_console_input_wait_count = 0;
     bool dos_date_offset_valid = false;
     std::int32_t dos_date_offset_days = 0;
     repiu::hle::DosVirtualFileSystemState dos_file_system;

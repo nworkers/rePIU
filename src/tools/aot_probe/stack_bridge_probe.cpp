@@ -33,6 +33,12 @@ constexpr std::size_t kFrameSlots = 8;
 constexpr std::size_t kFrameBytes = kFrameSlots * sizeof(std::uint32_t);
 
 constexpr std::uint32_t kResolverReturnMarker = 0xC0FFEE01U;
+// Task 765: what EAX holds when the thunk is entered for the refusal check, so
+// the check is about the thunk leaving the registers alone rather than about
+// whatever the compiler left in EAX. In Release, MSVC left the previous call's
+// marker there, and the refused call returned it untouched -- which the old
+// "must not be the marker" reading counted as a failure.
+constexpr std::uint32_t kRefusedEntryMarker = 0x0BADF00DU;
 // Task 503d-12: what the harness returns when the refusal path redirected it.
 constexpr std::uint32_t kFallbackMarker = 0xFA11BACCU;
 constexpr std::size_t kHostStackBytes = 64U * 1024U;
@@ -85,6 +91,10 @@ void REPIU_THUNK_RESOLVER_CALL RepiuStackBridgeProbeResolver(
 // a marker into the saved EAX slot, `popa` applies it, and the return value is
 // then proof that editing the frame reaches the guest's registers.
 std::uint32_t RepiuStackBridgeProbeThunk();
+
+// Task 765: calls the thunk with EAX set to kRefusedEntryMarker, so a refusal
+// that leaves the registers alone returns exactly that value.
+std::uint32_t RepiuStackBridgeProbeRefusedCall();
 
 // Task 503d-12: the refusal that resumes past the pushed dispatch address, and
 // the site-shaped caller it has to land inside. Only the harness is called from
@@ -176,6 +186,17 @@ extern "C" __declspec(naked) std::uint32_t RepiuStackBridgeProbeThunk()
     done:
         popad
         popfd
+        ret
+    }
+}
+
+// Task 765. The refusal check's entry: EAX is pinned before the thunk runs.
+extern "C" __declspec(naked) std::uint32_t RepiuStackBridgeProbeRefusedCall()
+{
+    __asm
+    {
+        mov eax, 0BADF00Dh
+        call RepiuStackBridgeProbeThunk
         ret
     }
 }
@@ -329,11 +350,12 @@ bool ProbeBridgeContract()
         returned == kResolverReturnMarker && canary == 0x1BADD00DU;
 
     // With no context the bridge must refuse, leaving the registers untouched
-    // -- so the marker from the previous call must not reappear.
+    // -- so EAX comes back exactly as it went in (Task 765: pinned by the
+    // caller, not read as "anything but the previous marker").
     DisarmBridge();
     g_bridge.resolver_ran = false;
-    const std::uint32_t refused = RepiuStackBridgeProbeThunk();
-    ok = ok && !g_bridge.resolver_ran && refused != kResolverReturnMarker;
+    const std::uint32_t refused = RepiuStackBridgeProbeRefusedCall();
+    ok = ok && !g_bridge.resolver_ran && refused == kRefusedEntryMarker;
 
     ok = repiu::platform::ReleaseMemory(host_stack.base, host_stack.size) && ok;
     return ok;

@@ -141,8 +141,9 @@
   `REPIU_GLIDE_LFB_HIGH_PRECISION`, `REPIU_PIC_TIMER_IN_SERVICE`, `REPIU_GUEST_CLI_HOLD`,
   `REPIU_EVENT_CLOCK`, `REPIU_AOT_REENTRY_MEMO`, `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH`,
   `REPIU_LINUX_X64_SAFE_POINT_INJECTION`(Linux).
-* **승격은 오래됐지만 보류**: `REPIU_AOT_GUARDED_SEGMENT_LOAD/POP/READ` — v0.0.206(#18)에서
-  슬롯 내부를 교체해, `=0`이 새 슬롯의 문제를 가려낼 유일한 비상 수단이다.
+* **보류했다가 삭제(issue #30, 2026-10-09)**: `REPIU_AOT_GUARDED_SEGMENT_LOAD/POP/READ` —
+  v0.0.206(#18)에서 슬롯 내부를 교체해 `=0`을 비상 수단으로 남겼고, v0.0.207~v0.0.210 동안
+  새 슬롯 회귀가 보고되지 않아 재개 조건을 채웠다. 1번 묶음과 같은 형태로 스위치만 지웠다.
 * **판정 미정 실험**: `REPIU_GLIDE_ASYNC_PRESENT`(09-28 측정 중),
   `REPIU_GLIDE_LFB_STAGING_REUSE`(09-22).
 * **사용자 설정·진단 도구**: `REPIU_LAUNCHER`, `REPIU_DISABLE_NATIVE_FAST_PATH`,
@@ -247,9 +248,10 @@ candidates; only some historical A/B scripts reference them (listed per group).
   (`REPIU_AOT_DBT_SUPERBLOCK`, `REPIU_TIMER_HANDLER_CACHE_ENTRY`, `REPIU_TIMER_RETURN_PAD`,
   `REPIU_GLIDE_LFB_HIGH_PRECISION`, `REPIU_PIC_TIMER_IN_SERVICE`, `REPIU_GUEST_CLI_HOLD`,
   `REPIU_EVENT_CLOCK`, `REPIU_AOT_REENTRY_MEMO`, `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH`,
-  `REPIU_LINUX_X64_SAFE_POINT_INJECTION`); the long-promoted but held
-  `REPIU_AOT_GUARDED_SEGMENT_LOAD/POP/READ` (slot internals replaced in v0.0.206, so `=0` is
-  the only escape hatch for the new slots); undecided experiments
+  `REPIU_LINUX_X64_SAFE_POINT_INJECTION`); the long-promoted
+  `REPIU_AOT_GUARDED_SEGMENT_LOAD/POP/READ`, held because v0.0.206 replaced their slot
+  internals, lost their kill switches in issue #30 once v0.0.207 to v0.0.210 showed no
+  regression; undecided experiments
   (`REPIU_GLIDE_ASYNC_PRESENT`, `REPIU_GLIDE_LFB_STAGING_REUSE`); and user settings or
   diagnostic tools (`REPIU_LAUNCHER`, `REPIU_DISABLE_NATIVE_FAST_PATH`,
   `REPIU_NATIVE_LINEAR_SPAN`, paths and timeouts).

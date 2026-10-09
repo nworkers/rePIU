@@ -260,13 +260,14 @@ If the requirement is a simple question or confirmation request, answer it direc
 
 * 사용자가 작업을 요청하면 먼저 현재 Git 브랜치명을 확인한다.
 * 현재 브랜치가 `main`이면 사용자가 요청한 작업 내용을 바탕으로 작업용 브랜치를 새로 만든 뒤 작업한다.
+* 현재 브랜치가 `main`이 아니면 새 브랜치를 만들지 않고 그 브랜치에서 이어서 작업한다. 다른 issue의 작업이어도 같다 — 한 작업 브랜치에 여러 issue의 커밋이 쌓일 수 있고, 커밋마다 제목 끝에 해당 issue 번호를 붙여 구분한다. 브랜치는 머지할 때 정리된다.
 * 작업 단위가 하나 끝날 때마다 관련 변경을 Git 커밋으로 남긴다.
 * 프로젝트 버전은 저장소 루트의 `VERSION` 파일에서 `major.minor.patch` 형식으로 관리한다.
 * 사용자가 머지를 요청하면 `main`에 머지하기 전에 patch 버전을 1 증가시킨다.
 * 사용자가 minor 버전 증가를 요청하면 minor 버전을 1 증가시키고 patch 버전은 0으로 리셋한다.
 * 사용자가 major 버전 증가를 요청하면 major 버전을 1 증가시키고 minor와 patch 버전은 0으로 리셋한다.
 * 사용자가 머지를 요청하면 작업 브랜치를 원격에 push하고 GitHub pull request를 만든 뒤(머지 요청이 이 push와 PR 생성의 승인이다), 그 PR을 squash merge해 `main`에 넣는다. 머지한 뒤 `git pull`로 로컬 `main`을 원격과 같게 갱신한다.
-* PR 본문에는 해결하는 issue를 `Closes #6`처럼 적는다.
+* PR 본문에는 해결하는 issue를 `Closes #6`처럼 적는다. 여러 issue를 해결하면 `Closes #6, closes #8`처럼 issue마다 적는다.
 * squash merge의 커밋 제목은 작업 브랜치 안의 커밋 제목들을 확인하고, 전체 변경 내용을 잘 표현하는 제목으로 만든다.
 * `main`에 머지한 뒤에는 그 머지 커밋에 `VERSION`과 같은 값의 annotated tag를 `vmajor.minor.patch` 형식으로 붙인다. 예: `VERSION`이 `0.0.81`이면 `v0.0.81`.
 * tag 메시지에는 해당 버전의 핵심 변경을 한 줄로 남긴다.
@@ -278,13 +279,14 @@ If the requirement is a simple question or confirmation request, answer it direc
 
 * When the user requests work, first check the current Git branch name.
 * If the current branch is `main`, create a task branch based on the user's requested work before making changes.
+* If the current branch is not `main`, do not create a new branch; keep working on the current one, even for a different issue. One task branch may carry commits for several issues, each commit title ending with its own issue number; the branch is settled when it is merged.
 * Leave a Git commit for the related changes whenever one task unit is complete.
 * Manage the project version in the repository-root `VERSION` file using `major.minor.patch`.
 * When the user requests a merge, increment the patch version by 1 before merging into `main`.
 * When the user requests a minor version bump, increment the minor version by 1 and reset the patch version to 0.
 * When the user requests a major version bump, increment the major version by 1 and reset the minor and patch versions to 0.
 * When the user requests a merge, push the task branch to the remote, open a GitHub pull request from it (the merge request approves this push and the pull request), and squash-merge it into `main`. After the merge, update local `main` to match the remote with `git pull`.
-* Name the issues the pull request resolves in its description, as in `Closes #6`.
+* Name the issues the pull request resolves in its description, as in `Closes #6`. When it resolves several, name each one, as in `Closes #6, closes #8`.
 * For the squash merge's commit title, inspect the commit titles in the task branch and write one that best describes the complete change.
 * After merging into `main`, tag that merge commit with an annotated tag matching `VERSION`, in the form `vmajor.minor.patch`. For example, tag `v0.0.81` when `VERSION` reads `0.0.81`.
 * Put a one-line summary of the version's key change in the tag message.

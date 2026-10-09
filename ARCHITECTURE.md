@@ -554,6 +554,25 @@ DOS console output sink and returns the requested byte count. Reads, keyboard
 semantics, and unobserved DOS devices remain outside this boundary until binary
 evidence requires them.
 
+콘솔 문자 입력은 Task 764부터 `INT 21h AH=07h/08h`(에코 없는 한 문자)로
+제공합니다. DOS의 콘솔 입력은 BIOS 키보드 위에 서 있으므로 이 서비스는 INT 16h
+`AH=00h`와 같은 버퍼(`ThreadContext::bios_keyboard`)를 legacy 형식으로 읽어 `AL`에
+문자를 돌려주고, 확장 키는 scan code를 다음 호출에 돌려줍니다. 버퍼가 비면 1 ms 잔
+뒤 `EIP`를 올리지 않고 돌아와 게스트가 같은 `int 21h`를 다시 실행합니다 — DOS의
+"키가 올 때까지 기다림"을 HLE 안의 재시도로 옮긴 것이며, 키는 호스트 스레드의 폴
+루프가 계속 채웁니다. Ctrl-C 검사(INT 23h)는 하지 않습니다. 게임의 fatal 처리기가
+`getch`로 쓰는 경로가 이 서비스에 닿습니다.
+
+Console character input is provided since Task 764 as `INT 21h AH=07h/08h` (one
+character without echo). DOS console input stands on the BIOS keyboard, so the
+service reads the same buffer INT 16h `AH=00h` does (`ThreadContext::bios_keyboard`)
+in its legacy form, returns the character in `AL`, and hands an extended key's scan
+code out on the next call. With the buffer empty it sleeps 1 ms and returns without
+advancing `EIP`, so the guest re-executes the same `int 21h`: DOS's "wait for a key"
+turned into a retry inside the HLE, with the host thread's poll loop still feeding
+keys. There is no Ctrl-C check (INT 23h). The game's fatal handler reaches this
+service through `getch`.
+
 Win32 native execution uses a fail-closed function return fast path implemented by `native_fast_path.*` and `verified_region_analyzer.*`. Pinned Zydis v4.1.1 decodes observed direct-call targets in legacy 32-bit mode; rePIU recursively verifies runtime-bounded direct control flow and rejects privileged, interrupt, I/O, system, segment-dependent, indirect, far, or undecodable paths. An approved function runs with Trap Flag cleared until an x86 hardware execution breakpoint at its validated guest return address reenters VEH. Any intermediate exception restores debug registers and single-step state and permanently rejects that function for the current run.
 
 Task 275의 `native_linear_span.*`은 함수 진입으로 증명되지 않은 일반 single-step
@@ -2469,9 +2488,9 @@ fallback `INT3`를 확인하고 cache breakpoint provenance는 fallback을 plann
 55초 OFF/ON에서 progress는 `37,606 → 39,571`(+5.23%), triangle draw는
 `412 → 468`(+13.59%), AOT boundary는 `74,724 → 59,334`(-20.60%)였습니다. ON의
 success/fallback은 `21,011/1,593`(92.95% 성공)였고 fatal/AOT legacy fallback은 0,
-EEPROM hash는 일치했습니다. 따라서 `dynamic`에서는 기본 ON이며
-`REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false` 또는 알 수 없는 값으로 fail-closed
-비활성화합니다.
+EEPROM hash는 일치했습니다. 따라서 `dynamic`에서는 항상 켜져 있습니다. 끄기 스위치
+`REPIU_AOT_GUARDED_SEGMENT_POP`은 슬롯이 shadow 진실원 방식(v0.0.206, #18)으로 바뀐 뒤
+회귀 없이 릴리스가 이어져 issue #30에서 없앴습니다.
 
 ```mermaid
 flowchart LR
@@ -2493,9 +2512,9 @@ the slot entry as INT3. Whole-CFG validation checks the entry opcode, patch loca
 fallback INT3, while breakpoint provenance continues to classify the fallback as planner HLE.
 The 55-second comparison improved progress by 5.23% and triangle draws by 13.59%, reduced AOT
 boundaries by 20.60%, and observed a 92.95% guarded success rate with zero fatal/AOT legacy
-fallback and matching EEPROM hashes. The path is default-on for `dynamic`; setting
-`REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false`, or an unknown value, disables it
-fail-closed.
+fallback and matching EEPROM hashes. The path is always on for `dynamic`; its kill switch
+`REPIU_AOT_GUARDED_SEGMENT_POP` went in issue #30, after the slots moved onto the shadow in
+v0.0.206 (#18) and later releases showed no regression.
 
 ## i386 shadow 진실원 세그먼트 슬롯 / Shadow-authoritative i386 segment slots
 
@@ -3485,9 +3504,9 @@ While the `grBufferSwap` gate waits for the present it posted to the host thread
 
 ## Guarded segment-load fast path / Guarded segment-load fast path
 
-Win32 `dynamic`에서 `REPIU_AOT_GUARDED_SEGMENT_LOAD`가 없거나 `1|on|true`이면 register-source `MOV Sreg, r16` 중 ES/DS/FS/GS를 전용 cache slot으로 처리합니다. source selector가 실제 CPU selector와 HLE shadow에 모두 같은 경우만 selector 상태를 바꾸지 않고 fallthrough합니다. SS, ESP source, memory source, selector 불일치, patch 실패는 원래 EFLAGS/GPR을 복구한 뒤 기존 INT3/VEH HLE를 사용합니다. `0|off|false`와 알 수 없는 값은 fail-closed opt-out입니다.
+Win32 `dynamic`에서는 register-source `MOV Sreg, r16` 중 ES/DS/FS/GS를 전용 cache slot으로 처리합니다. source selector가 실제 CPU selector와 HLE shadow에 모두 같은 경우만 selector 상태를 바꾸지 않고 fallthrough합니다. SS, ESP source, memory source, selector 불일치, patch 실패는 원래 EFLAGS/GPR을 복구한 뒤 기존 INT3/VEH HLE를 사용합니다. 끄기 스위치 `REPIU_AOT_GUARDED_SEGMENT_LOAD`(와 같은 형태의 `_READ`)는 issue #30에서 없앴습니다.
 
-On Win32 `dynamic`, an unset `REPIU_AOT_GUARDED_SEGMENT_LOAD` or `1|on|true` handles register-source `MOV Sreg, r16` for ES/DS/FS/GS in a dedicated cache slot. It leaves selector state unchanged and falls through only when the source selector equals both the physical CPU selector and HLE shadow. SS, ESP sources, memory sources, selector mismatches, and patch failures restore original EFLAGS/GPRs and retain the existing INT3/VEH HLE path. `0|off|false` and unknown values are fail-closed opt-outs.
+On Win32 `dynamic`, the path handles register-source `MOV Sreg, r16` for ES/DS/FS/GS in a dedicated cache slot. It leaves selector state unchanged and falls through only when the source selector equals both the physical CPU selector and HLE shadow. SS, ESP sources, memory sources, selector mismatches, and patch failures restore original EFLAGS/GPRs and retain the existing INT3/VEH HLE path. The kill switch `REPIU_AOT_GUARDED_SEGMENT_LOAD` (and the matching `_READ`) went in issue #30.
 
 ## Hybrid segment-override dispatch (삭제됨) / Hybrid segment-override dispatch (deleted)
 

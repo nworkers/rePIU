@@ -4286,6 +4286,9 @@ void PrintExecutionAttempt(
     }
     logger.info("handled DOS close count: {}",
                 attempt.handled_dos_close_count);
+    logger.info("DOS console input chars/waits: {}/{}",
+                attempt.dos_console_input_count,
+                attempt.dos_console_input_wait_count);
     if (attempt.handled_dos_close_count > 0)
     {
         logger.info("last DOS close handle: {}",
@@ -5447,26 +5450,12 @@ int main(int argc, char** argv)
     // capture confirmed lower per-frame exception and HLE costs; Task i020
     // removed its kill switch.
     aot_build_options.enable_dbt_port_io_dispatch = use_dynamic_backend;
-    // Task 291 A/B promoted the guarded no-state-change segment-pop path for
-    // aot-dbt. Explicit false and unknown values fail closed for compatibility
-    // diagnosis and regression bisects.
-    aot_build_options.enable_guarded_segment_pop =
-        use_dynamic_backend &&
-        repiu::runtime::ResolvePromotedToggle(
-            std::getenv("REPIU_AOT_GUARDED_SEGMENT_POP"));
-    // Task 390 promotes Task 389's source/physical/shadow-equality guarded load
-    // for aot-dbt. Explicit false and unknown values remain fail-closed
-    // opt-outs for compatibility diagnosis and regression bisects.
-    aot_build_options.enable_guarded_segment_load =
-        use_dynamic_backend &&
-        repiu::runtime::ResolvePromotedToggle(
-            std::getenv("REPIU_AOT_GUARDED_SEGMENT_LOAD"));
-    // Task 384 promotes Task 383's physical/shadow-equality guarded read for
-    // aot-dbt. Explicit false and unknown values remain fail-closed opt-outs.
-    aot_build_options.enable_guarded_segment_read =
-        use_dynamic_backend &&
-        repiu::runtime::ResolvePromotedToggle(
-            std::getenv("REPIU_AOT_GUARDED_SEGMENT_READ"));
+    // Tasks 291, 390 and 384 promoted the guarded segment pop, load and read
+    // paths for aot-dbt; v0.0.206 (#18) moved their slots onto the shadow, and
+    // issue #30 removed their kill switches after releases with no regression.
+    aot_build_options.enable_guarded_segment_pop = use_dynamic_backend;
+    aot_build_options.enable_guarded_segment_load = use_dynamic_backend;
+    aot_build_options.enable_guarded_segment_read = use_dynamic_backend;
     if (use_dynamic_backend && !ReadAotIndirectInlineCacheEntryCount(
             &aot_build_options.indirect_inline_cache_entry_count))
     {
