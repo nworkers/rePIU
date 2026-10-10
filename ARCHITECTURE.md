@@ -3975,6 +3975,11 @@ flowchart LR
 * 같은 입력을 키와 패드가 함께 누르면, 한쪽을 떼도 다른 쪽이 누르는 동안 release edge를 남기지 않습니다.
   SDL은 배경 창에 패드 이벤트를 보내지 않으므로, 포커스를 잃으면 키와 같이 패드 상태도 모두 뗍니다.
 * 런처도 `SDL_INIT_GAMEPAD`를 켜 ImGui SDL3 백엔드가 게임패드 내비게이션을 쓸 수 있게 합니다.
+* issue #52: 한 패드에서 LT+RT+L3+R3을 1초 누르면 종료합니다. 판정(`repiu/input/pad_exit_chord.h`의
+  `IsPadExitChordDown`, 1초 연속에 한 번 발동하는 `PadExitChordTimer`)은 `HostPadState`만 보는 순수 코드이고,
+  트리거 기준값 `kHostPadTriggerThreshold`도 입력 계층에 있습니다. 게임은 이벤트 펌프마다 `SdlPadInput`의
+  상태로 판정해 창 닫기와 같은 `exit_requested_`를 세우고, 런처는 프레임마다 SDL 게임패드를 읽어 같은
+  판정으로 창을 닫습니다(`closed_by_exit_chord`). 조합 중 각 버튼은 평소처럼 게임 입력으로도 흐릅니다.
 
 From issue #34 an `[Input]` value mixes key names with gamepad and joystick names:
 `Pad<N>_<Button>` for a device SDL recognizes as a standard gamepad (positional buttons, `A` the
@@ -3989,7 +3994,13 @@ pad state changed as timeline edges, and publishes the mask atomically; the poll
 with one atomic load, so Task 403's key query count is unchanged. An input held by a key and a pad
 stays held until both release, and losing focus releases pads as it does keys, since SDL sends no
 pad events to a background window. The launcher initializes `SDL_INIT_GAMEPAD` too, so ImGui's
-SDL3 backend can navigate with a gamepad.
+SDL3 backend can navigate with a gamepad. Since issue #52 holding LT+RT+L3+R3 on one pad for a second
+quits: the check (`IsPadExitChordDown` and the once-per-second-of-holding `PadExitChordTimer` in
+`repiu/input/pad_exit_chord.h`) is pure code over `HostPadState`, with the trigger threshold
+`kHostPadTriggerThreshold` in the input layer too. The game checks `SdlPadInput`'s state every event pump
+and sets the same `exit_requested_` closing the window does; the launcher reads SDL's gamepads every frame
+and closes by the same check (`closed_by_exit_chord`). During the chord each button still reaches the game
+as usual.
 
 ## 롬셋별 NVRAM 저장 / Per-ROM-set NVRAM storage
 

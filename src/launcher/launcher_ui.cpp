@@ -1,6 +1,7 @@
 #include "repiu/launcher/launcher_ui.h"
 
 #include "repiu/engine/glide_letterbox.h"
+#include "repiu/input/pad_exit_chord.h"
 #include "repiu/engine/imgui_ui_scale.h"
 #include "repiu/engine/post_shader_catalog.h"
 #include "repiu/update/launcher_updater.h"
@@ -102,6 +103,61 @@ bool CreateSdlContext(SdlContext* context, std::string* message)
     // rather than spinning a core while an operator reads the list.
     SDL_GL_SetSwapInterval(1);
     return true;
+}
+
+// Issue #52. What the connected gamepads hold, read for the exit chord. ImGui's
+// backend opens the pads for navigation but keeps their state to itself, so the
+// launcher reads them through SDL, opening a pad the first time it sees one
+// that is not open yet (`opened` is closed when the launcher ends).
+input::HostPadState ReadLauncherPads(std::vector<SDL_Gamepad*>* opened)
+{
+    input::HostPadState state;
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    if (ids == nullptr)
+    {
+        return state;
+    }
+    for (int index = 0;
+         index < count &&
+         static_cast<std::uint32_t>(index) < input::kMaxGamepadSlots;
+         ++index)
+    {
+        SDL_Gamepad* pad = SDL_GetGamepadFromID(ids[index]);
+        if (pad == nullptr)
+        {
+            pad = SDL_OpenGamepad(ids[index]);
+            if (pad == nullptr)
+            {
+                continue;
+            }
+            opened->push_back(pad);
+        }
+        std::uint32_t buttons = 0U;
+        for (const SDL_GamepadButton button :
+             {SDL_GAMEPAD_BUTTON_LEFT_STICK, SDL_GAMEPAD_BUTTON_RIGHT_STICK})
+        {
+            if (SDL_GetGamepadButton(pad, button))
+            {
+                buttons |= 1U << button;
+            }
+        }
+        std::uint8_t triggers = 0U;
+        if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) >=
+            input::kHostPadTriggerThreshold)
+        {
+            triggers |= 0x01U;
+        }
+        if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) >=
+            input::kHostPadTriggerThreshold)
+        {
+            triggers |= 0x02U;
+        }
+        state.gamepad_buttons[index] = buttons;
+        state.gamepad_triggers[index] = triggers;
+    }
+    SDL_free(ids);
+    return state;
 }
 
 std::size_t FindInitialSelection(const std::vector<RomSetEntry>& catalog,
@@ -521,6 +577,9 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
     bool running = true;
     // Issue #45: what the window was last set to; it opens windowed.
     bool window_fullscreen = false;
+    // Issue #52: the exit chord's hold, and the pads opened to read it.
+    input::PadExitChordTimer exit_chord;
+    std::vector<SDL_Gamepad*> chord_pads;
     while (running)
     {
         SDL_Event event;
@@ -552,6 +611,16 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
             {
                 running = false;
             }
+        }
+        // Issue #52: LT+RT+L3+R3 held on one pad for a second quits, as Quit
+        // does -- the gamepad-only way out on a Steam Deck.
+        if (context.gamepad_initialized &&
+            exit_chord.Update(
+                input::IsPadExitChordDown(ReadLauncherPads(&chord_pads)),
+                SDL_GetTicks()))
+        {
+            result.closed_by_exit_chord = true;
+            running = false;
         }
         if (!running)
         {
@@ -618,8 +687,8 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
             ImGui::TextUnformatted("Select a ROM set");
             ImGui::SameLine();
             ImGui::TextDisabled(
-                "- arrows move, Enter starts, Esc quits; discs are read from "
-                "roms/");
+                "- arrows move, Enter starts, Esc (or LT+RT+L3+R3 held 1 s) "
+                "quits; discs are read from roms/");
             DrawRomSetTable(catalog, &selection, &start_requested,
                             &focus_pending, footer_height);
             focus_pending = false;
@@ -690,6 +759,10 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
         SDL_GL_SwapWindow(context.window);
     }
 
+    for (SDL_Gamepad* pad : chord_pads)
+    {
+        SDL_CloseGamepad(pad);
+    }
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();

@@ -1,6 +1,7 @@
 #ifndef REPIU_ENGINE_GLIDE_OPENGL_BACKEND_H_
 #define REPIU_ENGINE_GLIDE_OPENGL_BACKEND_H_
 
+#include "repiu/input/pad_exit_chord.h"
 #include "repiu/hle/glide_hle.h"
 #include "repiu/hle/glide_vertex.h"
 #include "repiu/engine/glide_buffer_swap_timing.h"
@@ -625,6 +626,8 @@ private:
     // letterboxed) or fills the drawable. From REPIU_GLIDE_KEEP_ASPECT when
     // the window opens, on by default; the OSD changes it. Host thread only.
     bool keep_aspect_ = true;
+    // Issue #52: how long LT+RT+L3+R3 has been held. Host thread only.
+    input::PadExitChordTimer pad_exit_chord_;
     // Issue #45: an OSD change waiting for the next event pump. The OSD draws
     // in the middle of a present, so it only leaves the request here. Host
     // thread only.

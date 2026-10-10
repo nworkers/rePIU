@@ -34,6 +34,8 @@ Update 버튼은 **릴리스 아카이브를 푼 폴더**(실행 파일 옆 `VER
 3. Steam에서 "비 스팀 게임 추가"로 `~/rePIU/repiu`를 등록하고, 속성의 **시작 위치를 `~/rePIU`**로
    둡니다. 롬과 설정은 시작 위치 기준으로 찾습니다.
 4. 게임 모드에서 실행하면 런처가 열립니다. 게임패드로 롬셋을 고르고 `A`로 시작합니다.
+5. 끝낼 때는 **LT + RT + 왼쪽·오른쪽 스틱 누르기를 1초** 함께 누릅니다. 게임 중이면 런처로 돌아가고,
+   런처에서 한 번 더 하면 rePIU가 끝나 Steam으로 돌아갑니다(issue #52).
 
 이후로는 런처에 알림이 뜨면 Update를 누르기만 하면 됩니다(D-pad로 버튼까지 올라가 `A`). Linux에서는
 같은 프로세스가 새 실행 파일로 바뀌므로 Steam은 게임이 계속 실행 중인 것으로 봅니다.
@@ -109,6 +111,8 @@ releases page address.
 3. In Steam, "Add a Non-Steam Game" with `~/rePIU/repiu`, and set its **Start In to `~/rePIU`**: ROMs and
    settings are found relative to it.
 4. Run it in game mode; the launcher opens, choose a ROM set with the gamepad and start it with `A`.
+5. To quit, hold **LT + RT + both stick clicks for a second**: a game returns to the launcher, and doing it
+   again there ends rePIU and returns to Steam (issue #52).
 
 From then on, press Update when the launcher shows the notice (D-pad up to the button, then `A`). On Linux
 the same process turns into the new executable, so Steam sees the game as still running.

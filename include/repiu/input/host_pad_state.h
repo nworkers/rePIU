@@ -12,6 +12,11 @@ namespace repiu::input
 // written by the SDL adapter on the host thread and read when the pressed mask
 // is recomputed, so the mapping from controls to inputs can be tested with no
 // device attached.
+// How far an analog trigger (SDL's 0..32767) is pulled before it counts as
+// held: past half. Issue #52 moved it here so the launcher reads triggers by
+// the same rule as the game.
+constexpr std::int16_t kHostPadTriggerThreshold = 16384;
+
 struct HostPadState
 {
     // Bit n is SDL_GamepadButton n.

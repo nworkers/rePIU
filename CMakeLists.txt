@@ -221,6 +221,7 @@ add_library(repiu_exe
     src/input/host_key_names.cpp
     src/input/host_pad_binding.cpp
     src/input/host_pad_state.cpp
+    src/input/pad_exit_chord.cpp
     src/input/jamma_input_bindings.cpp
     src/input/jamma_input_key.cpp
     src/exe/dos16m_bound_module.cpp

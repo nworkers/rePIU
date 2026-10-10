@@ -424,10 +424,13 @@ TEST       = Ctrl+F1
 
 게임패드와 조이스틱(USB 발판 포함)도 같은 줄에 섞어 쓸 수 있습니다. 표준 게임패드는 설정 없이도
 Pad1이 1P, Pad2가 2P로 동작하고, 그 밖의 장치는 `Joy1_Button3`처럼 버튼 번호로 겁니다.
+한 패드에서 **LT + RT + 왼쪽·오른쪽 스틱 누르기를 1초** 함께 누르면 게임은 런처로 돌아가고, 런처에서는
+rePIU가 끝납니다(issue #52, 키보드 없는 스팀덱용).
 
 *Gamepads and joysticks, USB dance pads included, mix into the same lines. A standard gamepad
 works with no configuration, Pad1 as P1 and Pad2 as P2; other devices are bound by button number,
-as in `Joy1_Button3`.*
+as in `Joy1_Button3`. Holding **LT + RT + both stick clicks for a second** on one pad returns a game to
+the launcher and quits the launcher (issue #52, for a Steam Deck with no keyboard).*
 
 ```ini
 [Input]

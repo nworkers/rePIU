@@ -179,6 +179,9 @@ COIN1       = F5, Pad1_Back
 * 아날로그 스틱 방향과 조이스틱 축은 지원하지 않는다.
 * 런처(롬셋 선택 화면)는 게임패드로도 조작할 수 있다. D-pad로 옮기고 `A`로 고르며, 롬셋 목록에서는 `A`가
   Enter처럼 그 롬셋을 시작한다.
+* 한 패드에서 LT + RT + 왼쪽 스틱 누르기 + 오른쪽 스틱 누르기를 1초 함께 누르면 종료한다(issue #52). 게임
+  중이면 런처로 돌아가고, 런처에서는 rePIU가 끝난다. 오른쪽 스틱 누르기는 기본으로 `CLEAR`이므로 누르는
+  동안 게임에 CLEAR가 들어간다.
 
 ### 7. 조합키
 
@@ -418,6 +421,9 @@ The names are positional (`A` is the bottom face button — PlayStation's ×, Ni
 * Analog stick directions and joystick axes are not supported.
 * The launcher (the ROM set picker) works with a gamepad too: move with the D-pad and choose with `A`;
   on the ROM set list `A` starts the set, as Enter does.
+* Holding LT + RT + left stick click + right stick click together on one pad for a second quits (issue
+  #52): a game returns to the launcher, and the launcher ends rePIU. The right stick click is `CLEAR` by
+  default, so the game sees CLEAR while the chord is held.
 
 ### 7. Key combinations
 

@@ -32,6 +32,8 @@ struct LauncherUiResult
     // Issue #48: the operator chose to update and the new release is staged;
     // the caller installs it and restarts.
     bool install_update = false;
+    // Issue #52: the window closed because LT+RT+L3+R3 was held for a second.
+    bool closed_by_exit_chord = false;
 };
 
 // Opens the launcher window, runs until the operator starts a ROM set or
