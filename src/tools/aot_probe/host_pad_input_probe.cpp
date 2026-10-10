@@ -4,6 +4,7 @@
 #include "repiu/input/host_pad_binding.h"
 #include "repiu/input/host_pad_state.h"
 #include "repiu/input/jamma_input_bindings.h"
+#include "repiu/input/pad_exit_chord.h"
 
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_joystick.h>
@@ -218,6 +219,47 @@ bool ProbeSlots()
     return ok;
 }
 
+// Issue #52. The exit chord counts only all four on one pad, and fires once
+// after a second of unbroken holding.
+bool ProbeExitChord()
+{
+    constexpr std::uint32_t kSticks =
+        (1U << SDL_GAMEPAD_BUTTON_LEFT_STICK) |
+        (1U << SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+    input::HostPadState state;
+    state.gamepad_buttons[1] = kSticks | (1U << SDL_GAMEPAD_BUTTON_SOUTH);
+    state.gamepad_triggers[1] = 0x03U;
+    bool ok = input::IsPadExitChordDown(state);
+    // One trigger short.
+    state.gamepad_triggers[1] = 0x01U;
+    ok = ok && !input::IsPadExitChordDown(state);
+    // Split across two pads: triggers on one, stick clicks on the other.
+    state.gamepad_triggers[1] = 0x00U;
+    state.gamepad_triggers[0] = 0x03U;
+    ok = ok && !input::IsPadExitChordDown(state);
+    // One stick click short.
+    input::HostPadState missing;
+    missing.gamepad_buttons[0] = 1U << SDL_GAMEPAD_BUTTON_LEFT_STICK;
+    missing.gamepad_triggers[0] = 0x03U;
+    ok = ok && !input::IsPadExitChordDown(missing);
+    // The threshold the launcher shares with the game: past half.
+    ok = ok && input::kHostPadTriggerThreshold == 16384;
+
+    input::PadExitChordTimer timer;
+    ok = ok && !timer.Update(true, 5000) && !timer.Update(true, 5999) &&
+        timer.Update(true, 6000) && !timer.Update(true, 6001) &&
+        !timer.Update(true, 9000);
+    // Released, then held again: a fresh second.
+    ok = ok && !timer.Update(false, 9100) && !timer.Update(true, 9200) &&
+        !timer.Update(true, 10199) && timer.Update(true, 10200);
+    // A break before the second restarts it.
+    input::PadExitChordTimer broken;
+    ok = ok && !broken.Update(true, 0) && !broken.Update(true, 900) &&
+        !broken.Update(false, 950) && !broken.Update(true, 1000) &&
+        !broken.Update(true, 1500) && broken.Update(true, 2000);
+    return ok;
+}
+
 }  // namespace
 
 bool RunHostPadInputProbe()
@@ -230,8 +272,9 @@ bool RunHostPadInputProbe()
     const bool defaults = ProbeDefaults();
     const bool mask = ProbeMask();
     const bool slots = ProbeSlots();
+    const bool exit_chord = ProbeExitChord();
     const bool all = shape && parse && rejects && format && mixed &&
-                     defaults && mask && slots;
+                     defaults && mask && slots && exit_chord;
     std::cout << "host_pad_input_shape=" << (shape ? "true" : "false")
               << "\nhost_pad_input_parse=" << (parse ? "true" : "false")
               << "\nhost_pad_input_rejects=" << (rejects ? "true" : "false")
@@ -241,6 +284,8 @@ bool RunHostPadInputProbe()
               << "\nhost_pad_input_defaults=" << (defaults ? "true" : "false")
               << "\nhost_pad_input_mask=" << (mask ? "true" : "false")
               << "\nhost_pad_input_slots=" << (slots ? "true" : "false")
+              << "\nhost_pad_input_exit_chord="
+              << (exit_chord ? "true" : "false")
               << "\nhost_pad_input_all=" << (all ? "true" : "false")
               << "\n";
     return all;

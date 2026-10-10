@@ -5183,7 +5183,10 @@ int main(int argc, char** argv)
             }
             if (!chosen.launch)
             {
-                logger->info("Launcher closed without starting a ROM set");
+                logger->info("Launcher closed without starting a ROM set{}",
+                             chosen.closed_by_exit_chord
+                                 ? " (gamepad exit chord held for 1 s)"
+                                 : "");
                 return 0;
             }
             PublishLauncherSettings(chosen.settings, caller_overrides, logger);

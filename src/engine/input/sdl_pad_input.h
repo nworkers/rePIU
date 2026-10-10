@@ -49,6 +49,11 @@ public:
     {
         return mask_;
     }
+    // Issue #52: what every pad is holding, for the exit chord.
+    const input::HostPadState& state() const
+    {
+        return state_;
+    }
 
     bool initialized() const
     {

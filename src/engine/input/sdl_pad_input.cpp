@@ -13,7 +13,7 @@ namespace
 {
 
 // A trigger counts as held past half travel. SDL reports 0..32767.
-constexpr Sint16 kTriggerThreshold = 16384;
+constexpr Sint16 kTriggerThreshold = input::kHostPadTriggerThreshold;
 
 }  // namespace
 

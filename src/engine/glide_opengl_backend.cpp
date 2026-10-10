@@ -11,6 +11,7 @@
 #include "repiu/runtime/env_toggle.h"
 #include "repiu/hle/glide_texture_decode.h"
 #include "repiu/input/jamma_input_bindings.h"
+#include "repiu/input/pad_exit_chord.h"
 #include "repiu/engine/execution_time_profile.h"
 #include "repiu/engine/jamma_input_timeline.h"
 #include "repiu/platform/build_identity.h"
@@ -1575,6 +1576,15 @@ void GlideOpenGlBackend::PumpEvents() {
                event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
       ApplyDrawableViewport();
     }
+  }
+  // Issue #52: LT+RT+L3+R3 held on one pad for a second ends the run the way
+  // closing the window does. Checked every pump rather than per event, since
+  // a held chord sends none.
+  if (pad_input_ != nullptr &&
+      pad_exit_chord_.Update(input::IsPadExitChordDown(pad_input_->state()),
+                             SDL_GetTicks())) {
+    fprintf(stderr, "[repiu-pad] exit chord held for 1 s: exit requested\n");
+    exit_requested_ = true;
   }
 }
 
