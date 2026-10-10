@@ -317,14 +317,24 @@ spans the top of the screen, opening with the name, version and build date and t
 and its text grows with the window (#15). The launcher shown without arguments also enlarges its text
 when resized or maximised.*
 
-게임 창은 더블클릭 또는 `Alt+Enter`로 전체화면과 창 모드를 오갑니다(Task 769). 전체화면은
-디스플레이 해상도를 바꾸지 않는 테두리 없는 창이고, 창 크기를 바꾸든 전체화면이든 원래 4:3 비율을
-유지하며 남는 부분은 검은 띠가 됩니다. `Alt+1`~`Alt+4`는 창 모드에서 1~4배 크기를 고릅니다.
+게임 창은 더블클릭, `Alt+Enter`, `Tab` OSD의 "Fullscreen"으로 전체화면과 창 모드를 오갑니다(Task 769,
+issue #45). 전체화면은 디스플레이 해상도를 바꾸지 않는 테두리 없는 창입니다. 기본으로는 창 크기를
+바꾸든 전체화면이든 원래 4:3 비율을 유지하며 남는 부분은 검은 띠가 되고, OSD의 "Keep aspect ratio"를
+끄면 비율을 무시하고 창이나 화면을 꽉 채웁니다. 두 값은 바꾸는 즉시 `cfg\repiu.ini`의
+`[Video] fullscreen`·`keep_aspect`에 저장되어 다음 실행이 그 상태로 시작하고, 런처 Options 맨 위에서도
+바꿀 수 있습니다. 런처 창도 같은 두 값을 따르며 런처에서는 `Alt+Enter`로 전환합니다.
+`REPIU_GLIDE_FULLSCREEN`·`REPIU_GLIDE_KEEP_ASPECT`가 설정돼 있으면 저장값보다 우선합니다.
+`Alt+1`~`Alt+4`는 창 모드에서 1~4배 크기를 고릅니다.
 
-*Double-click the game window or press `Alt+Enter` to switch between fullscreen and windowed mode
-(Task 769). Fullscreen is a borderless window that leaves the display resolution alone, and both a
-resized window and fullscreen keep the original 4:3 ratio with black bars around it. `Alt+1` to
-`Alt+4` pick a 1x to 4x window in windowed mode.*
+*Double-click the game window, press `Alt+Enter` or use "Fullscreen" in the `Tab` OSD to switch
+between fullscreen and windowed mode (Task 769, issue #45). Fullscreen is a borderless window that
+leaves the display resolution alone. By default both a resized window and fullscreen keep the
+original 4:3 ratio with black bars around it; turning off "Keep aspect ratio" in the OSD ignores the
+ratio and fills the window or screen. Both are stored as soon as they change, as `[Video] fullscreen`
+and `keep_aspect` in `cfg\repiu.ini`, so the next run starts the same way, and the top of the
+launcher's Options changes them too. The launcher window follows the same two values and switches
+with `Alt+Enter`. `REPIU_GLIDE_FULLSCREEN` and `REPIU_GLIDE_KEEP_ASPECT`, when set, win over the
+stored values. `Alt+1` to `Alt+4` pick a 1x to 4x window in windowed mode.*
 
 게임을 끝내면 런처로 돌아오므로 다른 롬셋을 이어서 고를 수 있습니다. 종료는 런처의
 Quit입니다.
