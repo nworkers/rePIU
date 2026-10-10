@@ -74,6 +74,18 @@ flowchart LR
 * Options에 "Fullscreen"과 "Keep aspect ratio" 체크박스를 더한다. 저장·게시·우선순위는 #37의
   `texture_full_precision`과 같다.
 
+### 런처 창 (추가 요청, 2026-10-10)
+
+* 런처 창도 같은 두 값을 따른다. 시작할 때 `fullscreen`이 켜져 있으면 전체 화면으로 열고, Options의
+  체크박스나 Alt+Enter로 바꾸면 그 자리에서 창에 적용한다. 바뀐 값은 런처의 다른 설정처럼 런처를
+  나갈 때(게임 시작 포함) 저장된다.
+* 비율 유지가 켜져 있으면 런처 화면을 기본 창(960×640, 3:2) 비율의 가장 큰 영역에 가운데로 그리고
+  나머지는 검은 띠로 둔다. 끄면 지금처럼 창(또는 화면) 전체를 채운다. 게임과 같이 창 모드에도
+  적용한다. 글자와 간격의 배율은 그 영역의 높이를 따른다.
+* 런처 표에서는 더블 클릭이 롬셋 시작이므로 전체 화면 토글은 Alt+Enter만 둔다. Alt+Enter는 ImGui로
+  넘기지 않는다(Enter가 선택한 롬셋을 시작하지 않도록).
+* Options에서 두 체크박스를 체크박스 중 맨 위에 둔다. OSD에서는 이미 맨 위다.
+
 ## 바꾸지 않는 것
 
 * 전체 화면 방식(데스크톱 해상도의 테두리 없는 창, 디스플레이 모드는 바꾸지 않음).
@@ -141,6 +153,16 @@ it, since it saves only when its own screen changed a value, before starting the
 
 **Launcher.** "Fullscreen" and "Keep aspect ratio" under Options, stored, published and overridden
 exactly like #37's `texture_full_precision`.
+
+**Launcher window (added request, 2026-10-10).** The launcher window follows the same two values:
+it opens fullscreen when `fullscreen` is on, and a change from its Options checkbox or Alt+Enter applies
+to the window at once; like the launcher's other settings, the change is stored when the launcher is
+left (starting a game included). With keep aspect on, the launcher is drawn in the largest area of its
+default window's ratio (960×640, 3:2), centred, with black bars around it; off, it fills the window or
+screen as today. As in the game this applies in windowed mode too, and the text and spacing scale
+follows that area's height. A double click in the launcher's table starts a ROM set, so only Alt+Enter
+toggles fullscreen there, and Alt+Enter is kept from ImGui so its Enter does not start the selected ROM
+set. The two checkboxes sit first among the Options checkboxes; in the OSD they already do.
 
 **Unchanged.** The fullscreen method (a borderless desktop-resolution window; the display mode never
 changes), the keep-aspect rectangle (Task 769) and the Alt+Enter/double-click input handling, and the

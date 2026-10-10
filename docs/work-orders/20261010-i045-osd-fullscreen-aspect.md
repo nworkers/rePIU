@@ -15,6 +15,9 @@
 7. `scripts/survey_romsets.sh`: `REPIU_GLIDE_FULLSCREEN=0` 기본.
 8. 문서: ARCHITECTURE, README, 관련 가이드(설정 파일), 작업 로그.
 9. 검증: Linux x64·i386 Release 빌드, core probe, 사용자 화면에서 OSD·Alt+Enter·재실행.
+10. (추가 요청) 런처 창: 시작 시 전체 화면, 체크박스·Alt+Enter로 즉시 전환(Alt+Enter는 ImGui로 넘기지
+    않음), 비율 유지면 960×640 비율 영역에 가운데로 그리고 검은 띠, 끄면 전체. 두 체크박스를 Options의
+    맨 위로.
 
 완료 기준: OSD와 런처에서 두 옵션을 바꿀 수 있고, 비율 유지를 끄면 그림이 창 전체를 채우며, 사용자
 조작으로 바뀐 값이 `cfg/repiu.ini`에 저장되어 다음 실행이 그 상태로 시작한다. 환경 변수는 여전히
@@ -36,7 +39,10 @@ launcher checkboxes and extend `SettingsDiffer`. (6) Loader: the publish log lin
 registered before the game runs (re-read the file, change the two keys, write it back). (7)
 `scripts/survey_romsets.sh` defaults `REPIU_GLIDE_FULLSCREEN=0`. (8) Docs: ARCHITECTURE, README, the
 settings guide, the work log. (9) Verify: Linux x64 and i386 Release builds, the core probe, and the
-OSD, Alt+Enter and a rerun on the user's screen.
+OSD, Alt+Enter and a rerun on the user's screen. (10, added request) Launcher window: open fullscreen
+when stored, switch at once from the checkbox or Alt+Enter (kept from ImGui), draw in a centred
+960×640-ratio area with black bars when keeping the aspect and fill the window otherwise, and put the two
+checkboxes first in Options.
 
 Done when both options can be changed from the OSD and the launcher, keep aspect off fills the window,
 a value changed by a user action is stored in `cfg/repiu.ini` and the next run starts that way, and the
