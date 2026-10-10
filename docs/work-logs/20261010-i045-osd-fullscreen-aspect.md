@@ -40,10 +40,11 @@
 | 런처 → pumpitpx | 런처에서 비율 유지를 켠 값이 시작 전에 저장되고, 게임이 전체 화면·비율 유지로 시작 |
 | 런처 창 | 저장값대로 전체 화면으로 열림, 체크박스로 끈 `fullscreen=0`이 저장되고 pumpitpru 시작 |
 | 화면 확인 | 사용자가 OSD·재실행·런처·Options 순서 모두 정상이라고 확인(2026-10-10) |
+| Win32(PR #46 CI) | Debug 빌드(모든 타깃, 기존 `NOMINMAX` 경고만), `repiu_glide_issue_probe`, `repiu_aot_probe --timer-safe-point` 통과 |
 
 ## 확인하지 않은 것
 
-* Win32 빌드와 실행.
+* Win32의 core·런처 probe와 실행(빌드는 CI가 확인).
 * i386 빌드의 게임 실행(빌드와 core probe만). 바뀐 코드는 아키텍처 공용이다.
 * 런처를 거친 게임에서 OSD로 바꾼 값이 돌아온 런처 화면에 반영되는지(인자 실행에서 OSD 저장은 확인함,
   런처 루프는 게임이 끝나면 파일을 다시 읽는다).
@@ -86,9 +87,11 @@ stretched without storing anything, and closing it unchanged left the file as it
 on close was not stored). Through the launcher, keep-aspect turned on there was stored before pumpitpx
 started fullscreen with the aspect kept; the launcher window opened fullscreen as stored, and turning it
 off there stored `fullscreen=0` before pumpitpru started. The user confirmed the OSD, the rerun, the
-launcher and the Options order on screen (2026-10-10).
+launcher and the Options order on screen (2026-10-10). The Win32 CI of PR #46 built every target in
+Debug (only the existing `NOMINMAX` warnings) and passed `repiu_glide_issue_probe` and
+`repiu_aot_probe --timer-safe-point`.
 
-**Not checked.** Win32 build and run; a game run on the i386 build (build and core probe only; the
+**Not checked.** Win32's core and launcher probes and a Win32 run (CI checked the build); a game run on the i386 build (build and core probe only; the
 changed code is architecture-neutral); whether an OSD change in a game started from the launcher shows in
 the launcher it returns to (OSD storing was checked in an argument run, and the launcher loop re-reads
 the file when the game ends); fullscreen switching under the Wayland driver (all runs used x11).
