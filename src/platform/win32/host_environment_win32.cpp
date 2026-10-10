@@ -55,6 +55,13 @@ bool PublishEnvironmentSetting(const char* name, const char* value)
     return _putenv_s(name, value) == 0;
 }
 
+bool WithdrawEnvironmentSetting(const char* name)
+{
+    // An empty value removes the variable from both the CRT copy and the
+    // process block, for the reason PublishEnvironmentSetting uses _putenv_s.
+    return name != nullptr && _putenv_s(name, "") == 0;
+}
+
 }  // namespace repiu::platform
 
 #endif  // _WIN32

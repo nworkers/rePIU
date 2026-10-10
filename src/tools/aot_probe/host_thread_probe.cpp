@@ -237,7 +237,47 @@ struct InterruptWitness
     std::atomic<std::uint32_t> callback_thread_id{0};
 };
 
-// The loop a sample has to land inside.
+#if defined(_MSC_VER)
+#define REPIU_PROBE_NOINLINE __declspec(noinline)
+#else
+#define REPIU_PROBE_NOINLINE __attribute__((noinline))
+#endif
+
+// Issue #12. The two halves of the loop a sample has to land inside, kept out
+// of line so they sit at two different addresses.
+//
+// One tight loop was not enough. An interrupt is taken at an instruction
+// boundary, and on some CPUs it lands after the same long-latency load almost
+// every time, so 33 samples of a three-instruction loop could all read one
+// address -- the "moved" claim then failed on some CI runners and passed on a
+// rerun. Alternating between two functions, each a few microseconds long,
+// puts a millisecond-spaced sample in either one by chance, whatever the
+// skid. They count in opposite directions so that identical-code folding (MSVC
+// /OPT:ICF) cannot merge them back into one address.
+//
+// Nothing here enters the kernel: a sample taken in a syscall would report the
+// syscall's address. The counter is read through a volatile pointer rather
+// than declared volatile, which C++20 deprecates for increments.
+REPIU_PROBE_NOINLINE void SpinCountingUp()
+{
+    int burn = 0;
+    volatile int* const observed = &burn;
+    while (*observed < 1000)
+    {
+        burn = *observed + 1;
+    }
+}
+
+REPIU_PROBE_NOINLINE void SpinCountingDown()
+{
+    int burn = 2000;
+    volatile int* const observed = &burn;
+    while (*observed > 1000)
+    {
+        burn = *observed - 1;
+    }
+}
+
 std::uint32_t InterruptSpinEntry(void* parameter)
 {
     auto* witness = static_cast<InterruptWitness*>(parameter);
@@ -246,16 +286,8 @@ std::uint32_t InterruptSpinEntry(void* parameter)
     witness->spinning.store(true, std::memory_order_release);
     while (!witness->stop.load(std::memory_order_acquire))
     {
-        // Nothing that enters the kernel: a sample taken while the thread sat
-        // in a syscall would report the syscall's address, not this loop's.
-        // The counter is read through a volatile pointer rather than declared
-        // volatile, which C++20 deprecates for increments.
-        int burn = 0;
-        volatile int* const observed = &burn;
-        while (*observed < 1000)
-        {
-            burn = *observed + 1;
-        }
+        SpinCountingUp();
+        SpinCountingDown();
     }
     return kExitMarker;
 }
@@ -300,25 +332,48 @@ bool WaitUntilSpinning(const InterruptWitness& witness)
     return true;
 }
 
-bool ProbeInterruptSamplesAndEdits()
+// Issue #12. Each claim of the interrupt scenario on its own, so a failure in
+// CI names the claim rather than one combined false.
+struct InterruptOutcome
 {
+    bool answered = false;
+    bool one_callback = false;
+    bool sample_nonzero = false;
+    bool on_target_thread = false;
+    bool moved = false;
+    int move_attempts = 0;
+    bool edit_observed = false;
+    bool joined = false;
+
+    bool all() const
+    {
+        return answered && one_callback && sample_nonzero && on_target_thread &&
+            moved && edit_observed && joined;
+    }
+};
+
+InterruptOutcome ProbeInterruptSamplesAndEdits()
+{
+    InterruptOutcome outcome;
     InterruptWitness witness;
     HostThread thread;
     if (!CreateHostThread(&InterruptSpinEntry, &witness, &thread, nullptr))
     {
-        return false;
+        return outcome;
     }
-    bool ok = WaitUntilSpinning(witness);
+    const bool spinning = WaitUntilSpinning(witness);
 
-    ok = ok && repiu::platform::InterruptHostThread(thread, &SampleEip,
-                                                    &witness, 2000U);
+    outcome.answered = spinning &&
+        repiu::platform::InterruptHostThread(thread, &SampleEip, &witness,
+                                             2000U);
     const std::uint32_t sampled =
         witness.sampled_eip.load(std::memory_order_acquire);
-    ok = ok && witness.callback_count.load(std::memory_order_relaxed) == 1U;
+    outcome.one_callback =
+        witness.callback_count.load(std::memory_order_relaxed) == 1U;
     // A zero or unreadable address is what a sample that came from nowhere
     // looks like, and it is the cheapest claim that still means "where the
     // thread is".
-    ok = ok && sampled != 0U;
+    outcome.sample_nonzero = sampled != 0U;
 
     // Task 503d-22. And it ran on the thread the host says it should. The two
     // answers are different by design, so this is not one claim written twice:
@@ -329,11 +384,11 @@ bool ProbeInterruptSamplesAndEdits()
         witness.callback_thread_id.load(std::memory_order_relaxed);
     const std::uint32_t target =
         witness.target_thread_id.load(std::memory_order_relaxed);
-    ok = ok && ran_on != 0U && target != 0U;
 #if defined(_WIN32)
-    ok = ok && ran_on == repiu::platform::CurrentThreadId();
+    outcome.on_target_thread = ran_on != 0U && target != 0U &&
+        ran_on == repiu::platform::CurrentThreadId();
 #else
-    ok = ok && ran_on == target;
+    outcome.on_target_thread = ran_on != 0U && target != 0U && ran_on == target;
 #endif
 
     // Sampling repeatedly must not report one constant. A fixed value would
@@ -345,30 +400,29 @@ bool ProbeInterruptSamplesAndEdits()
     // loop can ask leaves it almost no time to advance and it is caught at the
     // same instruction. What is under test is that the value tracks the thread,
     // which cannot be observed unless the thread is allowed to run.
-    bool moved = false;
-    for (int attempt = 0; attempt < 32 && !moved && ok; ++attempt)
+    bool interrupts_ok = outcome.answered;
+    for (int attempt = 0; attempt < 32 && !outcome.moved && interrupts_ok;
+         ++attempt)
     {
         repiu::platform::YieldMilliseconds(1U);
-        if (!repiu::platform::InterruptHostThread(thread, &SampleEip, &witness,
-                                                  2000U))
-        {
-            ok = false;
-            break;
-        }
-        moved = witness.sampled_eip.load(std::memory_order_acquire) != sampled;
+        interrupts_ok = repiu::platform::InterruptHostThread(
+            thread, &SampleEip, &witness, 2000U);
+        outcome.move_attempts = attempt + 1;
+        outcome.moved = interrupts_ok &&
+            witness.sampled_eip.load(std::memory_order_acquire) != sampled;
     }
-    ok = ok && moved;
 
-    ok = ok && repiu::platform::InterruptHostThread(
-                   thread, &RequestStopThroughInterrupt, &witness, 2000U);
-    ok = ok && witness.edit_observed.load(std::memory_order_acquire);
+    outcome.edit_observed = interrupts_ok &&
+        repiu::platform::InterruptHostThread(
+            thread, &RequestStopThroughInterrupt, &witness, 2000U) &&
+        witness.edit_observed.load(std::memory_order_acquire);
 
     std::uint32_t exit_code = 0;
     witness.stop.store(true, std::memory_order_release);
-    ok = ok && JoinHostThread(thread, 5000U, &exit_code);
-    ok = ok && exit_code == kExitMarker;
+    outcome.joined = JoinHostThread(thread, 5000U, &exit_code) &&
+        exit_code == kExitMarker;
     CloseHostThread(&thread);
-    return ok;
+    return outcome;
 }
 
 // A target that cannot answer has to be reported inside the deadline. This is
@@ -632,7 +686,8 @@ bool RunHostThreadProbe()
     const bool still_active_ok = ProbeStillActiveExitCode();
     const bool detach_ok = ProbeDetachRunningThread();
     const bool refusals_ok = ProbeRefusals();
-    const bool interrupt_ok = ProbeInterruptSamplesAndEdits();
+    const InterruptOutcome interrupt = ProbeInterruptSamplesAndEdits();
+    const bool interrupt_ok = interrupt.all();
     const bool interrupt_refusal_ok = ProbeInterruptRefusals();
 #if defined(_WIN32)
     // Reported as skipped rather than as a pass. There is no abandoned request
@@ -653,6 +708,13 @@ bool RunHostThreadProbe()
               << "\nhost_thread_refusals=" << (refusals_ok ? "true" : "false")
               << "\nhost_thread_interrupt="
               << (interrupt_ok ? "true" : "false")
+              // Issue #12: which claim, when the line above is false.
+              << "\nhost_thread_interrupt_parts answered/one_callback/"
+                 "nonzero/on_target/moved/edit/joined="
+              << interrupt.answered << "/" << interrupt.one_callback << "/"
+              << interrupt.sample_nonzero << "/" << interrupt.on_target_thread
+              << "/" << interrupt.moved << "/" << interrupt.edit_observed << "/"
+              << interrupt.joined << " move_attempts=" << interrupt.move_attempts
               << "\nhost_thread_interrupt_refusals="
               << (interrupt_refusal_ok ? "true" : "false")
               << "\n" << abandon_label << "="

@@ -106,6 +106,11 @@ void ForEachEnvironmentEntry(void (*visit)(const char* entry, void* user_data),
 // setting that did not reach the engine is worth reporting.
 bool PublishEnvironmentSetting(const char* name, const char* value);
 
+// Issue #48. Removes a variable published above, so a process the launcher
+// starts in its own place after an update does not mistake the previous
+// session's published values for ones its caller set.
+bool WithdrawEnvironmentSetting(const char* name);
+
 }  // namespace repiu::platform
 
 #endif  // REPIU_PLATFORM_HOST_ENVIRONMENT_H_

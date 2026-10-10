@@ -23,6 +23,7 @@ constexpr const char* kTextureFullPrecisionKey = "texture_full_precision";
 constexpr const char* kFullscreenKey = "fullscreen";
 constexpr const char* kKeepAspectKey = "keep_aspect";
 constexpr const char* kLastRomSetKey = "last_rom_set";
+constexpr const char* kCheckUpdatesKey = "check_updates";
 
 bool ParseInt32(const std::string& text, std::int32_t* value)
 {
@@ -158,6 +159,21 @@ LauncherSettingsLoad LoadLauncherSettings(
     {
         load.settings.last_rom_set = *value;
     }
+    if (const std::string* value =
+            document.FindLast(kLauncherSection, kCheckUpdatesKey))
+    {
+        if (*value == "0" || *value == "1")
+        {
+            load.settings.has_check_updates = true;
+            load.settings.check_updates = *value == "1";
+        }
+        else
+        {
+            load.warnings.push_back(origin + ": [Launcher] " +
+                                    kCheckUpdatesKey + " is not 0 or 1: " +
+                                    *value);
+        }
+    }
     return load;
 }
 
@@ -211,6 +227,11 @@ bool SaveLauncherSettings(const std::filesystem::path& config_directory,
     if (!settings.last_rom_set.empty())
     {
         stream << kLastRomSetKey << " = " << settings.last_rom_set << "\n";
+    }
+    if (settings.has_check_updates)
+    {
+        stream << kCheckUpdatesKey << " = " << (settings.check_updates ? 1 : 0)
+               << "\n";
     }
     return static_cast<bool>(stream);
 }

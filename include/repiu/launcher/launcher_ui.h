@@ -7,6 +7,11 @@
 #include <string>
 #include <vector>
 
+namespace repiu::update
+{
+class LauncherUpdater;
+}  // namespace repiu::update
+
 namespace repiu::launcher
 {
 
@@ -24,13 +29,18 @@ struct LauncherUiResult
     // back to its previous no-argument behavior rather than exiting.
     bool unavailable = false;
     std::string message;
+    // Issue #48: the operator chose to update and the new release is staged;
+    // the caller installs it and restarts.
+    bool install_update = false;
 };
 
 // Opens the launcher window, runs until the operator starts a ROM set or
 // closes it, and tears the window down before returning so the guest can create
-// its own.
+// its own. Issue #48: with an updater, a newer release is announced at the
+// top, and the window closes with `install_update` once one is staged.
 LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
-                               const LauncherSettings& initial_settings);
+                               const LauncherSettings& initial_settings,
+                               update::LauncherUpdater* updater = nullptr);
 
 }  // namespace repiu::launcher
 

@@ -27,7 +27,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Version gate
         id: version
@@ -63,10 +63,10 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Restore FetchContent dependency cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: build/win32_x86_debug/_deps
           key: deps-windows-2022-${{ hashFiles('CMakeLists.txt') }}
@@ -74,7 +74,7 @@ jobs:
             deps-windows-2022-
 
       - name: Restore OpenWatcom download cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # The pinned SHA256 lives in the install script, so its hash is the
           # right key: a new pin invalidates the cached archive.
@@ -121,7 +121,7 @@ jobs:
 
       - name: Upload artifacts
         if: always() && needs.version.outputs.version != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rePIU-v${{ needs.version.outputs.version }}
           path: build/package/*.zip
@@ -145,7 +145,7 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install build packages
         # SDL builds the desktop and audio drivers it finds at configure time
@@ -230,7 +230,7 @@ jobs:
           --build-dir "$BUILD_DIR" --version ${{ needs.version.outputs.version }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rePIU-v${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
           path: build/package/*.tar.gz
@@ -249,10 +249,10 @@ jobs:
     steps:
       - name: Check out
         # For the hand-written release notes.
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: rePIU-v${{ needs.version.outputs.version }}*
           path: dist

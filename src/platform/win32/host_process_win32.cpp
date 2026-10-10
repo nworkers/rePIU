@@ -12,6 +12,8 @@
 
 #include <string>
 
+#include <string>
+
 namespace repiu::platform
 {
 
@@ -50,6 +52,38 @@ int RunChildProcessAndWait(const ChildProcessLaunch& launch,
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     return static_cast<int>(exit_code);
+}
+
+
+std::filesystem::path HostExecutablePath()
+{
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;)
+    {
+        const DWORD length = GetModuleFileNameW(
+            nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length == 0U)
+        {
+            return std::filesystem::path();
+        }
+        if (length < buffer.size())
+        {
+            buffer.resize(length);
+            return std::filesystem::path(buffer);
+        }
+        buffer.resize(buffer.size() * 2U);
+    }
+}
+
+bool ReplaceProcessImage(const std::filesystem::path& /*executable_path*/,
+                         std::uint32_t* host_error)
+{
+    // Windows has no exec: the caller runs the new executable as a child.
+    if (host_error != nullptr)
+    {
+        *host_error = ERROR_NOT_SUPPORTED;
+    }
+    return false;
 }
 
 }  // namespace repiu::platform

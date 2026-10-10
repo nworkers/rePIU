@@ -39,6 +39,22 @@ int RunChildProcessAndWait(const ChildProcessLaunch& /*launch*/,
     return kChildProcessDidNotStart;
 }
 
+
+std::filesystem::path HostExecutablePath()
+{
+    return std::filesystem::path();
+}
+
+bool ReplaceProcessImage(const std::filesystem::path& /*executable_path*/,
+                         std::uint32_t* host_error)
+{
+    if (host_error != nullptr)
+    {
+        *host_error = 0;
+    }
+    return false;
+}
+
 }  // namespace repiu::platform
 
 #endif  // __EMSCRIPTEN__

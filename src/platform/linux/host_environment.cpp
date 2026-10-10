@@ -39,6 +39,11 @@ bool PublishEnvironmentSetting(const char* name, const char* value)
     return setenv(name, value, 1) == 0;
 }
 
+bool WithdrawEnvironmentSetting(const char* name)
+{
+    return name != nullptr && unsetenv(name) == 0;
+}
+
 }  // namespace repiu::platform
 
 #endif  // !_WIN32

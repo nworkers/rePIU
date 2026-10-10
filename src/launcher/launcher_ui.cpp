@@ -3,6 +3,7 @@
 #include "repiu/engine/glide_letterbox.h"
 #include "repiu/engine/imgui_ui_scale.h"
 #include "repiu/engine/post_shader_catalog.h"
+#include "repiu/update/launcher_updater.h"
 
 #include "imgui.h"
 #include "imgui_impl_opengl3.h"
@@ -137,6 +138,8 @@ bool SettingsDiffer(const LauncherSettings& left, const LauncherSettings& right)
         left.fullscreen != right.fullscreen ||
         left.has_keep_aspect != right.has_keep_aspect ||
         left.keep_aspect != right.keep_aspect ||
+        left.has_check_updates != right.has_check_updates ||
+        left.check_updates != right.check_updates ||
         left.last_rom_set != right.last_rom_set)
     {
         return true;
@@ -252,6 +255,89 @@ void DrawRomSetTable(const std::vector<RomSetEntry>& catalog,
         ImGui::PopID();
     }
     ImGui::EndTable();
+}
+
+// Issue #48. The update line at the top of the launcher: nothing while the
+// check runs, when it is up to date or when it failed, and otherwise the newer
+// version with an Update button (or where to get it), the download's progress,
+// or why it failed. Returns true once the release is staged to install.
+bool DrawUpdateNotice(update::LauncherUpdater* updater, float scale)
+{
+    if (updater == nullptr)
+    {
+        return false;
+    }
+    const update::UpdateSnapshot snapshot = updater->Snapshot();
+    if (snapshot.latest_version.empty())
+    {
+        return false;
+    }
+    const std::string latest = "rePIU v" + snapshot.latest_version;
+    const ImVec4 accent(0.45F, 0.85F, 0.45F, 1.0F);
+    switch (snapshot.stage)
+    {
+    case update::UpdateStage::kAvailable:
+    case update::UpdateStage::kFailed:
+    {
+        if (snapshot.stage == update::UpdateStage::kAvailable)
+        {
+            ImGui::TextColored(accent, "%s is available.", latest.c_str());
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(0.95F, 0.55F, 0.35F, 1.0F),
+                               "Update to %s failed: %s", latest.c_str(),
+                               snapshot.message.c_str());
+        }
+        ImGui::SameLine();
+        if (snapshot.installable)
+        {
+            const char* label =
+                snapshot.stage == update::UpdateStage::kAvailable ? "Update"
+                                                                  : "Retry";
+            if (ImGui::Button(label, ImVec2(100.0F * scale, 0.0F)))
+            {
+                updater->StartDownload();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("downloads, replaces this install and restarts");
+        }
+        else
+        {
+            ImGui::TextDisabled("%s (%s)",
+                                snapshot.page_url.empty()
+                                    ? "github.com/reexec/rePIU/releases"
+                                    : snapshot.page_url.c_str(),
+                                snapshot.not_installable_reason.c_str());
+        }
+        break;
+    }
+    case update::UpdateStage::kDownloading:
+    {
+        const float fraction = snapshot.bytes_expected == 0U
+            ? 0.0F
+            : static_cast<float>(static_cast<double>(snapshot.bytes_received) /
+                                 static_cast<double>(snapshot.bytes_expected));
+        const std::string overlay = "Downloading " + latest + " (" +
+            std::to_string(snapshot.bytes_received >> 20) + " / " +
+            std::to_string(snapshot.bytes_expected >> 20) + " MiB)";
+        ImGui::ProgressBar(std::min(fraction, 1.0F), ImVec2(-1.0F, 0.0F),
+                           overlay.c_str());
+        break;
+    }
+    case update::UpdateStage::kVerifying:
+        ImGui::TextColored(accent, "Checking and unpacking %s...",
+                           latest.c_str());
+        break;
+    case update::UpdateStage::kStaged:
+        ImGui::TextColored(accent, "Installing %s and restarting...",
+                           latest.c_str());
+        return true;
+    default:
+        return false;
+    }
+    ImGui::Separator();
+    return false;
 }
 
 void DrawOptions(LauncherSettings* settings,
@@ -384,7 +470,8 @@ void DrawOptions(LauncherSettings* settings,
 }  // namespace
 
 LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
-                               const LauncherSettings& initial_settings)
+                               const LauncherSettings& initial_settings,
+                               update::LauncherUpdater* updater)
 {
     LauncherUiResult result;
     result.settings = initial_settings;
@@ -521,6 +608,13 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
         bool start_requested = false;
         if (ImGui::Begin("rePIU", nullptr, kWindowFlags))
         {
+            // Issue #48: once staged, this frame says so and the window
+            // closes for the caller to install.
+            if (DrawUpdateNotice(updater, scale))
+            {
+                result.install_update = true;
+                running = false;
+            }
             ImGui::TextUnformatted("Select a ROM set");
             ImGui::SameLine();
             ImGui::TextDisabled(

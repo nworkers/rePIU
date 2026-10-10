@@ -13,6 +13,12 @@
 #include "repiu/engine/execution_trampoline.h"
 #include "repiu/engine/final_execution_report.h"
 #include "repiu/engine/session_display_preferences.h"
+#include "repiu/platform/build_identity.h"
+#include "repiu/platform/host_environment.h"
+#include "repiu/platform/host_process.h"
+#include "repiu/update/launcher_updater.h"
+#include "repiu/update/semantic_version.h"
+#include "repiu/update/update_install.h"
 #include "repiu/engine/session_identity.h"
 #include "repiu/engine/aot_code_cache.h"
 #include "../../engine/aot/aot_dbt_glide_gate_dispatch.h"
@@ -4832,6 +4838,115 @@ void PublishLauncherSettings(
                  applied.keep_aspect_published);
 }
 
+// Issue #48. The launcher's update check, unless `[Launcher] check_updates`
+// is 0 or REPIU_UPDATE_CHECK says off. REPIU_UPDATE_CURRENT_VERSION stands in
+// for the build's version, for testing an update from an older one. The check
+// starts at once, on its own thread.
+std::unique_ptr<repiu::update::LauncherUpdater> CreateLauncherUpdater(
+    const repiu::launcher::LauncherSettings& settings,
+    const std::filesystem::path& install_folder,
+    const std::shared_ptr<spdlog::logger>& logger)
+{
+    if (settings.has_check_updates && !settings.check_updates)
+    {
+        logger->info("Update check off ([Launcher] check_updates = 0)");
+        return nullptr;
+    }
+    if (!repiu::runtime::ResolvePromotedToggle(
+            std::getenv("REPIU_UPDATE_CHECK")))
+    {
+        logger->info("Update check off (REPIU_UPDATE_CHECK)");
+        return nullptr;
+    }
+    auto build_version = repiu::update::ParseSemanticVersion(
+        repiu::update::BuildVersionText());
+    if (const char* pretend = std::getenv("REPIU_UPDATE_CURRENT_VERSION"))
+    {
+        const auto pretended = repiu::update::ParseSemanticVersion(pretend);
+        if (pretended.has_value())
+        {
+            logger->warn("Update check treats this build as v{} "
+                         "(REPIU_UPDATE_CURRENT_VERSION)",
+                         repiu::update::FormatSemanticVersion(*pretended));
+            build_version = pretended;
+        }
+    }
+    if (!build_version.has_value() || install_folder.empty())
+    {
+        return nullptr;
+    }
+    repiu::update::LauncherUpdaterConfig config;
+    config.build_version = *build_version;
+    config.install_folder = install_folder;
+    config.platform = std::string(repiu::platform::BuildPlatformName());
+    config.architecture =
+        std::string(repiu::platform::BuildArchitectureName());
+    config.user_agent = "rePIU/" +
+        std::string(repiu::update::BuildVersionText()) + " (" +
+        repiu::platform::BuildIdentityLabel() + ")";
+    config.log = [logger](const std::string& line) {
+        logger->info("{}", line);
+    };
+    auto updater =
+        std::make_unique<repiu::update::LauncherUpdater>(std::move(config));
+    updater->StartCheck();
+    return updater;
+}
+
+// Issue #48. Starts the freshly installed launcher in this one's place. The
+// variables this session published for its games are withdrawn first, or the
+// new launcher would take them for its caller's and freeze those settings; the
+// test override goes too, since it described the old build. Linux replaces the
+// process image, keeping the process id a game launcher such as Steam tracks;
+// Win32 runs the new launcher as a child and passes its exit code on.
+int RestartLauncherAfterUpdate(
+    const std::filesystem::path& executable,
+    const repiu::launcher::LauncherEnvironmentOverrides& caller_overrides,
+    const std::shared_ptr<spdlog::logger>& logger)
+{
+    const std::pair<const char*, bool> published[] = {
+        {repiu::launcher::kLauncherSwapIntervalVariable,
+         caller_overrides.swap_interval},
+        {repiu::launcher::kLauncherYmzVolumeVariable,
+         caller_overrides.ymz_volume},
+        {repiu::launcher::kLauncherPostShaderVariable,
+         caller_overrides.post_shader},
+        {repiu::launcher::kLauncherTextureFullPrecisionVariable,
+         caller_overrides.texture_full_precision},
+        {repiu::launcher::kLauncherFullscreenVariable,
+         caller_overrides.fullscreen},
+        {repiu::launcher::kLauncherKeepAspectVariable,
+         caller_overrides.keep_aspect},
+    };
+    for (const auto& [name, caller_set] : published)
+    {
+        if (!caller_set)
+        {
+            repiu::platform::WithdrawEnvironmentSetting(name);
+        }
+    }
+    repiu::platform::WithdrawEnvironmentSetting("REPIU_UPDATE_CURRENT_VERSION");
+    logger->info("Restarting the updated launcher: {}", executable.string());
+    logger->flush();
+    std::uint32_t host_error = 0;
+    repiu::platform::ReplaceProcessImage(executable, &host_error);
+    const std::string path = executable.string();
+    const std::string command_line = "\"" + path + "\"";
+    repiu::platform::ChildProcessLaunch launch;
+    launch.executable_path = path.c_str();
+    launch.command_line = command_line.c_str();
+    const int exit_code =
+        repiu::platform::RunChildProcessAndWait(launch, &host_error);
+    if (exit_code == repiu::platform::kChildProcessDidNotStart)
+    {
+        logger->error("The updated launcher did not start (host error {}); "
+                      "start rePIU again",
+                      host_error);
+        return 1;
+    }
+    return exit_code;
+}
+
 // Issue #45. Stores a fullscreen or keep-aspect change the operator made in
 // the game. The file is read again rather than kept from start-up, so a value
 // stored meanwhile is not lost, and only the two keys change.
@@ -4994,6 +5109,30 @@ int main(int argc, char** argv)
                 std::getenv(repiu::launcher::kLauncherKeepAspectVariable));
         const char* const executable_path =
             argc >= 1 && argv[0] != nullptr ? argv[0] : "repiu.exe";
+        // Issue #48: files an earlier update renamed aside go now, and the
+        // update check starts while the launcher opens.
+        std::filesystem::path host_executable =
+            repiu::platform::HostExecutablePath();
+        if (host_executable.empty())
+        {
+            std::error_code path_error;
+            host_executable =
+                std::filesystem::absolute(executable_path, path_error);
+        }
+        const std::filesystem::path install_folder =
+            host_executable.parent_path();
+        if (const std::size_t removed =
+                repiu::update::RemovePreviousInstallLeftovers(install_folder);
+            removed != 0U)
+        {
+            logger->info("Removed {} files left by the previous update",
+                         removed);
+        }
+        const std::unique_ptr<repiu::update::LauncherUpdater> updater =
+            CreateLauncherUpdater(
+                repiu::launcher::LoadLauncherSettings(config_directory)
+                    .settings,
+                install_folder, logger);
         bool launcher_available = true;
         // The launcher is the front end for the whole session: a finished game
         // returns here rather than ending the process, so an operator can pick
@@ -5009,7 +5148,7 @@ int main(int argc, char** argv)
             const repiu::launcher::LauncherUiResult chosen =
                 repiu::launcher::RunLauncherUi(
                     repiu::launcher::BuildRomSetCatalog("roms"),
-                    stored.settings);
+                    stored.settings, updater.get());
             if (chosen.unavailable)
             {
                 // A headless or driver-less host must still run the previous
@@ -5028,6 +5167,19 @@ int main(int argc, char** argv)
                              repiu::launcher::LauncherSettingsPath(
                                  config_directory)
                                  .string());
+            }
+            if (chosen.install_update && updater != nullptr)
+            {
+                std::string install_error;
+                if (updater->Install(&install_error))
+                {
+                    return RestartLauncherAfterUpdate(host_executable,
+                                                      caller_overrides, logger);
+                }
+                // The old files are back in place; the launcher reopens and
+                // shows the failure with a Retry.
+                logger->warn("Update not installed: {}", install_error);
+                continue;
             }
             if (!chosen.launch)
             {

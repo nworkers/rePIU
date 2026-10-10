@@ -48,7 +48,9 @@ flowchart TD
     style H fill:#1e8449,color:#fff
 ```
 
-**아티팩트 네 개**가 Release에 붙습니다.
+**아티팩트 네 개**가 Release에 붙습니다. 런처 업데이트(issue #48)가 이 이름(`rePIU-v<version>-win32.zip`,
+`-linux-x64.tar.gz`, `-linux-i386.tar.gz`), GitHub의 SHA-256 `digest`, 실행 파일 옆의 `VERSION`에 기대므로
+셋 중 하나라도 바꾸면 [런처 업데이트 가이드](launcher-update.md)와 `repiu::update`를 함께 고칩니다.
 
 | 파일 | 내용 |
 |---|---|
@@ -203,7 +205,9 @@ or if a binary needs a glibc newer than 2.35, and run two probes. Only a tag run
 is green reaches the `publish` job, which attaches four archives: `rePIU-v<version>-win32.zip`
 with six statically linked executables and the notices, `rePIU-v<version>-linux-i386.tar.gz` and
 `rePIU-v<version>-linux-x64.tar.gz` with `repiu`, `repiu_launcher`, three probes and the notices,
-and `openwatcom-samples-v<version>.zip` with the report.
+and `openwatcom-samples-v<version>.zip` with the report. The launcher update (issue #48) relies on
+those names, on GitHub's SHA-256 `digest` and on the `VERSION` next to the executables; changing any
+of them means changing the [launcher update guide](launcher-update.md) and `repiu::update` together.
 
 A Linux archive needs glibc 2.35 (Ubuntu 22.04) or newer, `libGL`, and the X11 or Wayland and
 sound libraries SDL opens at run time, which a desktop distribution normally has; a title bar
