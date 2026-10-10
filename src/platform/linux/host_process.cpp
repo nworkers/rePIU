@@ -7,6 +7,8 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <string>
+#include <system_error>
 #include <vector>
 
 namespace repiu::platform
@@ -79,6 +81,28 @@ int RunChildProcessAndWait(const ChildProcessLaunch& launch,
     // only distinguishes "started" from "did not", so this reads as a failed
     // run rather than a failed launch.
     return 1;
+}
+
+
+std::filesystem::path HostExecutablePath()
+{
+    std::error_code error;
+    const std::filesystem::path path =
+        std::filesystem::read_symlink("/proc/self/exe", error);
+    return error ? std::filesystem::path() : path;
+}
+
+bool ReplaceProcessImage(const std::filesystem::path& executable_path,
+                         std::uint32_t* host_error)
+{
+    const std::string path = executable_path.string();
+    char* const argv[] = {const_cast<char*>(path.c_str()), nullptr};
+    execv(path.c_str(), argv);
+    if (host_error != nullptr)
+    {
+        *host_error = static_cast<std::uint32_t>(errno);
+    }
+    return false;
 }
 
 }  // namespace repiu::platform

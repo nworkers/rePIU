@@ -258,6 +258,13 @@ add_library(repiu_exe
     src/runtime/aot_direct_return_table.cpp
     src/launcher/rom_set_catalog.cpp
     src/launcher/launcher_settings.cpp
+    # Issue #48: the launcher's update check and in-place install.
+    src/update/launcher_updater.cpp
+    src/update/release_archive.cpp
+    src/update/release_info.cpp
+    src/update/semantic_version.cpp
+    src/update/sha256.cpp
+    src/update/update_install.cpp
     src/launcher/command_line_options.cpp
     src/runtime/aot_translation_plan.cpp
     src/runtime/aot_code_cache_reservation.cpp
@@ -462,6 +469,7 @@ if(REPIU_PLATFORM STREQUAL "win32")
             src/platform/win32/safe_memory_copy_win32.cpp
             src/platform/win32/host_environment_win32.cpp
             src/platform/win32/host_process_win32.cpp
+            src/platform/win32/https_download_win32.cpp
             src/platform/win32/host_thread_win32.cpp
             src/platform/win32/host_time_win32.cpp
             src/platform/win32/host_error_stream_win32.cpp
@@ -545,6 +553,7 @@ if(EMSCRIPTEN)
             src/platform/web/fault_handler.cpp
             src/platform/web/virtual_memory.cpp
             src/platform/web/host_process.cpp
+            src/platform/web/https_download.cpp
     )
 endif()
 
@@ -587,6 +596,7 @@ if(UNIX AND NOT EMSCRIPTEN)
             src/platform/linux/safe_memory_copy.cpp
             src/platform/linux/host_environment.cpp
             src/platform/linux/host_process.cpp
+            src/platform/linux/https_download.cpp
     )
 
     # Task 545: the assembly units below are i386 execution contracts. They
@@ -812,6 +822,7 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/glide_lfb_region_probe.cpp
     src/tools/aot_probe/guest_address_space_probe.cpp
     src/tools/aot_probe/jump_table_guard_probe.cpp
+    src/tools/aot_probe/launcher_update_probe.cpp
     src/tools/aot_probe/launcher_probe.cpp
     src/tools/aot_probe/long_mode_compatibility_probe.cpp
     src/tools/aot_probe/long_mode_emission_probe.cpp
@@ -1127,6 +1138,8 @@ if(WIN32)
             # at teardown. Without a PDB it resolves nothing and the report
             # falls back to module+offset, so it is safe in every build.
             dbghelp
+            # Issue #48: the launcher's update download.
+            winhttp
     )
 endif()
 

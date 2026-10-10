@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 
 // Task 503d-17. Starting this executable again as a child, and waiting for it.
 //
@@ -44,6 +45,19 @@ inline constexpr int kChildProcessDidNotStart = -1;
 // 3d-5's rule applied to a second kind of failure.
 int RunChildProcessAndWait(const ChildProcessLaunch& launch,
                            std::uint32_t* host_error);
+
+// Issue #48. The running executable's absolute path, or empty when the host
+// cannot say. The launcher's updater replaces files in its folder.
+std::filesystem::path HostExecutablePath();
+
+// Issue #48. Replaces this process with `executable_path`, started with no
+// arguments, keeping the process id -- which is what lets a game launcher such
+// as Steam keep tracking it across an update. Returns only on failure, with
+// the host's error number in `host_error`. POSIX hosts only; Win32 has no such
+// call and returns false at once, and its caller runs the new executable as a
+// child instead.
+bool ReplaceProcessImage(const std::filesystem::path& executable_path,
+                         std::uint32_t* host_error);
 
 }  // namespace repiu::platform
 

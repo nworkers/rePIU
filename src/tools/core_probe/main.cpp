@@ -53,6 +53,7 @@
 #include "guest_address_space_probe.h"
 #include "jump_table_guard_probe.h"
 #include "launcher_probe.h"
+#include "launcher_update_probe.h"
 #include "long_mode_compatibility_probe.h"
 #include "long_mode_emission_probe.h"
 #include "low_address_reservation_probe.h"
@@ -192,6 +193,8 @@ constexpr CoreProbe kCoreProbes[] = {
     {"host_thread", &repiu::tools::RunHostThreadProbe},
 #endif
     {"launcher", &repiu::tools::RunLauncherProbe},
+    // Issue #48: the update path, without a network.
+    {"launcher_update", &repiu::tools::RunLauncherUpdateProbe},
     // Task 730. Here as well as in the Win32 AOT probe because the case it
     // exists for -- a host address aliasing guest code in its low half --
     // needs a pointer wider than 32 bits, which only the x64 hosts have.

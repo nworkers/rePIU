@@ -1791,6 +1791,31 @@ double click in the table starts a ROM set, so it is not a toggle there. A chang
 OSD is stored by the game process, and the launcher loop reads the file again when the game ends. It
 draws with the same ProggyForever font as the OSD.
 
+issue #48부터 런처는 업데이트를 확인하고 설치합니다. 플랫폼 공용 `repiu::update`(`include/repiu/update/`,
+`src/update/`)가 버전 비교(`semantic_version`), 최신 릴리스 JSON과 빌드별 asset 선택(`release_info`), SHA-256,
+tar.gz·zip 풀기와 경로 검사(`release_archive`, miniz의 inflate·ZIP 읽기), 교체·되돌림·`.repiu-old` 정리
+(`update_install`), 백그라운드 상태 기계(`launcher_updater`)를 맡습니다. 플랫폼 계층은 이 타입을 모르고
+`platform/https_download.h`(Win32 WinHTTP, Linux는 시스템 `curl`을 `posix_spawnp`로, web 스텁)와
+`host_process.h`의 `HostExecutablePath`·`ReplaceProcessImage`(Linux `execv`), `host_environment.h`의
+`WithdrawEnvironmentSetting`만 제공합니다. 로더는 런처 세션 시작에 지난 업데이트의 `.repiu-old`를 지우고
+updater를 만들며, 런처 UI가 `install_update`로 닫히면 설치한 뒤 이 세션이 게시한 환경 변수를 거두고 다시
+시작합니다(Linux는 같은 PID로 `execv`, Win32는 자식으로 실행해 기다림). 설치 버튼은 실행 파일 옆
+`VERSION`이 빌드 버전과 같을 때만 나오므로 빌드 트리는 덮어쓰지 않습니다.
+
+Since issue #48 the launcher checks for and installs updates. The platform-neutral `repiu::update`
+(`include/repiu/update/`, `src/update/`) holds the version comparison (`semantic_version`), the
+latest-release JSON and per-build asset choice (`release_info`), SHA-256, tar.gz and zip unpacking with path
+checks (`release_archive`, through miniz's inflate and ZIP reader), replacement, rollback and `.repiu-old`
+cleanup (`update_install`), and the background state machine (`launcher_updater`). The platform layer knows
+none of these types and provides only `platform/https_download.h` (WinHTTP on Win32, the system `curl`
+through `posix_spawnp` on Linux, a web stub), `HostExecutablePath` and `ReplaceProcessImage` (Linux `execv`)
+in `host_process.h`, and `WithdrawEnvironmentSetting` in `host_environment.h`. At the start of a launcher
+session the loader removes the previous update's `.repiu-old` files and creates the updater; when the
+launcher UI closes with `install_update` it installs, withdraws the environment variables this session
+published, and restarts (Linux `execv` keeps the PID; Win32 runs the new launcher as a child and waits). The
+install button appears only when a `VERSION` next to the executable equals the build's version, so a build
+tree is never overwritten.
+
 ## AOT build option toggle 관례 / AOT build-option toggle convention
 
 Task 424는 환경 변수 하나로 기능을 켜고 끄는 관례를 플랫폼 공용

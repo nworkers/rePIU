@@ -343,6 +343,12 @@ Quit입니다.
 완전히 종료됩니다**(복귀 루프는 단독 실행에만 있습니다). 인자 없이 실행하는 자동화를
 위해 `REPIU_LAUNCHER=0`을 주면 런처를 건너뛰고 기존 기본값(`pumpit1`)으로 갑니다.
 
+**업데이트(issue #48).** 런처는 열릴 때 GitHub의 최신 릴리스를 확인하고, 새 버전이면 맨 위에 알림과
+**Update** 버튼을 띄웁니다. 누르면 이 빌드에 맞는 아카이브를 받아 SHA-256을 확인한 뒤 아카이브의 파일만
+바꾸고(`roms\`, `cfg\`, `nvram\`은 그대로) 런처를 다시 시작합니다. 버튼은 릴리스 아카이브를 푼 폴더에서만
+나오고, `cfg\repiu.ini`의 `[Launcher] check_updates = 0`이나 `REPIU_UPDATE_CHECK=0`으로 끕니다. 스팀덱
+설치와 문제 해결은 [런처 업데이트 가이드](docs/guides/launcher-update.md)에 있습니다.
+
 *Running with no arguments opens the launcher, which lists the ROM sets and starts the selected
 one in the same process. Every catalog entry is listed, and the ones that cannot run are dimmed
 with the reason — missing `roms\<id>.zip`, missing PIU10 entries, missing `roms\<id>\`, no CHD,
@@ -360,6 +366,13 @@ and says so, with the reason, in the final report's `Glide swap pacing …` line
 session. Passing any argument keeps today's behavior exactly and **ends the process when the game
 ends**, since the return loop exists only for a standalone run; `REPIU_LAUNCHER=0` skips the
 launcher for automation that runs the binary bare.*
+
+*Updates (issue #48). When the launcher opens it checks GitHub's latest release and, when it is newer,
+shows a notice and an **Update** button at the top, which downloads the archive for this build, checks
+its SHA-256, replaces only the archive's files (`roms\`, `cfg\` and `nvram\` stay) and restarts the
+launcher. The button appears only in a folder unpacked from a release archive; `[Launcher]
+check_updates = 0` in `cfg\repiu.ini` or `REPIU_UPDATE_CHECK=0` turns the check off. Installing on a
+Steam Deck and troubleshooting are in the [launcher update guide](docs/guides/launcher-update.md).*
 
 ### DOS/4GW sample 실행
 

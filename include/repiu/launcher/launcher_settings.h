@@ -42,6 +42,10 @@ struct LauncherSettings
     bool keep_aspect = true;
     // Where the selection cursor starts next time. Not applied to the run.
     std::string last_rom_set;
+    // Issue #48: whether the launcher asks GitHub for a newer release. On
+    // unless stored as 0; REPIU_UPDATE_CHECK=0 turns it off for one run.
+    bool has_check_updates = false;
+    bool check_updates = true;
 };
 
 struct LauncherSettingsLoad
