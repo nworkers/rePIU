@@ -12,6 +12,7 @@
 #include "repiu/engine/eeprom_backing_path.h"
 #include "repiu/engine/execution_trampoline.h"
 #include "repiu/engine/final_execution_report.h"
+#include "repiu/engine/session_display_preferences.h"
 #include "repiu/engine/session_identity.h"
 #include "repiu/engine/aot_code_cache.h"
 #include "../../engine/aot/aot_dbt_glide_gate_dispatch.h"
@@ -4821,11 +4822,39 @@ void PublishLauncherSettings(
             repiu::platform::PublishEnvironmentSetting(name, value.c_str());
         });
     logger->info("Launcher settings published swap-interval/volume/post-shader/"
-                 "full-precision-textures: {}/{}/{}/{}",
+                 "full-precision-textures/fullscreen/keep-aspect: "
+                 "{}/{}/{}/{}/{}/{}",
                  applied.swap_interval_published,
                  applied.ymz_volume_published,
                  applied.post_shader_published,
-                 applied.texture_full_precision_published);
+                 applied.texture_full_precision_published,
+                 applied.fullscreen_published,
+                 applied.keep_aspect_published);
+}
+
+// Issue #45. Stores a fullscreen or keep-aspect change the operator made in
+// the game. The file is read again rather than kept from start-up, so a value
+// stored meanwhile is not lost, and only the two keys change.
+void StoreSessionDisplayPreferences(
+    const std::filesystem::path& config_directory, bool fullscreen,
+    bool keep_aspect, const std::shared_ptr<spdlog::logger>& logger)
+{
+    repiu::launcher::LauncherSettingsLoad stored =
+        repiu::launcher::LoadLauncherSettings(config_directory);
+    stored.settings.has_fullscreen = true;
+    stored.settings.fullscreen = fullscreen;
+    stored.settings.has_keep_aspect = true;
+    stored.settings.keep_aspect = keep_aspect;
+    const std::string path =
+        repiu::launcher::LauncherSettingsPath(config_directory).string();
+    if (!repiu::launcher::SaveLauncherSettings(config_directory,
+                                               stored.settings))
+    {
+        logger->warn("Failed to write {}", path);
+        return;
+    }
+    logger->info("Display settings stored in {}: fullscreen={} keep_aspect={}",
+                 path, fullscreen ? 1 : 0, keep_aspect ? 1 : 0);
 }
 
 // Task 500 revision. The launcher has to load a GPU driver to draw anything,
@@ -4960,7 +4989,9 @@ int main(int argc, char** argv)
                 std::getenv(repiu::launcher::kLauncherYmzVolumeVariable),
                 std::getenv(repiu::launcher::kLauncherPostShaderVariable),
                 std::getenv(
-                    repiu::launcher::kLauncherTextureFullPrecisionVariable));
+                    repiu::launcher::kLauncherTextureFullPrecisionVariable),
+                std::getenv(repiu::launcher::kLauncherFullscreenVariable),
+                std::getenv(repiu::launcher::kLauncherKeepAspectVariable));
         const char* const executable_path =
             argc >= 1 && argv[0] != nullptr ? argv[0] : "repiu.exe";
         bool launcher_available = true;
@@ -5037,7 +5068,9 @@ int main(int argc, char** argv)
                     std::getenv(repiu::launcher::kLauncherYmzVolumeVariable),
                     std::getenv(repiu::launcher::kLauncherPostShaderVariable),
                     std::getenv(repiu::launcher::
-                                    kLauncherTextureFullPrecisionVariable));
+                                    kLauncherTextureFullPrecisionVariable),
+                    std::getenv(repiu::launcher::kLauncherFullscreenVariable),
+                    std::getenv(repiu::launcher::kLauncherKeepAspectVariable));
             logger->info(
                 "Launcher settings read from {} for an argument run "
                 "(environment wins: swap-interval/volume {}/{})",
@@ -5046,6 +5079,15 @@ int main(int argc, char** argv)
                 caller_overrides.ymz_volume ? "env" : "file");
             PublishLauncherSettings(stored.settings, caller_overrides, logger);
         }
+        // Issue #45: the game's OSD, Alt+Enter and double click store the
+        // display options here. Registered before the execution thread and
+        // the Glide window exist; the launcher parent never reaches this
+        // point while a game runs, so only this process writes the file then.
+        repiu::engine::SetSessionDisplayPreferenceSink(
+            [config_directory, logger](bool fullscreen, bool keep_aspect) {
+                StoreSessionDisplayPreferences(config_directory, fullscreen,
+                                               keep_aspect, logger);
+            });
     }
 
     const repiu::target::TargetProfile* profile =

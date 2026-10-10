@@ -199,7 +199,8 @@ void DrawPostProcessMenu(GlidePostProcess* post_process)
 
 void GlideOsd::Render(std::atomic<bool>* lfb_high_precision,
                       std::atomic<bool>* texture_full_precision,
-                      GlidePostProcess* post_process)
+                      GlidePostProcess* post_process,
+                      GlideOsdDisplayOptions* display)
 {
     if (!initialized_ || !visible_)
     {
@@ -238,6 +239,39 @@ void GlideOsd::Render(std::atomic<bool>* lfb_high_precision,
         if (has_renderer_identity_)
         {
             DrawRendererSection(renderer_identity_);
+            ImGui::Separator();
+        }
+        // Issue #45: unlike the items below, these two are stored in
+        // cfg/repiu.ini, so the next run starts the same way.
+        if (display != nullptr)
+        {
+            if (ImGui::Checkbox("Fullscreen", &display->fullscreen))
+            {
+                display->fullscreen_changed = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::BeginItemTooltip())
+            {
+                ImGui::TextUnformatted(
+                    "Borderless at the desktop resolution. Alt+Enter or a "
+                    "double click toggles it too. Saved for the next run.");
+                ImGui::EndTooltip();
+            }
+            if (ImGui::Checkbox("Keep aspect ratio", &display->keep_aspect))
+            {
+                display->keep_aspect_changed = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::BeginItemTooltip())
+            {
+                ImGui::TextUnformatted(
+                    "On keeps the game's 4:3 picture with black bars. Off "
+                    "stretches it to fill the window or screen. Saved for "
+                    "the next run.");
+                ImGui::EndTooltip();
+            }
             ImGui::Separator();
         }
         if (lfb_high_precision != nullptr)

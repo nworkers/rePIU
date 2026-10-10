@@ -100,7 +100,8 @@ flowchart LR
 * **포커스:** SDL 기본값(`SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS=0`)대로 배경에서는 패드 이벤트를
   받지 않으므로, 포커스를 잃으면 키보드와 같이 패드 상태도 모두 뗀 것으로 한다.
 * **런처:** 비디오와 함께 `SDL_INIT_GAMEPAD`를 켠다. ImGui SDL3 백엔드가 게임패드를 열어 D-pad로
-  항목을 옮기고 South(A)로 고른다.
+  항목을 옮기고 South(A)로 고른다. 롬셋 표에서는 South(A)가 Enter·더블 클릭과 같이 그 롬셋을 시작한다
+  (후속 요청, 2026-10-10).
 * **설정 파일 생성:** 처음 만드는 파일의 주석 블록에 패드 이름 표를 더하고, 각 입력의 현재 값 줄에
   패드 기본값이 함께 나온다.
 
@@ -167,7 +168,8 @@ load; the key query count is unchanged) and `CaptureCurrentJammaPressedMask` ORs
 by both a key and a pad gets no release edge until both let go. With SDL's default of no background
 joystick events, losing focus releases pad state as it does keys. The launcher initializes
 `SDL_INIT_GAMEPAD` with video so ImGui's SDL3 backend can navigate with the D-pad and confirm with
-South. A newly generated config file lists the pad names and shows pad defaults in each value line.
+South; on the ROM set table South starts the row as Enter and a double click do (follow-up request,
+2026-10-10). A newly generated config file lists the pad names and shows pad defaults in each value line.
 
 **Unchanged.** The BIOS keyboard (INT 16h), the OSD and host shortcuts stay keyboard only; analog
 stick directions and joystick axes are out of scope (dance pads report buttons and hats); no in-game

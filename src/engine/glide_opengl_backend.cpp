@@ -5,6 +5,7 @@
 #include "repiu/engine/glide_osd.h"
 #include "repiu/engine/glide_post_process.h"
 #include "repiu/engine/post_shader_catalog.h"
+#include "repiu/engine/session_display_preferences.h"
 #include "repiu/engine/session_identity.h"
 #include "repiu/hle/glide_lfb.h"
 #include "repiu/runtime/env_toggle.h"
@@ -878,11 +879,13 @@ void GlideOpenGlBackend::ApplyDrawableViewport() {
     return;
   }
   // Task 769: the picture keeps the guest's aspect ratio inside the
-  // drawable; the bars around it are cleared at every present.
+  // drawable; the bars around it are cleared at every present. Issue #45:
+  // unless keep-aspect is off, when it fills the drawable.
   drawable_width_ = static_cast<std::uint32_t>(drawable_width);
   drawable_height_ = static_cast<std::uint32_t>(drawable_height);
-  content_rect_ = ComputeGlideLetterboxRect(logical_width_, logical_height_,
-                                            drawable_width_, drawable_height_);
+  content_rect_ =
+      ComputeGlidePictureRect(logical_width_, logical_height_,
+                              drawable_width_, drawable_height_, keep_aspect_);
   glViewport(static_cast<GLint>(content_rect_.x),
              static_cast<GLint>(content_rect_.y),
              static_cast<GLsizei>(content_rect_.width),
@@ -907,19 +910,62 @@ void GlideOpenGlBackend::ToggleFullscreen() {
   if (window_ == nullptr || dummy_mode_) {
     return;
   }
-  SDL_Window *window = static_cast<SDL_Window *>(window_);
-  const bool fullscreen =
-      (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0U;
+  // Issue #45: an operator's toggle, so the new state is stored.
+  SetFullscreen(!IsFullscreen(), true);
+}
+
+bool GlideOpenGlBackend::IsFullscreen() const {
+  return window_ != nullptr &&
+         (SDL_GetWindowFlags(static_cast<SDL_Window *>(window_)) &
+          SDL_WINDOW_FULLSCREEN) != 0U;
+}
+
+bool GlideOpenGlBackend::SetFullscreen(bool fullscreen, bool report) {
+  if (window_ == nullptr || dummy_mode_) {
+    return false;
+  }
   // No fullscreen mode is ever set on this window, so SDL3 makes this a
   // borderless window at the desktop resolution: the display mode never
   // changes. The resulting pixel-size event re-runs ApplyDrawableViewport.
-  if (!SDL_SetWindowFullscreen(window, !fullscreen)) {
+  if (!SDL_SetWindowFullscreen(static_cast<SDL_Window *>(window_),
+                               fullscreen)) {
     fprintf(stderr, "[repiu-glide] fullscreen toggle failed: %s\n",
             SDL_GetError());
-    return;
+    return false;
   }
   fprintf(stderr, "[repiu-glide] %s\n",
-          fullscreen ? "windowed mode" : "fullscreen (desktop resolution)");
+          fullscreen ? "fullscreen (desktop resolution)" : "windowed mode");
+  // Issue #45: the requested value, not the window flag read back -- on
+  // X11 and Wayland the change lands asynchronously.
+  if (report) {
+    ReportSessionDisplayPreferences(fullscreen, keep_aspect_);
+  }
+  return true;
+}
+
+void GlideOpenGlBackend::ApplyPendingDisplayOptions() {
+  if (!display_change_pending_) {
+    return;
+  }
+  display_change_pending_ = false;
+  bool changed = false;
+  if (pending_keep_aspect_ != keep_aspect_) {
+    keep_aspect_ = pending_keep_aspect_;
+    ApplyDrawableViewport();
+    fprintf(stderr, "[repiu-glide] keep aspect ratio %s\n",
+            keep_aspect_ ? "on" : "off (stretched to the window)");
+    changed = true;
+  }
+  bool fullscreen = IsFullscreen();
+  if (pending_fullscreen_ != fullscreen &&
+      SetFullscreen(pending_fullscreen_, false)) {
+    fullscreen = pending_fullscreen_;
+    changed = true;
+  }
+  // One report carries both values, whichever of them changed.
+  if (changed) {
+    ReportSessionDisplayPreferences(fullscreen, keep_aspect_);
+  }
 }
 
 void GlideOpenGlBackend::ClearLetterboxBars() {
@@ -1173,6 +1219,12 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
       std::memory_order_relaxed);
   texture_full_precision_applied_ =
       texture_full_precision_.load(std::memory_order_relaxed);
+  // Issue #45: keep-aspect is on unless REPIU_GLIDE_KEEP_ASPECT says 0;
+  // the loader publishes cfg/repiu.ini's value there. Read before the first
+  // ApplyDrawableViewport below.
+  keep_aspect_ = repiu::runtime::ResolvePromotedToggle(
+      std::getenv("REPIU_GLIDE_KEEP_ASPECT"));
+  display_change_pending_ = false;
   osd_ = std::make_unique<GlideOsd>();
   {
     std::string osd_message;
@@ -1320,6 +1372,17 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
   glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   SDL_GL_SwapWindow(window);
+  // Issue #45: the stored fullscreen choice, entered after the window has
+  // its scaled size so leaving fullscreen returns to that window. Applying
+  // the stored value is not an operator's change, so nothing is reported.
+  if (repiu::runtime::ResolveOptInToggle(
+          std::getenv("REPIU_GLIDE_FULLSCREEN"))) {
+    SetFullscreen(true, false);
+  }
+  if (!keep_aspect_) {
+    fprintf(stderr, "[repiu-glide] keep aspect ratio off (stretched to the "
+                    "window)\n");
+  }
   ResetFrameRateMeasurement();
   std::ostringstream stream;
   stream << logical_width << "x" << logical_height
@@ -1368,6 +1431,8 @@ void GlideOpenGlBackend::PumpEvents() {
   }
   // Issue #37: an OSD change to the texture option takes effect here.
   ApplyTextureFullPrecision();
+  // Issue #45: and an OSD change to fullscreen or keep-aspect.
+  ApplyPendingDisplayOptions();
   // Issue #34: opened here, on the thread that pumps events, so device events
   // and the state they update stay on one thread. A failure leaves input
   // keyboard only and is not retried.
@@ -1812,8 +1877,18 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
   // and restores the GL state it touches, so the game's pipeline state
   // survives.
   if (osd_ != nullptr) {
+    // Issue #45: the OSD shows the current display options and leaves a
+    // change for the next event pump.
+    GlideOsdDisplayOptions display;
+    display.fullscreen = IsFullscreen();
+    display.keep_aspect = keep_aspect_;
     osd_->Render(&lfb_high_precision_, &texture_full_precision_,
-                 post_process_.get());
+                 post_process_.get(), &display);
+    if (display.fullscreen_changed || display.keep_aspect_changed) {
+      display_change_pending_ = true;
+      pending_fullscreen_ = display.fullscreen;
+      pending_keep_aspect_ = display.keep_aspect;
+    }
   }
   const std::uint64_t present_start_cycles =
       swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;

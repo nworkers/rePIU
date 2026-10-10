@@ -29,6 +29,7 @@
 #include "code_cache_placement_probe.h"
 #include "dos_console_device_probe.h"
 #include "dos_console_input_probe.h"
+#include "glide_letterbox_probe.h"
 #include "host_pad_input_probe.h"
 #include "mesa_fx_texture_source_probe.h"
 #include "dos_file_handle_cache_probe.h"
@@ -117,6 +118,8 @@ constexpr CoreProbe kCoreProbes[] = {
     {"event_clock", &repiu::tools::RunEventClockProbe},
     {"segment_push", &repiu::tools::RunSegmentPushProbe},
     {"glide_lfb_region", &repiu::tools::RunGlideLfbRegionProbe},
+    // Issue #45: the picture rectangle, stretch included.
+    {"glide_letterbox", &repiu::tools::RunGlideLetterboxProbe},
     {"jump_table_guard", &repiu::tools::RunJumpTableGuardProbe},
     // Task 550. Decodes bytes and judges them; it executes nothing, so it runs
     // on every host and its answers are the same everywhere. That is the point

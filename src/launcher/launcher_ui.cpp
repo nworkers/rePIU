@@ -1,5 +1,6 @@
 #include "repiu/launcher/launcher_ui.h"
 
+#include "repiu/engine/glide_letterbox.h"
 #include "repiu/engine/imgui_ui_scale.h"
 #include "repiu/engine/post_shader_catalog.h"
 
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -131,6 +133,10 @@ bool SettingsDiffer(const LauncherSettings& left, const LauncherSettings& right)
         left.has_texture_full_precision !=
             right.has_texture_full_precision ||
         left.texture_full_precision != right.texture_full_precision ||
+        left.has_fullscreen != right.has_fullscreen ||
+        left.fullscreen != right.fullscreen ||
+        left.has_keep_aspect != right.has_keep_aspect ||
+        left.keep_aspect != right.keep_aspect ||
         left.last_rom_set != right.last_rom_set)
     {
         return true;
@@ -207,9 +213,12 @@ void DrawRomSetTable(const std::vector<RomSetEntry>& catalog,
             *selection = index;
             // Enter plays the focused row the way double-clicking does; space
             // only moves the selection, which is what a list is expected to do.
+            // Issue #34: a pad's South (A) is ImGui's activate button and
+            // plays the row too, so a cabinet with only a pad can start one.
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) ||
                 ImGui::IsKeyPressed(ImGuiKey_Enter) ||
-                ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))
+                ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown))
             {
                 *start_requested = true;
             }
@@ -249,6 +258,42 @@ void DrawOptions(LauncherSettings* settings,
                  const std::vector<engine::PostShaderEntry>& shaders)
 {
     ImGui::SeparatorText("Options");
+    // Issue #45: windowed and aspect-preserving when nothing is stored. The
+    // game's OSD stores these two as well, so they show the last choice, and
+    // the launcher's own window follows them too.
+    bool fullscreen = settings->has_fullscreen && settings->fullscreen;
+    if (ImGui::Checkbox("Fullscreen", &fullscreen))
+    {
+        settings->has_fullscreen = true;
+        settings->fullscreen = fullscreen;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::TextUnformatted(
+            "Borderless at the desktop resolution, for this launcher and the "
+            "game. Alt+Enter switches it here; in game Alt+Enter, a double "
+            "click or Tab does, and that choice is kept too.");
+        ImGui::EndTooltip();
+    }
+    bool keep_aspect = !settings->has_keep_aspect || settings->keep_aspect;
+    if (ImGui::Checkbox("Keep aspect ratio", &keep_aspect))
+    {
+        settings->has_keep_aspect = true;
+        settings->keep_aspect = keep_aspect;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::TextUnformatted(
+            "On keeps the game's 4:3 picture, and this launcher's layout, with "
+            "black bars. Off stretches them to fill the window or screen. Tab "
+            "in game switches it too.");
+        ImGui::EndTooltip();
+    }
+
     // Task 766: with nothing stored the engine runs with vsync on.
     bool vsync =
         !settings->has_swap_interval || settings->swap_interval != 0;
@@ -264,6 +309,25 @@ void DrawOptions(LauncherSettings* settings,
         ImGui::TextUnformatted(
             "Off uncaps the frame rate. Performance measurements are taken "
             "with it off.");
+        ImGui::EndTooltip();
+    }
+
+    // Issue #37: with nothing stored the engine uses the 8-bit originals.
+    bool full_precision = !settings->has_texture_full_precision ||
+        settings->texture_full_precision;
+    if (ImGui::Checkbox("Full-precision textures", &full_precision))
+    {
+        settings->has_texture_full_precision = true;
+        settings->texture_full_precision = full_precision;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::TextUnformatted(
+            "Uses the game's original 8-bit textures instead of the 4444/565 "
+            "copies its graphics driver makes. Off matches the arcade "
+            "hardware; Tab in game switches it too.");
         ImGui::EndTooltip();
     }
 
@@ -303,25 +367,6 @@ void DrawOptions(LauncherSettings* settings,
         ImGui::TextUnformatted(
             "Applied to the finished frame only. Add your own .glsl files to "
             "the shaders folder; Tab in game switches and tunes them.");
-        ImGui::EndTooltip();
-    }
-
-    // Issue #37: with nothing stored the engine uses the 8-bit originals.
-    bool full_precision = !settings->has_texture_full_precision ||
-        settings->texture_full_precision;
-    if (ImGui::Checkbox("Full-precision textures", &full_precision))
-    {
-        settings->has_texture_full_precision = true;
-        settings->texture_full_precision = full_precision;
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::BeginItemTooltip())
-    {
-        ImGui::TextUnformatted(
-            "Uses the game's original 8-bit textures instead of the 4444/565 "
-            "copies its graphics driver makes. Off matches the arcade "
-            "hardware; Tab in game switches it too.");
         ImGui::EndTooltip();
     }
 
@@ -387,11 +432,31 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
         FindInitialSelection(catalog, initial_settings.last_rom_set);
     bool focus_pending = true;
     bool running = true;
+    // Issue #45: what the window was last set to; it opens windowed.
+    bool window_fullscreen = false;
     while (running)
     {
         SDL_Event event;
         while (SDL_PollEvent(&event))
         {
+            // Issue #45: Alt+Enter toggles fullscreen, as in the game. It
+            // never reaches ImGui, whose Enter would start the selected ROM
+            // set. (A double click starts one too, so it is not a toggle here.)
+            if ((event.type == SDL_EVENT_KEY_DOWN ||
+                 event.type == SDL_EVENT_KEY_UP) &&
+                (event.key.key == SDLK_RETURN ||
+                 event.key.key == SDLK_KP_ENTER) &&
+                (event.key.mod & SDL_KMOD_ALT) != 0)
+            {
+                if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)
+                {
+                    const bool fullscreen = result.settings.has_fullscreen &&
+                        result.settings.fullscreen;
+                    result.settings.has_fullscreen = true;
+                    result.settings.fullscreen = !fullscreen;
+                }
+                continue;
+            }
             ImGui_ImplSDL3_ProcessEvent(&event);
             if (event.type == SDL_EVENT_QUIT ||
                 (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
@@ -405,13 +470,37 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
         {
             break;
         }
+        // Issue #45: the window follows the fullscreen option whichever way
+        // it changed (the stored value at start, the checkbox, Alt+Enter).
+        // The applied value is tracked rather than read back, because the
+        // change lands asynchronously on X11 and Wayland.
+        const bool wanted_fullscreen =
+            result.settings.has_fullscreen && result.settings.fullscreen;
+        if (wanted_fullscreen != window_fullscreen)
+        {
+            SDL_SetWindowFullscreen(context.window, wanted_fullscreen);
+            window_fullscreen = wanted_fullscreen;
+        }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
-        // #15: text and spacing follow the window height, so a maximised
-        // launcher is as readable as the default one.
-        const float scale =
-            engine::UiScaleForHeight(io.DisplaySize.y, engine::kLauncherUiScale);
+        // Issue #45: with keep-aspect on the launcher is laid out in the
+        // largest area of its default window's ratio, centred, the rest left
+        // as black bars; off, it fills the window. The rectangle is in ImGui's
+        // top-left coordinates; the letterbox rule is symmetric, so only the
+        // odd pixel's side differs from OpenGL's bottom-left form.
+        const bool keep_aspect =
+            !result.settings.has_keep_aspect || result.settings.keep_aspect;
+        const engine::GlideLetterboxRect area = engine::ComputeGlidePictureRect(
+            static_cast<std::uint32_t>(kWindowWidth),
+            static_cast<std::uint32_t>(kWindowHeight),
+            static_cast<std::uint32_t>(std::max(0.0F, io.DisplaySize.x)),
+            static_cast<std::uint32_t>(std::max(0.0F, io.DisplaySize.y)),
+            keep_aspect);
+        // #15: text and spacing follow the height, so a maximised launcher
+        // is as readable as the default one.
+        const float scale = engine::UiScaleForHeight(
+            static_cast<float>(area.height), engine::kLauncherUiScale);
         if (scale != applied_scale)
         {
             engine::ApplyImGuiUiScale(base_style, scale);
@@ -420,8 +509,12 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
         ImGui::NewFrame();
 
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(viewport->WorkPos);
-        ImGui::SetNextWindowSize(viewport->WorkSize);
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x +
+                                           static_cast<float>(area.x),
+                                       viewport->WorkPos.y +
+                                           static_cast<float>(area.y)));
+        ImGui::SetNextWindowSize(ImVec2(static_cast<float>(area.width),
+                                        static_cast<float>(area.height)));
         constexpr ImGuiWindowFlags kWindowFlags = ImGuiWindowFlags_NoTitleBar |
             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus;
@@ -478,8 +571,27 @@ LauncherUiResult RunLauncherUi(const std::vector<RomSetEntry>& catalog,
         int height = 0;
         SDL_GetWindowSizeInPixels(context.window, &width, &height);
         glViewport(0, 0, width, height);
-        glClearColor(0.09F, 0.09F, 0.11F, 1.0F);
+        // Issue #45: black bars around the launcher's area, its own colour
+        // inside it. The area is in window points; the clear is in pixels.
+        glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
         glClear(GL_COLOR_BUFFER_BIT);
+        if (io.DisplaySize.x > 0.0F && io.DisplaySize.y > 0.0F)
+        {
+            const float to_x = static_cast<float>(width) / io.DisplaySize.x;
+            const float to_y = static_cast<float>(height) / io.DisplaySize.y;
+            const float top = static_cast<float>(area.y) * to_y;
+            const float area_height = static_cast<float>(area.height) * to_y;
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(static_cast<GLint>(static_cast<float>(area.x) * to_x),
+                      static_cast<GLint>(static_cast<float>(height) - top -
+                                         area_height),
+                      static_cast<GLsizei>(static_cast<float>(area.width) *
+                                           to_x),
+                      static_cast<GLsizei>(area_height));
+            glClearColor(0.09F, 0.09F, 0.11F, 1.0F);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDisable(GL_SCISSOR_TEST);
+        }
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(context.window);
     }

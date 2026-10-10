@@ -442,6 +442,15 @@ private:
     // aspect-preserving content rect, cleared before every present.
     void ToggleFullscreen();
     void ClearLetterboxBars();
+    // Issue #45: the window's fullscreen state, and a change to it. `report`
+    // is true for an operator's action, which the session sink stores;
+    // applying the stored value at start is not reported. False when SDL
+    // refused the change.
+    bool IsFullscreen() const;
+    bool SetFullscreen(bool fullscreen, bool report);
+    // Issue #45: applies an OSD change to fullscreen or keep-aspect at the
+    // start of the event pump, and reports it. Host thread.
+    void ApplyPendingDisplayOptions();
     std::string BuildWindowTitle(double frames_per_second) const;
     void ResetFrameRateMeasurement();
     void RecordPresentedFrame();
@@ -612,6 +621,16 @@ private:
     // GL textures currently hold; host thread only.
     std::atomic<bool> texture_full_precision_{true};
     bool texture_full_precision_applied_ = true;
+    // Issue #45: whether the picture keeps the logical aspect ratio (true,
+    // letterboxed) or fills the drawable. From REPIU_GLIDE_KEEP_ASPECT when
+    // the window opens, on by default; the OSD changes it. Host thread only.
+    bool keep_aspect_ = true;
+    // Issue #45: an OSD change waiting for the next event pump. The OSD draws
+    // in the middle of a present, so it only leaves the request here. Host
+    // thread only.
+    bool display_change_pending_ = false;
+    bool pending_fullscreen_ = false;
+    bool pending_keep_aspect_ = true;
     // Task 745: the engine's own swap pacing when the driver refused the
     // requested interval. Host thread only, like the swap itself.
     bool swap_pacing_enabled_ = false;

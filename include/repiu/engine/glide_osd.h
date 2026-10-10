@@ -15,6 +15,18 @@ namespace repiu::engine
 
 class GlidePostProcess;
 
+// Issue #45. The display options the OSD shows and may change. The backend
+// fills `fullscreen` and `keep_aspect` with the current state before Render;
+// a checkbox the operator flips sets the new value and its `_changed` flag,
+// and the backend applies it at its next event pump.
+struct GlideOsdDisplayOptions
+{
+    bool fullscreen = false;
+    bool keep_aspect = true;
+    bool fullscreen_changed = false;
+    bool keep_aspect_changed = false;
+};
+
 // Task 761. The in-game on-screen display the launcher section of
 // ARCHITECTURE.md promised: the same Dear ImGui layer, drawn inside the Glide
 // backend's SDL window while the guest runs. It holds the LFB high-precision
@@ -62,10 +74,12 @@ public:
     // GL context current, immediately before the buffer swap; the ImGui GL3
     // backend saves and restores the GL state it touches. `post_process` may
     // be null, which hides the shader menu; choosing a shader there compiles
-    // it on the spot, which this thread and context allow.
+    // it on the spot, which this thread and context allow. `display` may be
+    // null, which hides the fullscreen and keep-aspect checkboxes.
     void Render(std::atomic<bool>* lfb_high_precision,
                 std::atomic<bool>* texture_full_precision,
-                GlidePostProcess* post_process);
+                GlidePostProcess* post_process,
+                GlideOsdDisplayOptions* display = nullptr);
 
     // #5. The renderer section at the top of the overlay. Set once, after the
     // GL context exists; until then the section is not drawn.
