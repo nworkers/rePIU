@@ -2,6 +2,7 @@
 #define REPIU_ENGINE_INPUT_SDL_PAD_INPUT_H_
 
 #include "repiu/input/host_pad_state.h"
+#include "repiu/input/pad_osd_chord.h"
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_gamepad.h>
@@ -49,6 +50,16 @@ public:
     {
         return mask_;
     }
+    // Issue #55: while suppressed the game sees no pad input (the pad is
+    // driving the OSD); lifting it keeps what is still held hidden until it is
+    // released. Returns the change in the game-facing mask, which the caller
+    // records as edges like any other.
+    Change SetGameInputSuppressed(bool suppressed);
+    bool game_input_suppressed() const
+    {
+        return game_gate_.suppressed();
+    }
+
     // Issue #52: what every pad is holding, for the exit chord.
     const input::HostPadState& state() const
     {
@@ -74,6 +85,7 @@ private:
     SDL_Gamepad* gamepads_[input::kMaxGamepadSlots] = {};
     SDL_Joystick* joysticks_[input::kMaxJoystickSlots] = {};
     std::uint16_t mask_ = 0U;
+    input::PadGameGate game_gate_;
 };
 
 }  // namespace repiu::engine

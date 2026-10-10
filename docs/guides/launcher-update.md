@@ -36,6 +36,8 @@ Update 버튼은 **릴리스 아카이브를 푼 폴더**(실행 파일 옆 `VER
 4. 게임 모드에서 실행하면 런처가 열립니다. 게임패드로 롬셋을 고르고 `A`로 시작합니다.
 5. 끝낼 때는 **LT + RT + 왼쪽·오른쪽 스틱 누르기를 1초** 함께 누릅니다. 게임 중이면 런처로 돌아가고,
    런처에서 한 번 더 하면 rePIU가 끝나 Steam으로 돌아갑니다(issue #52).
+6. 게임 중 설정(전체 화면, 비율, 셰이더 등)은 **LT + RT + Y**로 OSD를 열어 D-pad·`A`로 바꾸고 `B`로 닫습니다
+   (issue #55).
 
 이후로는 런처에 알림이 뜨면 Update를 누르기만 하면 됩니다(D-pad로 버튼까지 올라가 `A`). Linux에서는
 같은 프로세스가 새 실행 파일로 바뀌므로 Steam은 게임이 계속 실행 중인 것으로 봅니다.
@@ -113,6 +115,8 @@ releases page address.
 4. Run it in game mode; the launcher opens, choose a ROM set with the gamepad and start it with `A`.
 5. To quit, hold **LT + RT + both stick clicks for a second**: a game returns to the launcher, and doing it
    again there ends rePIU and returns to Steam (issue #52).
+6. In a game, open the OSD with **LT + RT + Y** to change settings (fullscreen, aspect, shader and so on) with
+   the D-pad and `A`, and close it with `B` (issue #55).
 
 From then on, press Update when the launcher shows the notice (D-pad up to the button, then `A`). On Linux
 the same process turns into the new executable, so Steam sees the game as still running.

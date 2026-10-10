@@ -2,6 +2,7 @@
 #define REPIU_ENGINE_GLIDE_OPENGL_BACKEND_H_
 
 #include "repiu/input/pad_exit_chord.h"
+#include "repiu/input/pad_osd_chord.h"
 #include "repiu/hle/glide_hle.h"
 #include "repiu/hle/glide_vertex.h"
 #include "repiu/engine/glide_buffer_swap_timing.h"
@@ -452,6 +453,9 @@ private:
     // Issue #45: applies an OSD change to fullscreen or keep-aspect at the
     // start of the event pump, and reports it. Host thread.
     void ApplyPendingDisplayOptions();
+    // Issue #55: records a pad mask change as timeline edges (see the .cpp).
+    void RecordPadMaskChange(std::uint16_t before, std::uint16_t after,
+                             std::uint64_t changed_at);
     std::string BuildWindowTitle(double frames_per_second) const;
     void ResetFrameRateMeasurement();
     void RecordPresentedFrame();
@@ -628,6 +632,8 @@ private:
     bool keep_aspect_ = true;
     // Issue #52: how long LT+RT+L3+R3 has been held. Host thread only.
     input::PadExitChordTimer pad_exit_chord_;
+    // Issue #55: LT+RT+Y's edge, which toggles the OSD. Host thread only.
+    input::PadChordEdge pad_osd_chord_;
     // Issue #45: an OSD change waiting for the next event pump. The OSD draws
     // in the middle of a present, so it only leaves the request here. Host
     // thread only.

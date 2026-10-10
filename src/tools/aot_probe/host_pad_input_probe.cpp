@@ -5,6 +5,7 @@
 #include "repiu/input/host_pad_state.h"
 #include "repiu/input/jamma_input_bindings.h"
 #include "repiu/input/pad_exit_chord.h"
+#include "repiu/input/pad_osd_chord.h"
 
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_joystick.h>
@@ -260,6 +261,48 @@ bool ProbeExitChord()
     return ok;
 }
 
+// Issue #55. LT+RT+Y on one pad, its edge, and the gate that keeps pad input
+// from the game while the OSD is open and lets nothing held leak as it closes.
+bool ProbeOsdChord()
+{
+    constexpr std::uint32_t kY = 1U << SDL_GAMEPAD_BUTTON_NORTH;
+    input::HostPadState state;
+    state.gamepad_buttons[0] = kY;
+    state.gamepad_triggers[0] = 0x03U;
+    bool ok = input::IsPadOsdChordDown(state);
+    state.gamepad_triggers[0] = 0x02U;
+    ok = ok && !input::IsPadOsdChordDown(state);
+    // Split: triggers on one pad, Y on the other.
+    state.gamepad_triggers[0] = 0x00U;
+    state.gamepad_triggers[1] = 0x03U;
+    ok = ok && !input::IsPadOsdChordDown(state);
+    // The exit chord's buttons do not open it.
+    input::HostPadState exit_chord;
+    exit_chord.gamepad_buttons[0] = (1U << SDL_GAMEPAD_BUTTON_LEFT_STICK) |
+        (1U << SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+    exit_chord.gamepad_triggers[0] = 0x03U;
+    ok = ok && !input::IsPadOsdChordDown(exit_chord) &&
+        input::IsPadExitChordDown(exit_chord);
+
+    input::PadChordEdge edge;
+    ok = ok && edge.Update(true) && !edge.Update(true) && !edge.Update(false) &&
+        edge.Update(true);
+
+    // The gate: open passes everything; suppressed passes nothing; as it
+    // reopens, a held bit stays hidden until released and pressed again.
+    constexpr std::uint16_t kCenter = 0x0004U;
+    constexpr std::uint16_t kDownRight = 0x0010U;
+    input::PadGameGate gate;
+    ok = ok && gate.Apply(kCenter) == kCenter && !gate.suppressed();
+    gate.SetSuppressed(true, kCenter);
+    ok = ok && gate.suppressed() && gate.Apply(kCenter | kDownRight) == 0U;
+    gate.SetSuppressed(false, kDownRight);
+    ok = ok && gate.Apply(kDownRight) == 0U &&
+        gate.Apply(kDownRight | kCenter) == kCenter &&
+        gate.Apply(kCenter) == kCenter && gate.Apply(kDownRight) == kDownRight;
+    return ok;
+}
+
 }  // namespace
 
 bool RunHostPadInputProbe()
@@ -273,8 +316,9 @@ bool RunHostPadInputProbe()
     const bool mask = ProbeMask();
     const bool slots = ProbeSlots();
     const bool exit_chord = ProbeExitChord();
+    const bool osd_chord = ProbeOsdChord();
     const bool all = shape && parse && rejects && format && mixed &&
-                     defaults && mask && slots && exit_chord;
+                     defaults && mask && slots && exit_chord && osd_chord;
     std::cout << "host_pad_input_shape=" << (shape ? "true" : "false")
               << "\nhost_pad_input_parse=" << (parse ? "true" : "false")
               << "\nhost_pad_input_rejects=" << (rejects ? "true" : "false")
@@ -286,6 +330,8 @@ bool RunHostPadInputProbe()
               << "\nhost_pad_input_slots=" << (slots ? "true" : "false")
               << "\nhost_pad_input_exit_chord="
               << (exit_chord ? "true" : "false")
+              << "\nhost_pad_input_osd_chord="
+              << (osd_chord ? "true" : "false")
               << "\nhost_pad_input_all=" << (all ? "true" : "false")
               << "\n";
     return all;

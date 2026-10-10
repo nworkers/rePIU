@@ -182,6 +182,9 @@ COIN1       = F5, Pad1_Back
 * 한 패드에서 LT + RT + 왼쪽 스틱 누르기 + 오른쪽 스틱 누르기를 1초 함께 누르면 종료한다(issue #52). 게임
   중이면 런처로 돌아가고, 런처에서는 rePIU가 끝난다. 오른쪽 스틱 누르기는 기본으로 `CLEAR`이므로 누르는
   동안 게임에 CLEAR가 들어간다.
+* 한 패드에서 LT + RT + Y를 함께 누르면 OSD를 열고 닫는다(issue #55). 열려 있는 동안 D-pad로 항목을 옮기고
+  `A`로 체크박스·메뉴를 고르며, 메뉴가 열려 있지 않을 때 `B`를 누르면 닫는다. 그동안 패드 입력은 게임에
+  가지 않고, 닫을 때 누르고 있던 버튼은 뗄 때까지 게임에 가지 않는다. 키보드는 계속 게임으로 간다.
 
 ### 7. 조합키
 
@@ -424,6 +427,10 @@ The names are positional (`A` is the bottom face button — PlayStation's ×, Ni
 * Holding LT + RT + left stick click + right stick click together on one pad for a second quits (issue
   #52): a game returns to the launcher, and the launcher ends rePIU. The right stick click is `CLEAR` by
   default, so the game sees CLEAR while the chord is held.
+* LT + RT + Y together on one pad opens and closes the OSD (issue #55). While it is open the D-pad moves
+  between items, `A` picks a checkbox or menu entry, and `B` closes it when no menu is open; pad input does not
+  reach the game meanwhile, and a button held as it closes stays away from the game until released. The
+  keyboard keeps reaching the game.
 
 ### 7. Key combinations
 
