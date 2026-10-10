@@ -20,6 +20,8 @@ constexpr const char* kSwapIntervalKey = "swap_interval";
 constexpr const char* kYmzVolumeKey = "ymz_volume";
 constexpr const char* kPostShaderKey = "post_shader";
 constexpr const char* kTextureFullPrecisionKey = "texture_full_precision";
+constexpr const char* kFullscreenKey = "fullscreen";
+constexpr const char* kKeepAspectKey = "keep_aspect";
 constexpr const char* kLastRomSetKey = "last_rom_set";
 
 bool ParseInt32(const std::string& text, std::int32_t* value)
@@ -32,6 +34,27 @@ bool ParseInt32(const std::string& text, std::int32_t* value)
     }
     const auto result = std::from_chars(first, last, *value);
     return result.ec == std::errc{} && result.ptr == last;
+}
+
+// Reads a `[Video]` key that holds 0 or 1, warning about anything else.
+void LoadVideoSwitch(const config::IniDocument& document,
+                     const std::string& origin, const char* key,
+                     bool* has_value, bool* value,
+                     std::vector<std::string>* warnings)
+{
+    const std::string* text = document.FindLast(kVideoSection, key);
+    if (text == nullptr)
+    {
+        return;
+    }
+    if (*text == "0" || *text == "1")
+    {
+        *has_value = true;
+        *value = *text == "1";
+        return;
+    }
+    warnings->push_back(origin + ": [Video] " + key + " is not 0 or 1: " +
+                        *text);
 }
 
 bool ParseFloat(const std::string& text, float* value)
@@ -106,21 +129,15 @@ LauncherSettingsLoad LoadLauncherSettings(
             load.settings.post_shader = *value;
         }
     }
-    if (const std::string* value =
-            document.FindLast(kVideoSection, kTextureFullPrecisionKey))
-    {
-        if (*value == "0" || *value == "1")
-        {
-            load.settings.has_texture_full_precision = true;
-            load.settings.texture_full_precision = *value == "1";
-        }
-        else
-        {
-            load.warnings.push_back(origin + ": [Video] " +
-                                    kTextureFullPrecisionKey +
-                                    " is not 0 or 1: " + *value);
-        }
-    }
+    LoadVideoSwitch(document, origin, kTextureFullPrecisionKey,
+                    &load.settings.has_texture_full_precision,
+                    &load.settings.texture_full_precision, &load.warnings);
+    LoadVideoSwitch(document, origin, kFullscreenKey,
+                    &load.settings.has_fullscreen, &load.settings.fullscreen,
+                    &load.warnings);
+    LoadVideoSwitch(document, origin, kKeepAspectKey,
+                    &load.settings.has_keep_aspect,
+                    &load.settings.keep_aspect, &load.warnings);
     if (const std::string* value =
             document.FindLast(kAudioSection, kYmzVolumeKey))
     {
@@ -172,6 +189,16 @@ bool SaveLauncherSettings(const std::filesystem::path& config_directory,
         stream << kTextureFullPrecisionKey << " = "
                << (settings.texture_full_precision ? 1 : 0) << "\n";
     }
+    if (settings.has_fullscreen)
+    {
+        stream << kFullscreenKey << " = " << (settings.fullscreen ? 1 : 0)
+               << "\n";
+    }
+    if (settings.has_keep_aspect)
+    {
+        stream << kKeepAspectKey << " = " << (settings.keep_aspect ? 1 : 0)
+               << "\n";
+    }
     stream << "\n[" << kAudioSection << "]\n";
     if (settings.has_ymz_volume)
     {
@@ -206,7 +233,8 @@ std::string BuildLauncherChildCommandLine(const std::string& executable_path,
 LauncherEnvironmentOverrides ResolveLauncherEnvironmentOverrides(
     const char* swap_interval_value, const char* ymz_volume_value,
     const char* post_shader_value,
-    const char* texture_full_precision_value)
+    const char* texture_full_precision_value, const char* fullscreen_value,
+    const char* keep_aspect_value)
 {
     LauncherEnvironmentOverrides overrides;
     // An empty value still counts as set: the caller chose to define it, and
@@ -215,6 +243,8 @@ LauncherEnvironmentOverrides ResolveLauncherEnvironmentOverrides(
     overrides.ymz_volume = ymz_volume_value != nullptr;
     overrides.post_shader = post_shader_value != nullptr;
     overrides.texture_full_precision = texture_full_precision_value != nullptr;
+    overrides.fullscreen = fullscreen_value != nullptr;
+    overrides.keep_aspect = keep_aspect_value != nullptr;
     return overrides;
 }
 
@@ -254,6 +284,17 @@ LauncherSettingsApplication ApplyLauncherSettings(
         publish(kLauncherTextureFullPrecisionVariable,
                 settings.texture_full_precision ? "1" : "0");
         application.texture_full_precision_published = true;
+    }
+    if (settings.has_fullscreen && !overrides.fullscreen)
+    {
+        publish(kLauncherFullscreenVariable, settings.fullscreen ? "1" : "0");
+        application.fullscreen_published = true;
+    }
+    if (settings.has_keep_aspect && !overrides.keep_aspect)
+    {
+        publish(kLauncherKeepAspectVariable,
+                settings.keep_aspect ? "1" : "0");
+        application.keep_aspect_published = true;
     }
     return application;
 }

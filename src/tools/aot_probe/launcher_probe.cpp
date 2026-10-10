@@ -32,6 +32,8 @@ using repiu::launcher::kLauncherSwapIntervalVariable;
 using repiu::launcher::kLauncherYmzVolumeVariable;
 using repiu::launcher::kLauncherPostShaderVariable;
 using repiu::launcher::kLauncherTextureFullPrecisionVariable;
+using repiu::launcher::kLauncherFullscreenVariable;
+using repiu::launcher::kLauncherKeepAspectVariable;
 
 std::filesystem::path MakeScratchDirectory(const std::string& name)
 {
@@ -175,6 +177,10 @@ bool ProbeSettingsRoundTrip()
     settings.post_shader = "my_crt.glsl";
     settings.has_texture_full_precision = true;
     settings.texture_full_precision = false;
+    settings.has_fullscreen = true;
+    settings.fullscreen = true;
+    settings.has_keep_aspect = true;
+    settings.keep_aspect = false;
     const bool saved = SaveLauncherSettings(config, settings);
     const auto reloaded = LoadLauncherSettings(config);
     const bool round_trip = saved && reloaded.file_present &&
@@ -187,7 +193,10 @@ bool ProbeSettingsRoundTrip()
         reloaded.settings.has_post_shader &&
         reloaded.settings.post_shader == "my_crt.glsl" &&
         reloaded.settings.has_texture_full_precision &&
-        !reloaded.settings.texture_full_precision;
+        !reloaded.settings.texture_full_precision &&
+        reloaded.settings.has_fullscreen && reloaded.settings.fullscreen &&
+        reloaded.settings.has_keep_aspect &&
+        !reloaded.settings.keep_aspect;
 
     // Absent keys stay absent rather than defaulting, so an unwritten option
     // never publishes anything.
@@ -200,6 +209,8 @@ bool ProbeSettingsRoundTrip()
         !reloaded_empty.settings.has_ymz_volume &&
         !reloaded_empty.settings.has_post_shader &&
         !reloaded_empty.settings.has_texture_full_precision &&
+        !reloaded_empty.settings.has_fullscreen &&
+        !reloaded_empty.settings.has_keep_aspect &&
         reloaded_empty.settings.last_rom_set == "pumpit1";
 
     // A malformed value warns and is ignored; the rest of the file still
@@ -207,13 +218,16 @@ bool ProbeSettingsRoundTrip()
     WriteFile(LauncherSettingsPath(config),
               "[Video]\nswap_interval = later\n"
               "texture_full_precision = maybe\n"
+              "fullscreen = yes\nkeep_aspect = 2\n"
               "[Audio]\nymz_volume = loud\n"
               "[Launcher]\nlast_rom_set = pumpit3\n");
     const auto malformed = LoadLauncherSettings(config);
     const bool malformed_ok = malformed.file_present &&
-        malformed.warnings.size() == 3U &&
+        malformed.warnings.size() == 5U &&
         !malformed.settings.has_swap_interval &&
         !malformed.settings.has_texture_full_precision &&
+        !malformed.settings.has_fullscreen &&
+        !malformed.settings.has_keep_aspect &&
         !malformed.settings.has_ymz_volume &&
         malformed.settings.last_rom_set == "pumpit3";
 
@@ -287,7 +301,34 @@ bool ProbeEnvironmentPrecedence()
     const bool absent_ok = !applied_absent.swap_interval_published &&
         !applied_absent.ymz_volume_published && published.empty();
 
-    return free_ok && held_ok && mixed_ok && absent_ok;
+    // Issue #45: the display options publish under their own names, and a
+    // caller-set variable for either one holds only that one back.
+    LauncherSettings display;
+    display.has_fullscreen = true;
+    display.fullscreen = true;
+    display.has_keep_aspect = true;
+    display.keep_aspect = false;
+    published.clear();
+    const auto applied_display =
+        ApplyLauncherSettings(display, free_overrides, publish);
+    const bool display_ok = applied_display.fullscreen_published &&
+        applied_display.keep_aspect_published && published.size() == 2U &&
+        published[0].first == std::string(kLauncherFullscreenVariable) &&
+        published[0].second == "1" &&
+        published[1].first == std::string(kLauncherKeepAspectVariable) &&
+        published[1].second == "0";
+    published.clear();
+    const auto display_held = ResolveLauncherEnvironmentOverrides(
+        nullptr, nullptr, nullptr, nullptr, "0", nullptr);
+    const auto applied_display_held =
+        ApplyLauncherSettings(display, display_held, publish);
+    const bool display_held_ok = !applied_display_held.fullscreen_published &&
+        applied_display_held.keep_aspect_published &&
+        published.size() == 1U &&
+        published[0].first == std::string(kLauncherKeepAspectVariable);
+
+    return free_ok && held_ok && mixed_ok && absent_ok && display_ok &&
+        display_held_ok;
 }
 
 bool ProbeChildCommandLine()

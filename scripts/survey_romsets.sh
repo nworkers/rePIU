@@ -29,6 +29,9 @@ if [ "$(uname -s)" = Linux ]; then
   export SDL_VIDEO_DRIVER=${SDL_VIDEO_DRIVER:-x11}
 fi
 export REPIU_STALL_TIMEOUT_MS=0 REPIU_EXECUTION_TIMEOUT_MS=$((seconds * 1000))
+# Issue #45: measure in a window even when cfg/repiu.ini stores fullscreen;
+# the caller can still ask for it.
+export REPIU_GLIDE_FULLSCREEN=${REPIU_GLIDE_FULLSCREEN:-0}
 export REPIU_GLIDE_FRAME_RATE_LOG=1 REPIU_GLIDE_PIXEL_DIAG=1
 export REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS=5000 REPIU_DOS_ASSET_TRACE=1
 export REPIU_INPUT_SCRIPT=scripts/input_scripts/survey_generic.txt

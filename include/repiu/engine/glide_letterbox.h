@@ -25,6 +25,14 @@ struct GlideLetterboxRect
     std::uint32_t logical_width, std::uint32_t logical_height,
     std::uint32_t drawable_width, std::uint32_t drawable_height);
 
+// Issue #45. The picture's rectangle under the "Keep aspect ratio" option: the
+// letterbox rectangle above when `keep_aspect` is true, the whole drawable --
+// stretched, ignoring the logical ratio -- when it is false.
+[[nodiscard]] GlideLetterboxRect ComputeGlidePictureRect(
+    std::uint32_t logical_width, std::uint32_t logical_height,
+    std::uint32_t drawable_width, std::uint32_t drawable_height,
+    bool keep_aspect);
+
 }  // namespace repiu::engine
 
 #endif  // REPIU_ENGINE_GLIDE_LETTERBOX_H_

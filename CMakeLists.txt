@@ -318,6 +318,7 @@ target_sources(repiu_exe
         src/engine/aot_glide_gate_fixup_index.cpp
         src/engine/glide_gate_interrupt_exit.cpp
         src/engine/gl_renderer_identity.cpp
+        src/engine/session_display_preferences.cpp
         src/engine/session_identity.cpp
         src/engine/aot_inline_cache_site_index.cpp
         src/engine/aot_return_dispatch_site_index.cpp
@@ -807,6 +808,7 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/far_return_probe.cpp
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/execution_timeout_probe.cpp
+    src/tools/aot_probe/glide_letterbox_probe.cpp
     src/tools/aot_probe/glide_lfb_region_probe.cpp
     src/tools/aot_probe/guest_address_space_probe.cpp
     src/tools/aot_probe/jump_table_guard_probe.cpp

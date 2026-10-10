@@ -47,4 +47,20 @@ GlideLetterboxRect ComputeGlideLetterboxRect(std::uint32_t logical_width,
     return rect;
 }
 
+GlideLetterboxRect ComputeGlidePictureRect(std::uint32_t logical_width,
+                                           std::uint32_t logical_height,
+                                           std::uint32_t drawable_width,
+                                           std::uint32_t drawable_height,
+                                           bool keep_aspect)
+{
+    if (keep_aspect)
+    {
+        return ComputeGlideLetterboxRect(logical_width, logical_height,
+                                         drawable_width, drawable_height);
+    }
+    // A zero logical size passed as zero makes the letterbox rule fill the
+    // drawable, and keeps its all-zero answer for a zero drawable.
+    return ComputeGlideLetterboxRect(0U, 0U, drawable_width, drawable_height);
+}
+
 }  // namespace repiu::engine

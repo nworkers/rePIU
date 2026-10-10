@@ -33,6 +33,13 @@ struct LauncherSettings
     // Issue #37: whether textures use the game's 8-bit originals.
     bool has_texture_full_precision = false;
     bool texture_full_precision = true;
+    // Issue #45: start fullscreen (off by default), and keep the game's
+    // aspect ratio (on by default; off stretches the picture). The game's
+    // OSD writes these two back when the operator changes them.
+    bool has_fullscreen = false;
+    bool fullscreen = false;
+    bool has_keep_aspect = false;
+    bool keep_aspect = true;
     // Where the selection cursor starts next time. Not applied to the run.
     std::string last_rom_set;
 };
@@ -66,12 +73,16 @@ struct LauncherEnvironmentOverrides
     bool ymz_volume = false;
     bool post_shader = false;
     bool texture_full_precision = false;
+    bool fullscreen = false;
+    bool keep_aspect = false;
 };
 
 [[nodiscard]] LauncherEnvironmentOverrides ResolveLauncherEnvironmentOverrides(
     const char* swap_interval_value, const char* ymz_volume_value,
     const char* post_shader_value,
-    const char* texture_full_precision_value = nullptr);
+    const char* texture_full_precision_value = nullptr,
+    const char* fullscreen_value = nullptr,
+    const char* keep_aspect_value = nullptr);
 
 struct LauncherSettingsApplication
 {
@@ -79,6 +90,8 @@ struct LauncherSettingsApplication
     bool ymz_volume_published = false;
     bool post_shader_published = false;
     bool texture_full_precision_published = false;
+    bool fullscreen_published = false;
+    bool keep_aspect_published = false;
 };
 
 // Publishes the stored values the environment has not already claimed.
@@ -106,6 +119,10 @@ inline constexpr const char* kLauncherYmzVolumeVariable = "REPIU_YMZ_VOLUME";
 inline constexpr const char* kLauncherPostShaderVariable = "REPIU_POST_SHADER";
 inline constexpr const char* kLauncherTextureFullPrecisionVariable =
     "REPIU_GLIDE_TEXTURE_FULL_PRECISION";
+inline constexpr const char* kLauncherFullscreenVariable =
+    "REPIU_GLIDE_FULLSCREEN";
+inline constexpr const char* kLauncherKeepAspectVariable =
+    "REPIU_GLIDE_KEEP_ASPECT";
 
 }  // namespace repiu::launcher
 

@@ -58,13 +58,28 @@ bool RunGlideLetterboxProbe()
         Is(ComputeGlideLetterboxRect(640U, 480U, 1U, 1000U), 0U, 499U, 1U,
            1U);
 
-    const bool all = same_ratio && pillarbox && letterbox && odd && degenerate;
+    // Issue #45: with keep_aspect off the picture fills any drawable; on, it
+    // is the letterbox rectangle above.
+    using engine::ComputeGlidePictureRect;
+    const bool stretch =
+        Is(ComputeGlidePictureRect(640U, 480U, 1920U, 1080U, false), 0U, 0U,
+           1920U, 1080U) &&
+        Is(ComputeGlidePictureRect(640U, 480U, 1280U, 1600U, false), 0U, 0U,
+           1280U, 1600U) &&
+        Is(ComputeGlidePictureRect(640U, 480U, 0U, 480U, false), 0U, 0U, 0U,
+           0U) &&
+        Is(ComputeGlidePictureRect(640U, 480U, 1920U, 1080U, true), 240U, 0U,
+           1440U, 1080U);
+
+    const bool all = same_ratio && pillarbox && letterbox && odd &&
+        degenerate && stretch;
     std::cout << "glide_letterbox_same_ratio=" << (same_ratio ? "true" : "false")
               << "\nglide_letterbox_pillarbox=" << (pillarbox ? "true" : "false")
               << "\nglide_letterbox_letterbox=" << (letterbox ? "true" : "false")
               << "\nglide_letterbox_odd=" << (odd ? "true" : "false")
               << "\nglide_letterbox_degenerate="
               << (degenerate ? "true" : "false")
+              << "\nglide_letterbox_stretch=" << (stretch ? "true" : "false")
               << "\nglide_letterbox_all=" << (all ? "true" : "false")
               << std::endl;
     return all;

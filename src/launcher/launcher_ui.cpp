@@ -131,6 +131,10 @@ bool SettingsDiffer(const LauncherSettings& left, const LauncherSettings& right)
         left.has_texture_full_precision !=
             right.has_texture_full_precision ||
         left.texture_full_precision != right.texture_full_precision ||
+        left.has_fullscreen != right.has_fullscreen ||
+        left.fullscreen != right.fullscreen ||
+        left.has_keep_aspect != right.has_keep_aspect ||
+        left.keep_aspect != right.keep_aspect ||
         left.last_rom_set != right.last_rom_set)
     {
         return true;
@@ -322,6 +326,40 @@ void DrawOptions(LauncherSettings* settings,
             "Uses the game's original 8-bit textures instead of the 4444/565 "
             "copies its graphics driver makes. Off matches the arcade "
             "hardware; Tab in game switches it too.");
+        ImGui::EndTooltip();
+    }
+
+    // Issue #45: windowed and aspect-preserving when nothing is stored. The
+    // game's OSD stores these two as well, so they show the last choice.
+    bool fullscreen = settings->has_fullscreen && settings->fullscreen;
+    if (ImGui::Checkbox("Fullscreen", &fullscreen))
+    {
+        settings->has_fullscreen = true;
+        settings->fullscreen = fullscreen;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::TextUnformatted(
+            "Starts the game borderless at the desktop resolution. Alt+Enter, "
+            "a double click or Tab in game switches it, and that choice is "
+            "kept too.");
+        ImGui::EndTooltip();
+    }
+    bool keep_aspect = !settings->has_keep_aspect || settings->keep_aspect;
+    if (ImGui::Checkbox("Keep aspect ratio", &keep_aspect))
+    {
+        settings->has_keep_aspect = true;
+        settings->keep_aspect = keep_aspect;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::TextUnformatted(
+            "On keeps the game's 4:3 picture with black bars. Off stretches it "
+            "to fill the window or screen. Tab in game switches it too.");
         ImGui::EndTooltip();
     }
 
