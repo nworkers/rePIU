@@ -12,6 +12,7 @@
 #include "repiu/hle/glide_texture_decode.h"
 #include "repiu/input/jamma_input_bindings.h"
 #include "repiu/input/pad_exit_chord.h"
+#include "repiu/input/pad_osd_chord.h"
 #include "repiu/engine/execution_time_profile.h"
 #include "repiu/engine/jamma_input_timeline.h"
 #include "repiu/platform/build_identity.h"
@@ -1476,33 +1477,12 @@ void GlideOpenGlBackend::PumpEvents() {
     if (osd_ != nullptr && osd_->visible()) {
       osd_->ProcessEvent(&event);
     }
-    // Issue #34: a pad change becomes edges for exactly the inputs whose
-    // pad state changed. A release is held back while the keyboard still
-    // holds the same input, so letting go of one source never drops an input
-    // the other is pressing.
+    // Issue #34: a pad change becomes edges (RecordPadMaskChange).
     if (pad_input_ != nullptr) {
       const SdlPadInput::Change change = pad_input_->HandleEvent(event);
       if (change.handled) {
-        const std::uint16_t changed =
-            static_cast<std::uint16_t>(change.before ^ change.after);
-        if (changed != 0U && jamma_input_timeline_ != nullptr) {
-          const std::uint64_t changed_at =
-              EventTimestampNanoseconds(event.common.timestamp);
-          const std::uint16_t keyboard = CaptureKeyboardJammaPressedMask();
-          for (std::uint32_t index = 0;
-               index < repiu::input::kJammaInputKeyCount; ++index) {
-            const auto key = static_cast<JammaInputKey>(index);
-            const std::uint16_t bit = JammaInputKeyMask(key);
-            if ((changed & bit) == 0U) {
-              continue;
-            }
-            const bool pressed = (change.after & bit) != 0U;
-            if (!pressed && (keyboard & bit) != 0U) {
-              continue;
-            }
-            jamma_input_timeline_->RecordKeyEdge(changed_at, key, pressed);
-          }
-        }
+        RecordPadMaskChange(change.before, change.after,
+                            EventTimestampNanoseconds(event.common.timestamp));
         continue;
       }
     }
@@ -1585,6 +1565,51 @@ void GlideOpenGlBackend::PumpEvents() {
                              SDL_GetTicks())) {
     fprintf(stderr, "[repiu-pad] exit chord held for 1 s: exit requested\n");
     exit_requested_ = true;
+  }
+  // Issue #55: LT+RT+Y opens and closes the OSD, and while it is open (by
+  // either way) the pad drives it and the game sees no pad input.
+  if (pad_input_ != nullptr && osd_ != nullptr) {
+    if (pad_osd_chord_.Update(input::IsPadOsdChordDown(pad_input_->state()))) {
+      osd_->ToggleVisible();
+    }
+    const bool osd_open = osd_->visible();
+    if (osd_open != pad_input_->game_input_suppressed()) {
+      const SdlPadInput::Change change =
+          pad_input_->SetGameInputSuppressed(osd_open);
+      RecordPadMaskChange(change.before, change.after,
+                          EventTimestampNanoseconds(SDL_GetTicksNS()));
+      fprintf(stderr, "[repiu-pad] OSD %s: pad input %s the game\n",
+              osd_open ? "open" : "closed",
+              osd_open ? "kept from" : "back to");
+    }
+  }
+}
+
+// Issue #34: a pad change becomes edges for exactly the inputs whose pad state
+// changed. A release is held back while the keyboard still holds the same
+// input, so letting go of one source never drops an input the other is
+// pressing. Issue #55 moved it here so a change from the OSD's suppression is
+// recorded the same way as one from an event.
+void GlideOpenGlBackend::RecordPadMaskChange(std::uint16_t before,
+                                             std::uint16_t after,
+                                             std::uint64_t changed_at) {
+  const std::uint16_t changed = static_cast<std::uint16_t>(before ^ after);
+  if (changed == 0U || jamma_input_timeline_ == nullptr) {
+    return;
+  }
+  const std::uint16_t keyboard = CaptureKeyboardJammaPressedMask();
+  for (std::uint32_t index = 0; index < repiu::input::kJammaInputKeyCount;
+       ++index) {
+    const auto key = static_cast<JammaInputKey>(index);
+    const std::uint16_t bit = JammaInputKeyMask(key);
+    if ((changed & bit) == 0U) {
+      continue;
+    }
+    const bool pressed = (after & bit) != 0U;
+    if (!pressed && (keyboard & bit) != 0U) {
+      continue;
+    }
+    jamma_input_timeline_->RecordKeyEdge(changed_at, key, pressed);
   }
 }
 

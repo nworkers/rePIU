@@ -175,13 +175,21 @@ SdlPadInput::Change SdlPadInput::Recompute()
     Change change;
     change.handled = true;
     change.before = mask_;
-    mask_ = input::ComputeJammaPadMask(ActiveJammaBindings(), state_);
+    mask_ = game_gate_.Apply(
+        input::ComputeJammaPadMask(ActiveJammaBindings(), state_));
     change.after = mask_;
     if (change.after != change.before)
     {
         PublishJammaPadMask(mask_);
     }
     return change;
+}
+
+SdlPadInput::Change SdlPadInput::SetGameInputSuppressed(bool suppressed)
+{
+    game_gate_.SetSuppressed(
+        suppressed, input::ComputeJammaPadMask(ActiveJammaBindings(), state_));
+    return Recompute();
 }
 
 SdlPadInput::Change SdlPadInput::ReleaseAll()

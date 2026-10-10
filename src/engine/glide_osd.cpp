@@ -49,6 +49,10 @@ bool GlideOsd::Initialize(void* sdl_window, void* gl_context,
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr;
+    // Issue #55: a pad drives the overlay while it is open (ImGui's SDL3
+    // backend reads the gamepad itself each frame). Keyboard navigation stays
+    // off: keys keep reaching the game while the overlay is open.
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     AddImGuiUiFont();
     ImGui::StyleColorsDark();
     if (!ImGui_ImplSDL3_InitForOpenGL(
@@ -218,6 +222,15 @@ void GlideOsd::Render(std::atomic<bool>* lfb_high_precision,
         applied_scale_ = scale;
     }
     ImGui::NewFrame();
+    // Issue #55: B closes the overlay, unless a menu was open, which B closes
+    // instead (ImGui's own cancel).
+    const bool close_requested = !popup_open_last_frame_ &&
+        ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false);
+    if (focus_pending_)
+    {
+        ImGui::SetNextWindowFocus();
+        focus_pending_ = false;
+    }
     // re2DJ's layout: pinned across the full width at the top, the height
     // following the content. The width is held by a constraint because
     // auto-resize would otherwise shrink it to the content as well.
@@ -311,9 +324,18 @@ void GlideOsd::Render(std::atomic<bool>* lfb_high_precision,
             DrawPostProcessMenu(post_process);
         }
         ImGui::Separator();
-        ImGui::TextDisabled("Tab closes this overlay");
+        ImGui::TextDisabled(
+            "Tab or LT+RT+Y closes this overlay. Pad: D-pad moves, A selects, "
+            "B closes; the game gets no pad input while it is open.");
     }
     ImGui::End();
+    popup_open_last_frame_ =
+        ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+    if (close_requested)
+    {
+        visible_ = false;
+        popup_open_last_frame_ = false;
+    }
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }

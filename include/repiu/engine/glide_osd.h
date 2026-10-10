@@ -59,7 +59,13 @@ public:
     bool initialized() const { return initialized_; }
 
     bool visible() const { return visible_; }
-    void ToggleVisible() { visible_ = !visible_; }
+    // Issue #55: opening also gives the overlay focus, so a pad's D-pad moves
+    // through its items at once.
+    void ToggleVisible()
+    {
+        visible_ = !visible_;
+        focus_pending_ = visible_;
+    }
 
     // Task 769: true while the overlay is open and the pointer is over one of
     // its widgets, so a double click there is not a fullscreen toggle.
@@ -92,6 +98,10 @@ public:
 private:
     bool initialized_ = false;
     bool visible_ = false;
+    // Issue #55: focus to give on the next frame, and whether a menu was open
+    // on the last one (B then closes the menu rather than the overlay).
+    bool focus_pending_ = false;
+    bool popup_open_last_frame_ = false;
     bool has_renderer_identity_ = false;
     GlRendererIdentity renderer_identity_;
     std::vector<std::string> info_lines_;
