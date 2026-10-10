@@ -80,6 +80,13 @@ probe의 기본값·마스크 단언과 설정 probe의 기본값 단언을 새 
   화면에서도 정상임을 확인했다(2026-10-10).
 * **여전히 확인하지 않은 것**: 발판형 조이스틱(`Joy<N>_`).
 
+## 후속: 런처 목록에서 `A`로 시작 (2026-10-10)
+
+사용자 요청으로 런처 롬셋 표에서 패드 South(`A`, ImGui의 activate 버튼 `ImGuiKey_GamepadFaceDown`)가
+Enter·더블 클릭과 같이 그 롬셋을 시작하게 했다(`launcher_ui.cpp`). 설계 §런처와 설정 가이드의 패드 줄을
+갱신했다. Linux x64·i386 Release 빌드와 core probe(실패 0)가 통과했고, 사용자가 Xbox Series X 컨트롤러로
+목록에서 고른 뒤 `A`로 게임이 시작되는 것을 확인했다. Win32는 이 환경에서 빌드할 수 없어 확인하지 못했다.
+
 ---
 
 # Work log: gamepad and joystick input for the game and the launcher (issue #34)
@@ -139,3 +146,10 @@ number 1 and input resumed at once. The per-button layout cannot be told apart i
 second run, unplugging while holding `A` printed `P1-Center PRESSED` → `Pad1/Joy1 disconnected` →
 `P1-Center released` → reconnect, so a disconnect releases what was held. The user confirmed the
 runs on screen (2026-10-10). **Still not checked:** dance-pad joysticks (`Joy<N>_`).
+
+**Follow-up: `A` starts from the launcher list (2026-10-10).** At the user's request a pad's South
+(`A`, ImGui's activate button `ImGuiKey_GamepadFaceDown`) on the launcher's ROM set table now starts
+that set as Enter and a double click do (`launcher_ui.cpp`); the design's launcher item and the
+settings guide's pad line are updated. Linux x64 and i386 Release builds and the core probe (no
+failures) pass, and the user confirmed with an Xbox Series X controller that choosing a set and
+pressing `A` starts the game. Win32 cannot be built here and was not checked.

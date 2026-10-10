@@ -177,7 +177,8 @@ COIN1       = F5, Pad1_Back
 * 키와 게임패드로 같은 입력을 함께 누르고 있으면, 둘 다 뗄 때까지 눌린 상태로 남는다.
 * 창이 포커스를 잃으면 키와 같이 게임패드 입력도 모두 뗀 것으로 처리한다.
 * 아날로그 스틱 방향과 조이스틱 축은 지원하지 않는다.
-* 런처(롬셋 선택 화면)는 게임패드로도 조작할 수 있다. D-pad로 옮기고 `A`로 고른다.
+* 런처(롬셋 선택 화면)는 게임패드로도 조작할 수 있다. D-pad로 옮기고 `A`로 고르며, 롬셋 목록에서는 `A`가
+  Enter처럼 그 롬셋을 시작한다.
 
 ### 7. 조합키
 
@@ -415,7 +416,8 @@ The names are positional (`A` is the bottom face button — PlayStation's ×, Ni
 * An input held by both a key and a gamepad stays held until both are released.
 * Losing window focus releases gamepad input as it does keys.
 * Analog stick directions and joystick axes are not supported.
-* The launcher (the ROM set picker) works with a gamepad too: move with the D-pad, choose with `A`.
+* The launcher (the ROM set picker) works with a gamepad too: move with the D-pad and choose with `A`;
+  on the ROM set list `A` starts the set, as Enter does.
 
 ### 7. Key combinations
 

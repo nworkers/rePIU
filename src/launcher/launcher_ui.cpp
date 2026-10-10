@@ -213,9 +213,12 @@ void DrawRomSetTable(const std::vector<RomSetEntry>& catalog,
             *selection = index;
             // Enter plays the focused row the way double-clicking does; space
             // only moves the selection, which is what a list is expected to do.
+            // Issue #34: a pad's South (A) is ImGui's activate button and
+            // plays the row too, so a cabinet with only a pad can start one.
             if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) ||
                 ImGui::IsKeyPressed(ImGuiKey_Enter) ||
-                ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))
+                ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown))
             {
                 *start_requested = true;
             }
